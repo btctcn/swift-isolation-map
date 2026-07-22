@@ -1,0 +1,49 @@
+name: Check Swift Version Updates
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # every Monday
+  workflow_dispatch:
+
+jobs:
+  check-swift-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get latest Swift release
+        id: latest
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/apple/swift/releases/latest | jq -r '.tag_name')
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+      - name: Compare with known versions
+        id: compare
+        run: |
+          KNOWN=$(cat SUPPORTED_SWIFT_VERSIONS.md | tail -1)
+          if [ "${{ steps.latest.outputs.version }}" != "$KNOWN" ]; then
+            echo "new_version=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check for existing open issue
+        id: existing
+        if: steps.compare.outputs.new_version == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'swift-version-watch'
+            });
+            return issues.data.length > 0;
+          result-encoding: string
+      - name: Open issue if new version found
+        if: steps.compare.outputs.new_version == 'true' && steps.existing.outputs.result != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `New Swift release detected: ${{ steps.latest.outputs.version }}`,
+              body: 'Needs RuleSet review for isolation semantics changes.',
+              labels: ['swift-version-watch']
+            });
