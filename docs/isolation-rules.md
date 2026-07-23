@@ -118,13 +118,89 @@ files are throwaway diagnostic captures (like the `docs/motivation.md` reproduct
 not added to the repository — the rule-by-rule wording above is the durable record of what was
 verified and how.
 
-## Known gaps for a future pass
+## Known gaps and plan
 
-- Rule 8's dedicated fixture (witness inference without whole-type inference, in a genuinely
-  separate-file extension) hasn't been independently compiled yet — currently only unit-tested
-  against the fixture model, not cross-checked against `swiftc`.
-- `isEligibleForModuleDefaultIsolation` (rule 12) is not yet computed from real declaration
-  shape; it's an engine input, correct by construction in fixtures but unimplemented for real
-  SwiftSyntax/IndexStoreDB data (Priority 2).
-- `@preconcurrency`, extension isolation override, and nested types are listed as required
-  coverage in the architecture spec's testing section but are not yet modeled at all.
+Three gaps, three different situations — not the same kind of "TODO." Ordered here by how
+soon each is actually closable, not by severity.
+
+### Gap A — Rule 8 has no dedicated empirical fixture
+
+**What's missing:** rule 8 (per-witness inference in a same-context-as-witness, different-file-
+from-primary-definition conformance) is unit-tested against the fixture model but has never
+been independently compiled with `swiftc`, unlike rules 3–7 and 9–11.
+
+**Why it's open:** scope call made when this rule set first shipped — rule 8 exercises the same
+underlying compiler feature as rule 7's already-verified fixture (`03_protocol_conformance.swift`,
+"main actor isolation inferred from conformance to protocol"), just triggered by a different
+scope condition, so it was judged lower marginal risk than the priority-reordering finding and
+the static-member asymmetry, both of which *were* compiled.
+
+**Plan:** compile a genuine two-file module — `Primary.swift` (the type's primary definition,
+no conformance) and `Extension.swift` (`extension Type: GlobalActorProtocol { ... }` with the
+witness) — via `swiftc -swift-version 6 -typecheck Primary.swift Extension.swift`. This proves
+rule 7's negative case (a method in `Primary.swift` stays nonisolated) and rule 8's positive
+case (the witness in `Extension.swift` is isolated) in one real compile, which a single-file
+snippet can't do. Small, self-contained, no design changes needed — closable in the same style
+as the existing empirical checks.
+
+### Gap B — `isEligibleForModuleDefaultIsolation` isn't computed from real data
+
+**What's missing:** this `DeclarationInfo` field (rule 12's SE-0466 exclusion list — enum
+cases, typealiases, accessors, `SendableMetatype`-conforming types, nested types in nonisolated
+types) is currently a caller-supplied fixture input, correct by construction in tests but with
+no code anywhere that derives it from an actual declaration.
+
+**Why it's open:** genuine structural blocker, not a scope call. Deriving this requires
+classifying real declarations by kind and conformance — that's SwiftSyntax/IndexStoreDB data,
+which doesn't exist in this codebase yet (Priority 2 hasn't started; the CLI is still a stub).
+Writing this classifier against nothing would mean guessing at a shape that Priority 2 would
+likely have to redo anyway.
+
+**Plan:** not closable now. Tracked here as a concrete requirement *for* Priority 2's kickoff,
+not left implicit: whoever builds the SwiftSyntax/IndexStoreDB → `DeclarationInfo` translation
+layer must implement this classifier against the SE-0466 exclusion list already quoted in this
+document, and should add the golden-file/fixture tests for it at that point (real declarations
+of each excluded kind, compiled and checked against `expected-graph.json`, per the testing
+strategy in section 4 of the architecture spec) — not as fixture-only unit tests like today's.
+
+### Gap C — `@preconcurrency`, extension isolation override, nested types unmodeled
+
+**What's missing:** three additional Swift concurrency nuances listed as required test coverage
+in the architecture spec's testing section (section 4), none touched at all yet — no
+`DeclarationInfo` fields, no resolution logic, no tests.
+
+**Why it's open:** scope call for the initial slice — Priority 1's first pass covered the base
+4-tier model (explicit → inherited → default → fallback) end to end, tested and empirically
+verified, rather than attempting every nuance and risking something under-verified. None of the
+three below have had the 1.5.1 sourcing pipeline (evolution proposal → compiler source if
+ambiguous → empirical compilation) applied yet, so it isn't actually known whether any of them
+need new `DeclarationInfo` fields or new resolution branches — that's exactly what doing the
+research would determine.
+
+**Plan, proposed order (highest expected payoff / lowest research cost first):**
+1. **Extension isolation override** — can a `@GlobalActor extension Type { ... }` or a
+   `nonisolated extension Type { ... }` set isolation for just the members declared in that
+   extension, independent of the primary type's own isolation? Likely the cheapest to close:
+   if SwiftSyntax attribute extraction (Priority 2, not yet built) already attaches an explicit
+   attribute to each member based on its nearest enclosing scope, this may already be correctly
+   handled by the existing "explicit attribute wins" rule with zero new engine logic — needs a
+   proposal check + one empirical compile to confirm rather than a model change.
+2. **Nested types** — does a type nested inside an `actor` or a global-actor type inherit
+   isolation the way a member does, or does it follow different rules (types don't have a
+   `self` the way instance members do)? SE-0466's own exclusion list already implies nested
+   types get *some* distinct treatment ("declarations that are types nested within a
+   nonisolated type" are excluded from default-isolation) — that phrasing itself needs
+   unpacking before deciding whether `DeclarationInfo` needs an `isNestedType` distinction from
+   `isStaticMember`/instance-member. Medium research cost.
+3. **`@preconcurrency`** — deliberately last despite being central to this tool's stated
+   motivation (auditing legacy code migrating to Swift 6): initial read is that it mostly
+   affects diagnostic severity and Sendable-conformance downgrades rather than the resolved
+   `IsolationKind` itself, which would make it more a Priority 3 (risk-level/reporting) concern
+   than a Priority 1 (resolution) one — but that's a hypothesis, not yet verified against
+   SE-0337 ("Incremental migration to concurrency checking") or the real compiler, so it's
+   placed last precisely because it has the highest chance of turning out to need a scope
+   decision of its own rather than a quick fixture.
+
+Each of the three should go through the same sourcing discipline as the rest of this document
+before any code changes: proposal text first, compiler source only if the proposal is
+ambiguous, real `swiftc` compilation as the mandatory final check — not assumed from memory.
