@@ -108,7 +108,7 @@ and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize too
 | 5 | A type carrying a global actor attribute (e.g. `@MainActor`) propagates it to all methods, properties, subscripts and extensions, **including static members** | SE-0316: "propagates the attribute to all methods, properties, subscripts, and extensions of the type by default" | `globalActorTypePropagatesToInstanceMember`, `globalActorTypePropagatesToStaticMemberToo` | Yes — `04_static_asymmetry.swift`: `ProfileViewModel.shared` errors "main actor-isolated static property ... can not be referenced from a nonisolated context" |
 | 6 | A subclass of a global-actor-isolated class **mandatorily** inherits that isolation, and that inheritance itself propagates to the subclass's own members | SE-0316: "propagates the attribute to its subclasses mandatorily" | `subclassMandatorilyInheritsSuperclassGlobalActor` | Yes — `01_subclass_inheritance.swift`: compiler note reads "main actor isolation inferred from inheritance from class 'BaseViewModel'" |
 | 7 | A type conforming to a global-actor-qualified protocol **in the same file as its primary definition** infers that actor's isolation for the whole type | SE-0316: "A non-actor type that conforms to a global-actor-qualified protocol within the same source file as its primary definition infers actor isolation from that protocol" | `sameFileProtocolConformanceInfersWholeTypeIsolation`, `differentFileProtocolConformanceDoesNotInferWholeTypeIsolation` (negative case) | Yes — `03_protocol_conformance.swift`: compiler note reads "main actor isolation inferred from conformance to protocol 'Refreshable'" |
-| 8 | A witness satisfying a global-actor-isolated protocol requirement infers isolation per-member when the conformance is stated in the same type/extension as the witness, independent of rule 7 | SE-0316: "A witness that is not inside an actor type infers actor isolation from a protocol requirement that it satisfies, so long as the protocol conformance is stated within the same type definition or extension as the witness" | `perWitnessInferenceAppliesEvenWithoutWholeTypeInference` | Not yet — same underlying compiler feature as rule 7's fixture; a dedicated cross-file-extension snippet is a good v0.1 follow-up |
+| 8 | A witness satisfying a global-actor-isolated protocol requirement infers isolation per-member when the conformance is stated in the same type/extension as the witness, independent of rule 7 | SE-0316: "A witness that is not inside an actor type infers actor isolation from a protocol requirement that it satisfies, so long as the protocol conformance is stated within the same type definition or extension as the witness" | `perWitnessInferenceAppliesEvenWithoutWholeTypeInference` | Yes — `Primary.swift`/`Extension.swift` two-file compile (see Gap A below): compiler note reads "main actor isolation inferred from conformance to protocol 'Refreshable'" on the witness, while an unrelated method on the same type compiles with no error |
 | 9 | Swift 5.x, 6.0, 6.1 (pre-6.2): no default-isolation mechanism exists; unattributed, uninherited declarations are `nonisolated` | SE-0466 didn't exist before Swift 6.2 | `preSwift62NeverDefaultsToMainActor` | Not applicable (absence of a mechanism, nothing to compile) |
 | 10 | Swift 6.2+ without an explicit `-default-isolation` flag: still `nonisolated` by default | SE-0466: "If no `-default-isolation` flag is specified, the default isolation for the module is `nonisolated`" | `swift62DefaultsToNonisolatedWithoutExplicitOptIn` | Yes — `02_default_isolation.swift` compiled without the flag: no diagnostic |
 | 11 | Swift 6.2+ with `-default-isolation MainActor`: eligible declarations default to `@MainActor` | SE-0466 detailed design: "declarations are inferred to be `@MainActor`-isolated by default" | `swift62DefaultsToMainActorWhenConfigured` | Yes — `02_default_isolation.swift` compiled with `-default-isolation MainActor` and an explicitly `nonisolated` caller: error "call to main actor-isolated instance method 'touch()'" |
@@ -128,35 +128,35 @@ against the real compiler ... mandatory, not optional"), the reproduction snippe
 the "Empirically verified" column above were compiled for real with `swiftc -swift-version 6`
 (Swift 6.3, `swiftlang-6.3.0.123.5`) during development of this rule set — files `01`-`04` during
 the original Priority 1 slice, `05`-`09` while implementing Gap C1/C2 (extension override,
-nested types), on top of the sourcing already done in Gap C's research pass (see below).
-Reproduction `.swift` files are throwaway diagnostic captures (like the `docs/motivation.md`
-reproductions) and were not added to the repository — the rule-by-rule wording above is the
-durable record of what was verified and how.
+nested types) on top of the sourcing already done in Gap C's research pass, and a two-file
+`Primary.swift`/`Extension.swift` module while closing Gap A (rule 8). Reproduction `.swift`
+files are throwaway diagnostic captures (like the `docs/motivation.md` reproductions) and were
+not added to the repository — the rule-by-rule wording above is the durable record of what was
+verified and how.
 
 ## Known gaps and plan
 
 Three gaps, three different situations — not the same kind of "TODO." Ordered here by how
-soon each is actually closable, not by severity.
+soon each was actually closable, not by severity. Gap A is closed; Gap C is closed except two
+small fixture-only-verified leftovers noted in its own section; Gap B remains open, the one
+genuine structural blocker of the three.
 
-### Gap A — Rule 8 has no dedicated empirical fixture
+### Gap A — Rule 8 has no dedicated empirical fixture (closed)
 
-**What's missing:** rule 8 (per-witness inference in a same-context-as-witness, different-file-
-from-primary-definition conformance) is unit-tested against the fixture model but has never
+**What was missing:** rule 8 (per-witness inference in a same-context-as-witness, different-file-
+from-primary-definition conformance) was unit-tested against the fixture model but had never
 been independently compiled with `swiftc`, unlike rules 3–7 and 9–11.
 
-**Why it's open:** scope call made when this rule set first shipped — rule 8 exercises the same
-underlying compiler feature as rule 7's already-verified fixture (`03_protocol_conformance.swift`,
-"main actor isolation inferred from conformance to protocol"), just triggered by a different
-scope condition, so it was judged lower marginal risk than the priority-reordering finding and
-the static-member asymmetry, both of which *were* compiled.
-
-**Plan:** compile a genuine two-file module — `Primary.swift` (the type's primary definition,
-no conformance) and `Extension.swift` (`extension Type: GlobalActorProtocol { ... }` with the
-witness) — via `swiftc -swift-version 6 -typecheck Primary.swift Extension.swift`. This proves
-rule 7's negative case (a method in `Primary.swift` stays nonisolated) and rule 8's positive
-case (the witness in `Extension.swift` is isolated) in one real compile, which a single-file
-snippet can't do. Small, self-contained, no design changes needed — closable in the same style
-as the existing empirical checks.
+**Closed via a genuine two-file module** — `Primary.swift` (the protocol declaration and the
+type's primary definition, no conformance) and `Extension.swift` (`extension SyncCoordinator:
+Refreshable { func refresh() {} }` plus the call site), compiled together via `swiftc
+-swift-version 6 -typecheck Primary.swift Extension.swift`. One real compile proved both
+directions at once: `s.unrelatedMethod()` (declared in `Primary.swift`) compiled with no
+isolation error — rule 7's negative case, the whole type is not inferred isolated since the
+conformance isn't in the same file as the primary definition — while `s.refresh()` (the witness,
+declared in `Extension.swift`, same extension as the conformance) errored with "main actor
+isolation inferred from conformance to protocol 'Refreshable'" — rule 8's positive case,
+confirmed independently of rule 7's outcome, exactly as SE-0316 describes.
 
 ### Gap B — `isEligibleForModuleDefaultIsolation` isn't computed from real data
 
