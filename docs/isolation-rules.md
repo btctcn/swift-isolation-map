@@ -116,10 +116,10 @@ and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize too
 | 13 | An unreviewed/future Swift version has no matching rule set — the tool must say so explicitly, never silently reuse the nearest known rule set | Architecture spec section 2.8 | `unsupportedFutureVersionThrows` | N/A (governance behavior, not compiler semantics) |
 | 14 | A global actor attribute on an *extension* isolates only that extension's members, independent of the primary type's own propagation | SE-0316: "An extension declared with a global actor attribute propagates the attribute to all the members of the extension by default" | `extensionAttributeIsolatesOnlyItsOwnMembers` | Yes — `05_explicit_member_beats_extension.swift` (see below) |
 | 15 | An explicit attribute directly on a member still wins over its enclosing extension's attribute | General model — rule 1 outranks rule 2 | `explicitMemberAttributeBeatsEnclosingExtension` | Yes — same fixture: `explicitlyNonisolated()` compiles with no error, `implicitlyMainActor()` errors |
-| 16 | An enclosing extension's attribute wins over the primary type's own global actor propagation | SE-0316's two propagation rules are independent; rule 2 outranks rule 3 | `enclosingExtensionOverridesTypePropagation` | Not yet — the reverse direction (extension explicitly `nonisolated` on an otherwise `@MainActor` type) hasn't been independently compiled; only the `@MainActor`-extension-on-plain-type direction was |
+| 16 | An enclosing extension's attribute wins over the primary type's own global actor propagation | SE-0316's two propagation rules are independent; rule 2 outranks rule 3 | `enclosingExtensionOverridesTypePropagation` | Yes — `10_rule16_reverse.swift`: a `nonisolated extension` of an otherwise-`@MainActor` class compiles `nonisolatedMethod()` clean while `mainActorMethod()` (declared in the primary body) still errors |
 | 17 | A nested type does **not** inherit isolation via containing-type propagation the way an instance/static member would — confirmed for both `actor` and global-actor-class containers | SE-0316's type→members propagation does not extend to nested type declarations (not itself stated as a proposal quote — established by empirical contrast against rules 3/5) | `nestedTypeInsideActorDoesNotInheritActorIsolation`, `nestedTypeInsideGlobalActorClassDoesNotInheritViaPropagation` | Yes — `06_nested_type_inside_actor.swift` (no diagnostic) and `09_nested_type_default_gate_v2.swift` (see rule 18, same fixture covers both) |
 | 18 | A nested type **is** eligible for the module default when its enclosing type's own resolved isolation is not `nonisolated` — via the default tier, not inheritance — and stays nonisolated when the enclosing type is nonisolated, even with a default configured | SE-0466 detailed design: "declarations that are types nested within a nonisolated type" are excluded from default-isolation; its own worked example shows a nested type inside a non-nonisolated enclosing type picking up the default | `nestedTypeUsesModuleDefaultWhenEnclosingTypeIsIsolated`, `nestedTypeStaysNonisolatedWhenEnclosingTypeIsNonisolated` | Yes — `09_nested_type_default_gate_v2.swift` compiled with `-default-isolation MainActor`: `Outer.Nested` errors, `NonisolatedOuter.Nested` doesn't |
-| 19 | A nested type's own superclass/protocol-conformance-based isolation still applies — nesting only skips the containing-type-propagation part of tier 3, not the type's own hierarchy | Consequence of rules 3 and 17 both being real, independently — not itself a separate SE citation | `nestedTypeStillInheritsFromItsOwnSuperclass` | Not yet — fixture-only; a real nested-class-with-an-isolated-superclass compile is a good follow-up |
+| 19 | A nested type's own superclass/protocol-conformance-based isolation still applies — nesting only skips the containing-type-propagation part of tier 3, not the type's own hierarchy | Consequence of rules 3 and 17 both being real, independently — not itself a separate SE citation | `nestedTypeStillInheritsFromItsOwnSuperclass` | Yes — `11_rule19_nested_type_own_superclass.swift`: `Outer.NestedState` (nested in a plain, non-isolated `Outer`) still errors calling a method inherited from its own `@MainActor` superclass `BaseState` |
 
 ## Empirical validation
 
@@ -127,19 +127,18 @@ Per the architecture spec's sourcing hierarchy (section 1.5.1, step 5 — "empir
 against the real compiler ... mandatory, not optional"), the reproduction snippets that back
 the "Empirically verified" column above were compiled for real with `swiftc -swift-version 6`
 (Swift 6.3, `swiftlang-6.3.0.123.5`) during development of this rule set — files `01`-`04` during
-the original Priority 1 slice, `05`-`09` while implementing Gap C1/C2 (extension override,
-nested types) on top of the sourcing already done in Gap C's research pass, and a two-file
-`Primary.swift`/`Extension.swift` module while closing Gap A (rule 8). Reproduction `.swift`
-files are throwaway diagnostic captures (like the `docs/motivation.md` reproductions) and were
-not added to the repository — the rule-by-rule wording above is the durable record of what was
-verified and how.
+the original Priority 1 slice, `05`-`09` and `10`-`11` while implementing and then fully closing
+out Gap C1/C2 (extension override, nested types) on top of the sourcing already done in Gap C's
+research pass, and a two-file `Primary.swift`/`Extension.swift` module while closing Gap A (rule
+8). Reproduction `.swift` files are throwaway diagnostic captures (like the `docs/motivation.md`
+reproductions) and were not added to the repository — the rule-by-rule wording above is the
+durable record of what was verified and how.
 
 ## Known gaps and plan
 
 Three gaps, three different situations — not the same kind of "TODO." Ordered here by how
-soon each was actually closable, not by severity. Gap A is closed; Gap C is closed except two
-small fixture-only-verified leftovers noted in its own section; Gap B remains open, the one
-genuine structural blocker of the three.
+soon each was actually closable, not by severity. Gap A and Gap C are both closed in full; Gap B
+remains open, the one genuine structural blocker of the three.
 
 ### Gap A — Rule 8 has no dedicated empirical fixture (closed)
 
@@ -226,9 +225,11 @@ rules act independently, exactly as SE-0316 states.
   attribute in the same extension errored — confirms rule 1 (explicit-on-declaration) still
   outranks rule 2 (enclosing extension), not just rule 2 outranking rule 3.
 - The reverse interaction — an explicitly `nonisolated extension` of an otherwise `@MainActor`
-  type — was exercised only in the fixture model (`enclosingExtensionOverridesTypePropagation`),
-  not independently compiled. Left as an explicit note in the rule checklist (rule 16) rather
-  than silently assumed symmetric with the confirmed direction.
+  type — was initially exercised only in the fixture model
+  (`enclosingExtensionOverridesTypePropagation`), flagged rather than silently assumed symmetric
+  with the confirmed direction, and has since been independently compiled too:
+  `10_rule16_reverse.swift` confirms a `nonisolated extension`'s own method compiles clean while
+  a sibling method declared in the type's primary body still errors.
 
 **Implemented as:** a new `DeclarationInfo` field, `enclosingExtensionIsolation: IsolationKind?`,
 consumed by a new resolution tier in `IsolationInferenceEngine.swift` between tier 1
@@ -295,8 +296,10 @@ own isolation vs. the configured default, to rule out the two mechanisms being c
 `nestedTypeInsideGlobalActorClassDoesNotInheritViaPropagation`,
 `nestedTypeUsesModuleDefaultWhenEnclosingTypeIsIsolated`,
 `nestedTypeStaysNonisolatedWhenEnclosingTypeIsNonisolated`,
-`nestedTypeStillInheritsFromItsOwnSuperclass` (last one fixture-only, not yet independently
-compiled — see rule 19 in the checklist above).
+`nestedTypeStillInheritsFromItsOwnSuperclass` — the last one now also independently compiled,
+`11_rule19_nested_type_own_superclass.swift`: a nested class inside a plain, non-isolated
+`Outer` still errors calling a method inherited from its own `@MainActor` superclass, confirming
+the inheritance is genuinely about the nested type's own class hierarchy, unrelated to nesting.
 
 **Cross-link to [Gap B](#gap-b--iseligibleformoduledefaultisolation-isnt-computed-from-real-data):**
 the *engine-side* gating logic for nested types is now implemented, but Gap B itself — actually
@@ -334,11 +337,9 @@ belongs to Priority 3 (risk-level/reporting: whether a cross-isolation edge is r
 error-equivalent or a downgraded warning), not Priority 1. No further action needed in this
 engine; revisit only when Priority 3's reporting/risk-annotation layer is designed.
 
-**Status:** C1 and C2 implemented (rules 14-19 in the checklist above, `DeclarationInfo` fields
-`enclosingExtensionIsolation`/`isNestedType`, new resolution logic in
-`IsolationInferenceEngine.swift`, tests in `Tests/IsolationCoreTests/ExtensionAndNestedTypeIsolationTests.swift`).
-C3 required no engine changes, confirmed rather than left as a hypothesis. Remaining open items
-from this pass: rule 16's reverse direction (explicit `nonisolated extension` overriding an
-otherwise-`@MainActor` type) and rule 19 (nested type inheriting from its own superclass) are
-fixture-tested but not yet independently compiled — smaller, lower-risk follow-ups in the same
-style as Gap A.
+**Status:** C1 and C2 implemented and fully empirically verified (rules 14-19 in the checklist
+above, `DeclarationInfo` fields `enclosingExtensionIsolation`/`isNestedType`, new resolution
+logic in `IsolationInferenceEngine.swift`, tests in
+`Tests/IsolationCoreTests/ExtensionAndNestedTypeIsolationTests.swift`). C3 required no engine
+changes, confirmed rather than left as a hypothesis. Gap C is now closed in full — no open items
+remain from this pass.
