@@ -12,6 +12,17 @@ public struct DeclarationInfo: Equatable, Sendable {
     public let superclassUSR: String?
     public let conformances: [ProtocolConformance]
     public let isEligibleForModuleDefaultIsolation: Bool
+    /// SE-0316's second, independent propagation rule: a global actor attribute on the
+    /// *extension* a member is physically declared in, distinct from whatever the primary
+    /// type declaration propagates. Wins over containing-type propagation, but an explicit
+    /// attribute on the member itself still wins over this. See docs/isolation-rules.md, Gap C1.
+    public let enclosingExtensionIsolation: IsolationKind?
+    /// A type declared inside another type. Nested types do NOT inherit isolation via SE-0316's
+    /// type->members propagation the way instance/static members do -- confirmed empirically,
+    /// see docs/isolation-rules.md, Gap C2. They only ever reach isolation via an explicit
+    /// attribute, their own superclass/conformances, or the module default -- and eligibility
+    /// for that default is gated by whether their enclosing type itself resolves to nonisolated.
+    public let isNestedType: Bool
 
     public init(
         usr: String,
@@ -22,7 +33,9 @@ public struct DeclarationInfo: Equatable, Sendable {
         isStaticMember: Bool = false,
         superclassUSR: String? = nil,
         conformances: [ProtocolConformance] = [],
-        isEligibleForModuleDefaultIsolation: Bool = true
+        isEligibleForModuleDefaultIsolation: Bool = true,
+        enclosingExtensionIsolation: IsolationKind? = nil,
+        isNestedType: Bool = false
     ) {
         self.usr = usr
         self.name = name
@@ -33,6 +46,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.superclassUSR = superclassUSR
         self.conformances = conformances
         self.isEligibleForModuleDefaultIsolation = isEligibleForModuleDefaultIsolation
+        self.enclosingExtensionIsolation = enclosingExtensionIsolation
+        self.isNestedType = isNestedType
     }
 }
 
