@@ -162,45 +162,129 @@ layer must implement this classifier against the SE-0466 exclusion list already 
 document, and should add the golden-file/fixture tests for it at that point (real declarations
 of each excluded kind, compiled and checked against `expected-graph.json`, per the testing
 strategy in section 4 of the architecture spec) — not as fixture-only unit tests like today's.
+**See also [Gap C2](#c2--nested-types-needs-a-model-change)**: nested types add a requirement to
+this same classifier that isn't obvious from the exclusion list alone — eligibility for a nested
+type depends on the *enclosing type's own resolved isolation*, not just static facts about the
+nested declaration itself.
 
 ### Gap C — `@preconcurrency`, extension isolation override, nested types unmodeled
 
 **What's missing:** three additional Swift concurrency nuances listed as required test coverage
-in the architecture spec's testing section (section 4), none touched at all yet — no
-`DeclarationInfo` fields, no resolution logic, no tests.
+in the architecture spec's testing section (section 4). **Research is now complete for all
+three** (evolution proposal → compiler source → empirical `swiftc` compilation, per section
+1.5.1) — findings below. No `DeclarationInfo` fields or resolution logic exist for any of them
+yet; two of the three turn out to need real engine changes, one turns out to be correctly out of
+scope for this engine.
 
-**Why it's open:** scope call for the initial slice — Priority 1's first pass covered the base
-4-tier model (explicit → inherited → default → fallback) end to end, tested and empirically
-verified, rather than attempting every nuance and risking something under-verified. None of the
-three below have had the 1.5.1 sourcing pipeline (evolution proposal → compiler source if
-ambiguous → empirical compilation) applied yet, so it isn't actually known whether any of them
-need new `DeclarationInfo` fields or new resolution branches — that's exactly what doing the
-research would determine.
+Reproduction snippets for all three were compiled for real with `swiftc -swift-version 6` (Swift
+6.3, `swiftlang-6.3.0.123.5`) and, per this document's existing convention, kept as throwaway
+files outside the repository — the findings below are the durable record.
 
-**Plan, proposed order (highest expected payoff / lowest research cost first):**
-1. **Extension isolation override** — can a `@GlobalActor extension Type { ... }` or a
-   `nonisolated extension Type { ... }` set isolation for just the members declared in that
-   extension, independent of the primary type's own isolation? Likely the cheapest to close:
-   if SwiftSyntax attribute extraction (Priority 2, not yet built) already attaches an explicit
-   attribute to each member based on its nearest enclosing scope, this may already be correctly
-   handled by the existing "explicit attribute wins" rule with zero new engine logic — needs a
-   proposal check + one empirical compile to confirm rather than a model change.
-2. **Nested types** — does a type nested inside an `actor` or a global-actor type inherit
-   isolation the way a member does, or does it follow different rules (types don't have a
-   `self` the way instance members do)? SE-0466's own exclusion list already implies nested
-   types get *some* distinct treatment ("declarations that are types nested within a
-   nonisolated type" are excluded from default-isolation) — that phrasing itself needs
-   unpacking before deciding whether `DeclarationInfo` needs an `isNestedType` distinction from
-   `isStaticMember`/instance-member. Medium research cost.
-3. **`@preconcurrency`** — deliberately last despite being central to this tool's stated
-   motivation (auditing legacy code migrating to Swift 6): initial read is that it mostly
-   affects diagnostic severity and Sendable-conformance downgrades rather than the resolved
-   `IsolationKind` itself, which would make it more a Priority 3 (risk-level/reporting) concern
-   than a Priority 1 (resolution) one — but that's a hypothesis, not yet verified against
-   SE-0337 ("Incremental migration to concurrency checking") or the real compiler, so it's
-   placed last precisely because it has the highest chance of turning out to need a scope
-   decision of its own rather than a quick fixture.
+#### C1 — Extension isolation override (needs a model change)
 
-Each of the three should go through the same sourcing discipline as the rest of this document
-before any code changes: proposal text first, compiler source only if the proposal is
-ambiguous, real `swiftc` compilation as the mandatory final check — not assumed from memory.
+**The "may already work for free" possibility this section previously raised turned out to be
+wrong.** SE-0316's detailed design has two separate propagation rules, not one:
+
+> "A type declared with a global actor attribute propagates the attribute to all methods,
+> properties, subscripts, and extensions of the type by default."
+>
+> "An extension declared with a global actor attribute propagates the attribute to all the
+> members of the extension by default."
+
+The second rule is an independent isolation source: an extension can carry its own global actor
+attribute governing only the members declared inside that extension, distinct from whatever the
+primary type itself propagates.
+
+**Empirically confirmed:** a plain (nonisolated) class with one method in its primary body and a
+second method in a separate `@MainActor extension` of the same type — the primary-body method
+compiled with no isolation error; the extension method produced `error: call to main
+actor-isolated instance method ... in a synchronous nonisolated context`. The two propagation
+rules act independently, exactly as SE-0316 states.
+
+**Why this isn't free:** `resolveInheritedIsolation` in `IsolationInferenceEngine.swift` only
+reads `DeclarationInfo.containingTypeUSR`, `superclassUSR`, and `conformances` — there is no
+field anywhere that captures "the global actor attribute declared on the extension this member is
+physically inside." `DeclarationInfo` cannot express this input today.
+
+**Required model change:** a new `DeclarationInfo` field (e.g. `enclosingExtensionIsolation:
+IsolationKind?`), consumed by a new resolution step between tier 1 (explicit-on-declaration) and
+tier 2 (inherited-from-containing-type) — the extension's attribute wins over the type's, but an
+explicit attribute directly on the member still wins over both.
+
+#### C2 — Nested types (needs a model change)
+
+**Nested types are a distinct category, not "a member that happens to be a type" — confirmed by
+two independent, opposite-direction empirical results.**
+
+1. **No containing-type inheritance.** A `struct` nested inside an explicitly `@MainActor final
+   class` does **not** become main-actor isolated the way an instance method would: mutating a
+   nested static var produced the generic `nonisolated global shared mutable state` diagnostic
+   (not a main-actor one), and calling the nested type's instance method from a `nonisolated`
+   context compiled with no isolation error at all.
+2. **But it does participate in the module-default eligibility gate.** SE-0466's own worked
+   example is explicit that
+
+   > "Declarations that are types nested within a nonisolated type" [are excluded from default
+   > isolation]
+
+   and its code sample shows a `struct Nested` inside a plain `class C` (itself defaulted to
+   `@MainActor` under `-default-isolation MainActor`) **also** commented `// @MainActor` — nested
+   types are eligible for the *module default* exactly when their enclosing type is not itself
+   nonisolated. Reproduced empirically both directions: the nested type inside a
+   default-eligible enclosing class became MainActor-isolated under `-default-isolation
+   MainActor`; the same nested type inside an explicitly `nonisolated` enclosing type stayed
+   nonisolated even with the flag on.
+
+**Why this isn't just missing, it's a bug waiting to happen:** if a nested type were modeled
+today the obvious way — pointing `containingTypeUSR` at its enclosing type, like any other member
+— `resolveInheritedIsolation`'s `if case .globalActor = containingIsolation { return
+containingIsolation }` branch (`IsolationInferenceEngine.swift`, tier 2) would **incorrectly**
+propagate the enclosing type's global actor to it, directly contradicting empirical result 1
+above. The naive way to wire nested types into the existing shape produces a wrong answer, not
+just an incomplete one.
+
+**Required model change:** `DeclarationInfo` needs an explicit `isNestedType` (or equivalent)
+distinction so nested types are excluded from the tier-2 containing-type-propagation branch
+entirely, and rely solely on tier 3 (module default), gated by the enclosing type's own resolved
+isolation rather than a flat per-declaration bool.
+
+**Cross-link to [Gap B](#gap-b--iseligibleformoduledefaultisolation-isnt-computed-from-real-data):**
+this is the same field, `isEligibleForModuleDefaultIsolation`, that Gap B already flags as
+fixture-only/not-computed-from-real-data. Gap B's classifier now has a concrete extra requirement
+discovered here: for a nested type, eligibility isn't a standalone fact about the declaration
+itself the way it is for enum cases/typealiases/accessors/`SendableMetatype` types — it depends on
+the *enclosing type's own resolved isolation*, which means the classifier needs read access to the
+engine's resolution of the enclosing type, not just static declaration-shape facts. Whoever builds
+Gap B's classifier should design for this from the start rather than retrofitting it after nested
+types are added.
+
+#### C3 — `@preconcurrency` (confirmed out of scope for this engine)
+
+**The "diagnostic severity, not resolution" hypothesis this section previously proposed is
+correct, now confirmed rather than assumed.** SE-0337's detailed design says `@preconcurrency` on
+a declaration only:
+
+> "At use sites whose enclosing scope uses Minimal concurrency checking, the compiler will
+> suppress any diagnostics about mismatches in these traits."
+>
+> "At use sites whose enclosing scope uses Strict concurrency checking, including in Swift 6 and
+> later, the compiler will downgrade any such diagnostics from errors to warnings."
+
+Nothing in the proposal describes it changing a declaration's resolved isolation.
+
+**Empirically confirmed:** a `@preconcurrency @MainActor func` called from a `nonisolated`
+context under `-swift-version 6` produced the **identical diagnostic wording** as the same call
+without `@preconcurrency` ("call to main actor-isolated global function ... in a synchronous
+nonisolated context") — the only difference was `warning:` instead of `error:` (exit code 0
+instead of 1). The resolved isolation is unchanged; only the severity of the *mismatch*
+diagnostic at the call site changes.
+
+**Conclusion:** `@preconcurrency` needs no `DeclarationInfo` field and no
+`IsolationInferenceEngine` resolution logic — `IsolationKind` resolution is unaffected by it. It
+belongs to Priority 3 (risk-level/reporting: whether a cross-isolation edge is reported as an
+error-equivalent or a downgraded warning), not Priority 1. No further action needed in this
+engine; revisit only when Priority 3's reporting/risk-annotation layer is designed.
+
+**Status:** research phase closed for all three. C1 and C2 are ready to be scoped as real
+implementation work (new `DeclarationInfo` fields + resolution branches + empirical-backed unit
+tests, same discipline as rules 1-13 above); C3 requires no further action in this engine.
