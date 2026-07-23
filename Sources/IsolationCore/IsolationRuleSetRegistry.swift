@@ -9,8 +9,10 @@ public enum IsolationRuleSetRegistry {
     ) throws -> IsolationRuleSet {
         let candidates: [IsolationRuleSet] = [
             Swift5RuleSet(),
-            Swift6RuleSet(),
-            Swift62RuleSet(defaultIsolation: defaultIsolation)
+            Swift60RuleSet(),
+            Swift61RuleSet(),
+            Swift62RuleSet(defaultIsolation: defaultIsolation),
+            Swift63RuleSet(defaultIsolation: defaultIsolation)
         ]
         guard let match = candidates.first(where: { $0.swiftVersion.contains(version) }) else {
             throw UnsupportedSwiftVersionError(version: version, highestSupportedUpperBound: candidates.compactMap(\.swiftVersion.upperBound).last)

@@ -16,7 +16,7 @@ func explicitAttributeOverridesContainingActor() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:actor": actorType, "s:member": member],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:member") == .nonisolated)
 }
@@ -28,7 +28,7 @@ func actorInstanceMemberInheritsActorIsolation() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:actor": actorType, "s:member": member],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:member") == .actor(name: "UserSession"))
 }
@@ -45,7 +45,7 @@ func actorStaticMemberIsNotActorIsolated() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:actor": actorType, "s:static": staticMember],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:static") == .nonisolated)
 }
@@ -57,7 +57,7 @@ func globalActorTypePropagatesToInstanceMember() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:type": type, "s:member": member],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:member") == .globalActor(name: "MainActor"))
 }
@@ -74,7 +74,7 @@ func globalActorTypePropagatesToStaticMemberToo() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:type": type, "s:static": staticMember],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:static") == .globalActor(name: "MainActor"))
 }
@@ -87,7 +87,7 @@ func subclassMandatorilyInheritsSuperclassGlobalActor() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:base": base, "s:derived": derived, "s:derivedMember": derivedMember],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:derived") == .globalActor(name: "MainActor"))
     #expect(engine.resolveIsolation(for: "s:derivedMember") == .globalActor(name: "MainActor"))
@@ -110,7 +110,7 @@ func sameFileProtocolConformanceInfersWholeTypeIsolation() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:type": type],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:type") == .globalActor(name: "MainActor"))
 }
@@ -132,7 +132,7 @@ func differentFileProtocolConformanceDoesNotInferWholeTypeIsolation() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:type": type],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:type") == .nonisolated)
 }
@@ -154,18 +154,20 @@ func perWitnessInferenceAppliesEvenWithoutWholeTypeInference() {
     let engine = IsolationInferenceEngine(
         declarations: ["s:witness": witness],
         callGraph: [],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
     #expect(engine.resolveIsolation(for: "s:witness") == .globalActor(name: "MainActor"))
 }
 
-@Test("SE-0466: Swift 5/6 rule sets never apply a default MainActor isolation")
-func swift5And6NeverDefaultToMainActor() {
+@Test("SE-0466: Swift 5.x, 6.0 and 6.1 rule sets never apply a default MainActor isolation — the mechanism doesn't exist before 6.2")
+func preSwift62NeverDefaultsToMainActor() {
     let freeFunction = DeclarationInfo(usr: "s:fn", name: "process")
     let engineSwift5 = IsolationInferenceEngine(declarations: ["s:fn": freeFunction], callGraph: [], ruleSet: Swift5RuleSet())
-    let engineSwift6 = IsolationInferenceEngine(declarations: ["s:fn": freeFunction], callGraph: [], ruleSet: Swift6RuleSet())
+    let engineSwift60 = IsolationInferenceEngine(declarations: ["s:fn": freeFunction], callGraph: [], ruleSet: Swift60RuleSet())
+    let engineSwift61 = IsolationInferenceEngine(declarations: ["s:fn": freeFunction], callGraph: [], ruleSet: Swift61RuleSet())
     #expect(engineSwift5.resolveIsolation(for: "s:fn") == .nonisolated)
-    #expect(engineSwift6.resolveIsolation(for: "s:fn") == .nonisolated)
+    #expect(engineSwift60.resolveIsolation(for: "s:fn") == .nonisolated)
+    #expect(engineSwift61.resolveIsolation(for: "s:fn") == .nonisolated)
 }
 
 @Test("SE-0466: with no -default-isolation flag configured, Swift 6.2 still defaults to nonisolated")
@@ -256,7 +258,7 @@ func crossIsolationEdgesFiltersMismatchedIsolation() {
             CallGraphEdge(callerUSR: "s:caller", calleeUSR: "s:member", location: SymbolLocation(file: "OrderProcessor.swift", line: 10, column: 1)),
             CallGraphEdge(callerUSR: "s:sameActorCaller", calleeUSR: "s:member", location: SymbolLocation(file: "UserSession.swift", line: 20, column: 1))
         ],
-        ruleSet: Swift6RuleSet()
+        ruleSet: Swift60RuleSet()
     )
 
     let flagged = engine.crossIsolationEdges()
@@ -266,6 +268,6 @@ func crossIsolationEdgesFiltersMismatchedIsolation() {
 
 @Test("An unknown USR resolves to .unspecified rather than crashing — honest uncertainty, not a guess")
 func unknownUSRResolvesToUnspecified() {
-    let engine = IsolationInferenceEngine(declarations: [:], callGraph: [], ruleSet: Swift6RuleSet())
+    let engine = IsolationInferenceEngine(declarations: [:], callGraph: [], ruleSet: Swift60RuleSet())
     #expect(engine.resolveIsolation(for: "s:doesNotExist") == .unspecified)
 }
