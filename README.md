@@ -16,6 +16,19 @@ Xcode Instruments visualizes actor hops, but only as a **runtime trace of one sp
 4. CI-suitable — can be embedded as a pipeline gate, which a runtime trace cannot
 5. A migration-debt map, trackable over time via git history
 
+## Compiler diagnostics: a concrete look
+
+It's easy to assert that `Sending value risks data races` is uninformative;
+here's what actually happens when you compile three progressively-realistic
+reproductions under Swift 6.3 strict concurrency. The diagnostic is precise
+when the unsafe access is in the same function as the `send` — it names the
+exact conflicting line. The moment the `send` crosses a function boundary
+(a helper call, a `Task { }` closure), the diagnostic still correctly fires,
+but stops pointing at the access it actually conflicts with, and can't rank
+which of several candidate mutations is the real one. See
+[`docs/motivation.md`](docs/motivation.md) for the full reproductions and
+unedited compiler output.
+
 ## Approach
 
 A hybrid of `IndexStoreDB` (semantic call graph, resolved through protocols/generics) and `SwiftSyntax` (lexical isolation attributes), combined by a version-aware inference engine. See the architecture notes in this repository for full technical detail.
