@@ -24,6 +24,53 @@ fallback after the default, it's part of the same inheritance tier that pre-empt
 Verified in `protocolConformanceInferenceBeatsConfiguredDefault`
 (`Tests/IsolationCoreTests/IsolationInferenceEngineTests.swift`).
 
+## Rule set version boundaries
+
+`IsolationRuleSet` classes are not one-per-Swift-version. Each one is named after the version
+that introduced a change to isolation *semantics* (what gets inferred, and how), and its
+`SwiftVersionRange.upperBound` is "the last version this has been reviewed and confirmed still
+accurate for" — not a hardcoded end-of-life. `SwiftVersionRange.contains(_:)` compares
+major.minor component-wise and both bounds are inclusive. Current boundaries:
+
+| Rule set | Range | Why it starts there |
+|---|---|---|
+| `Swift5RuleSet` | 5.0–5.10 | Pre-Swift-6; no mandatory strict concurrency |
+| `Swift6RuleSet` | 6.0–6.1 | Strict concurrency became mandatory; no default-isolation mechanism yet |
+| `Swift62RuleSet` | 6.2–6.3 | SE-0466 shipped in 6.2, adding the opt-in `-default-isolation` flag |
+
+**Why there's no `Swift63RuleSet`:** nothing changed. This isn't an assumption from matching
+the local toolchain version — it was checked against
+[`download.swift.org/swift-evolution/v1/evolution.json`](https://download.swift.org/swift-evolution/v1/evolution.json)
+(`jq -r '.proposals[] | select(.status.version == "6.3")'`, cross-referenced against
+`(?i)actor|isolat|concurren|sendable` in title/summary). The only 6.3 proposal in that space is
+SE-0481 (`weak let`) — it relaxes a *mutability* restriction on weak references for Sendable
+purposes, but doesn't touch isolation inference, inheritance, or defaulting, so `Swift62RuleSet`
+folding 6.2 and 6.3 together is correct rather than assumed.
+
+Same check for the `Swift6RuleSet` boundary: 6.0 has several concurrency-relevant proposals
+(SE-0414 Region based isolation, SE-0420 Inheritance of actor isolation for closures, SE-0423
+dynamic isolation enforcement, SE-0430 `sending` parameters, SE-0431 `@isolated(any)`, SE-0434
+usability of global-actor types) — none of them change the 4-tier resolution model this engine
+implements; they're mostly about closures/call-graph mechanics relevant to Priority 2, not
+Priority 1's inference rules. 6.1 has SE-0449 ("Allow `nonisolated` to prevent global actor
+inference"), which only expands *where* `nonisolated` is legal to write syntactically — it
+doesn't change what an already-resolved `nonisolated` attribute means, which is all this engine
+cares about (it consumes `DeclarationInfo.explicitIsolation`, already resolved past that
+syntactic question). So 6.0–6.1 sharing one rule set is also correct, not assumed.
+
+**Forward-looking flag, not yet actioned:** the same dataset shows SE-0518 (`~Sendable` for
+explicitly marking non-`Sendable` types) already implemented and tagged version 6.4 — ahead of
+the local toolchain (6.3). This is a concrete reason `Swift62RuleSet.upperBound` stops at `"6.3"`
+rather than being left open-ended: when `swift-version-watch.yml` eventually flags Swift 6.4,
+SE-0518 (and anything else tagged 6.4 by then) needs a real review for isolation-inference impact
+before deciding whether `upperBound` simply extends or a new rule set is needed — not a
+reflexive bump.
+
+**Methodology note:** `WebFetch`'s summarization of the raw `evolution.json` (800KB+) produced
+confidently wrong answers here (claimed no proposals were tagged "6.3" at all) on a first pass.
+For anything requiring an exact/complete answer against a large structured dataset, download it
+and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize tool's read of it.
+
 ## Rule checklist
 
 | # | Rule | Source | Test(s) | Empirically verified |
