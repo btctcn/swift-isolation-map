@@ -33,6 +33,31 @@ unedited compiler output.
 
 A hybrid of `IndexStoreDB` (semantic call graph, resolved through protocols/generics) and `SwiftSyntax` (lexical isolation attributes), combined by a version-aware inference engine. See the architecture notes in this repository for full technical detail.
 
+## Building and running (development)
+
+The core analysis engine isn't implemented yet (see [Roadmap](#roadmap)) — right now this builds and runs a CLI skeleton that parses its arguments and prints `not yet implemented`. Useful for verifying your toolchain and for contributing.
+
+### 1. From the terminal
+
+```
+swift build              # debug build
+swift build -c release   # release build
+swift test                # run the test suite
+swift run swift-isolation-map --help
+```
+
+### 2. From Xcode
+
+This is a plain Swift package — there's no `.xcodeproj` checked into the repo, and none is needed. Xcode opens `Package.swift` directly as a SwiftPM project:
+
+```
+xed .
+```
+
+or from Xcode itself: **File → Open…**, then select the repository folder (or `Package.swift` inside it) — not a `.xcodeproj`, there isn't one.
+
+Xcode indexes the package and creates a scheme per target automatically. Pick the `swift-isolation-map` scheme to build/run the CLI, or a `*Tests` scheme to run a specific test target. Since this is a command-line tool, pass arguments via **Product → Scheme → Edit Scheme… → Run → Arguments Passed On Launch** (e.g. `./SomeProject.xcodeproj --scheme SomeScheme`) before hitting Run — otherwise it runs with no arguments and just prints the usage error.
+
 ## Guiding principle
 
 A tool that gives an incorrect concurrency-safety result is worse than no tool at all. Every isolation-inference rule is expected to ship with an explicit test referencing the exact compiler behavior it verifies, and the tool will refuse to run rather than silently produce a result it isn't confident in (stale index store, unrecognized Swift version).
