@@ -10,11 +10,18 @@ with `swiftc`) is mandatory for any rule marked "inherited" below — see
 
 1. Explicit isolation attribute on the declaration itself (`explicitIsolation`), or the fact
    that the declaration *is* an actor type (`isActorType`).
-2. Isolation inherited from a containing type, superclass, or protocol conformance — resolved
-   recursively, so a container that itself only reaches isolation via rule 3 still propagates.
-3. The rule set's module-level default isolation (SE-0466) — only reached if nothing in 1-2
-   applied, and only for declarations `isEligibleForModuleDefaultIsolation`.
-4. `.nonisolated` fallback.
+2. A global actor attribute on the *enclosing extension* the declaration is physically inside
+   (`enclosingExtensionIsolation`) — SE-0316's second, independent propagation rule. Wins over
+   the containing type's own propagation, but not over rule 1.
+3. Isolation inherited from a containing type, superclass, or protocol conformance — resolved
+   recursively, so a container that itself only reaches isolation via rule 4 still propagates.
+   Nested types (`isNestedType`) are excluded from the containing-type-propagation part of this
+   tier entirely — see Gap C2 below.
+4. The rule set's module-level default isolation (SE-0466) — only reached if nothing in 1-3
+   applied, and only for declarations `isEligibleForModuleDefaultIsolation`. For a nested type,
+   that eligibility is computed dynamically from the enclosing type's own resolved isolation
+   rather than read as a flat fact — see Gap C2.
+5. `.nonisolated` fallback.
 
 **This reorders the architecture spec's original 4-tier list** ("explicit → containing type →
 default → protocol conformance"). SE-0466's own exclusion list rules out default-isolation for
@@ -107,16 +114,24 @@ and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize too
 | 11 | Swift 6.2+ with `-default-isolation MainActor`: eligible declarations default to `@MainActor` | SE-0466 detailed design: "declarations are inferred to be `@MainActor`-isolated by default" | `swift62DefaultsToMainActorWhenConfigured` | Yes — `02_default_isolation.swift` compiled with `-default-isolation MainActor` and an explicitly `nonisolated` caller: error "call to main actor-isolated instance method 'touch()'" |
 | 12 | Declarations excluded from default-isolation eligibility (enum cases, typealiases, accessors, actor-type members, `SendableMetatype`-conforming types, nested types in nonisolated types) stay `nonisolated` even when a module default is configured | SE-0466 detailed design exclusion list (quoted in full in the PR description / commit introducing this file) | `nonEligibleDeclarationIgnoresConfiguredDefault` | Not yet — `isEligibleForModuleDefaultIsolation` is currently caller-supplied per fixture; computing it automatically from real declaration shape is Priority 2 work once SwiftSyntax/IndexStoreDB data is wired in |
 | 13 | An unreviewed/future Swift version has no matching rule set — the tool must say so explicitly, never silently reuse the nearest known rule set | Architecture spec section 2.8 | `unsupportedFutureVersionThrows` | N/A (governance behavior, not compiler semantics) |
+| 14 | A global actor attribute on an *extension* isolates only that extension's members, independent of the primary type's own propagation | SE-0316: "An extension declared with a global actor attribute propagates the attribute to all the members of the extension by default" | `extensionAttributeIsolatesOnlyItsOwnMembers` | Yes — `05_explicit_member_beats_extension.swift` (see below) |
+| 15 | An explicit attribute directly on a member still wins over its enclosing extension's attribute | General model — rule 1 outranks rule 2 | `explicitMemberAttributeBeatsEnclosingExtension` | Yes — same fixture: `explicitlyNonisolated()` compiles with no error, `implicitlyMainActor()` errors |
+| 16 | An enclosing extension's attribute wins over the primary type's own global actor propagation | SE-0316's two propagation rules are independent; rule 2 outranks rule 3 | `enclosingExtensionOverridesTypePropagation` | Not yet — the reverse direction (extension explicitly `nonisolated` on an otherwise `@MainActor` type) hasn't been independently compiled; only the `@MainActor`-extension-on-plain-type direction was |
+| 17 | A nested type does **not** inherit isolation via containing-type propagation the way an instance/static member would — confirmed for both `actor` and global-actor-class containers | SE-0316's type→members propagation does not extend to nested type declarations (not itself stated as a proposal quote — established by empirical contrast against rules 3/5) | `nestedTypeInsideActorDoesNotInheritActorIsolation`, `nestedTypeInsideGlobalActorClassDoesNotInheritViaPropagation` | Yes — `06_nested_type_inside_actor.swift` (no diagnostic) and `09_nested_type_default_gate_v2.swift` (see rule 18, same fixture covers both) |
+| 18 | A nested type **is** eligible for the module default when its enclosing type's own resolved isolation is not `nonisolated` — via the default tier, not inheritance — and stays nonisolated when the enclosing type is nonisolated, even with a default configured | SE-0466 detailed design: "declarations that are types nested within a nonisolated type" are excluded from default-isolation; its own worked example shows a nested type inside a non-nonisolated enclosing type picking up the default | `nestedTypeUsesModuleDefaultWhenEnclosingTypeIsIsolated`, `nestedTypeStaysNonisolatedWhenEnclosingTypeIsNonisolated` | Yes — `09_nested_type_default_gate_v2.swift` compiled with `-default-isolation MainActor`: `Outer.Nested` errors, `NonisolatedOuter.Nested` doesn't |
+| 19 | A nested type's own superclass/protocol-conformance-based isolation still applies — nesting only skips the containing-type-propagation part of tier 3, not the type's own hierarchy | Consequence of rules 3 and 17 both being real, independently — not itself a separate SE citation | `nestedTypeStillInheritsFromItsOwnSuperclass` | Not yet — fixture-only; a real nested-class-with-an-isolated-superclass compile is a good follow-up |
 
 ## Empirical validation
 
 Per the architecture spec's sourcing hierarchy (section 1.5.1, step 5 — "empirical testing
 against the real compiler ... mandatory, not optional"), the reproduction snippets that back
 the "Empirically verified" column above were compiled for real with `swiftc -swift-version 6`
-(Swift 6.3, `swiftlang-6.3.0.123.5`) during development of this rule set. Reproduction `.swift`
-files are throwaway diagnostic captures (like the `docs/motivation.md` reproductions) and were
-not added to the repository — the rule-by-rule wording above is the durable record of what was
-verified and how.
+(Swift 6.3, `swiftlang-6.3.0.123.5`) during development of this rule set — files `01`-`04` during
+the original Priority 1 slice, `05`-`09` while implementing Gap C1/C2 (extension override,
+nested types), on top of the sourcing already done in Gap C's research pass (see below).
+Reproduction `.swift` files are throwaway diagnostic captures (like the `docs/motivation.md`
+reproductions) and were not added to the repository — the rule-by-rule wording above is the
+durable record of what was verified and how.
 
 ## Known gaps and plan
 
@@ -162,25 +177,29 @@ layer must implement this classifier against the SE-0466 exclusion list already 
 document, and should add the golden-file/fixture tests for it at that point (real declarations
 of each excluded kind, compiled and checked against `expected-graph.json`, per the testing
 strategy in section 4 of the architecture spec) — not as fixture-only unit tests like today's.
-**See also [Gap C2](#c2--nested-types-needs-a-model-change)**: nested types add a requirement to
-this same classifier that isn't obvious from the exclusion list alone — eligibility for a nested
+**See also [Gap C2](#c2--nested-types-implemented)**: nested types added a requirement to this
+same classifier that wasn't obvious from the exclusion list alone — eligibility for a nested
 type depends on the *enclosing type's own resolved isolation*, not just static facts about the
-nested declaration itself.
+nested declaration itself. The engine-side gating logic for this is now implemented (see C2
+below); what's still missing is the real classifier this gap describes actually *computing*
+`isNestedType`/`isEligibleForModuleDefaultIsolation`/`enclosingExtensionIsolation` from
+SwiftSyntax/IndexStoreDB data — the fixture inputs are correct by construction, the derivation
+from real source isn't built.
 
-### Gap C — `@preconcurrency`, extension isolation override, nested types unmodeled
+### Gap C — `@preconcurrency`, extension isolation override, nested types
 
 **What's missing:** three additional Swift concurrency nuances listed as required test coverage
-in the architecture spec's testing section (section 4). **Research is now complete for all
-three** (evolution proposal → compiler source → empirical `swiftc` compilation, per section
-1.5.1) — findings below. No `DeclarationInfo` fields or resolution logic exist for any of them
-yet; two of the three turn out to need real engine changes, one turns out to be correctly out of
-scope for this engine.
+in the architecture spec's testing section (section 4). Research is complete for all three
+(evolution proposal → compiler source → empirical `swiftc` compilation, per section 1.5.1), and
+**C1 and C2 are now implemented** (new `DeclarationInfo` fields, new resolution logic, unit
+tests, additional empirical verification of the interactions the research pass didn't cover) —
+C3 needed no engine change, confirmed correctly out of scope below.
 
 Reproduction snippets for all three were compiled for real with `swiftc -swift-version 6` (Swift
 6.3, `swiftlang-6.3.0.123.5`) and, per this document's existing convention, kept as throwaway
 files outside the repository — the findings below are the durable record.
 
-#### C1 — Extension isolation override (needs a model change)
+#### C1 — Extension isolation override (implemented)
 
 **The "may already work for free" possibility this section previously raised turned out to be
 wrong.** SE-0316's detailed design has two separate propagation rules, not one:
@@ -201,17 +220,25 @@ compiled with no isolation error; the extension method produced `error: call to 
 actor-isolated instance method ... in a synchronous nonisolated context`. The two propagation
 rules act independently, exactly as SE-0316 states.
 
-**Why this isn't free:** `resolveInheritedIsolation` in `IsolationInferenceEngine.swift` only
-reads `DeclarationInfo.containingTypeUSR`, `superclassUSR`, and `conformances` — there is no
-field anywhere that captures "the global actor attribute declared on the extension this member is
-physically inside." `DeclarationInfo` cannot express this input today.
+**Additional interactions verified while implementing** (not covered by the research pass above):
+- `05_explicit_member_beats_extension.swift`: a `nonisolated` method directly inside a
+  `@MainActor extension` compiled with no error, while a sibling method with no explicit
+  attribute in the same extension errored — confirms rule 1 (explicit-on-declaration) still
+  outranks rule 2 (enclosing extension), not just rule 2 outranking rule 3.
+- The reverse interaction — an explicitly `nonisolated extension` of an otherwise `@MainActor`
+  type — was exercised only in the fixture model (`enclosingExtensionOverridesTypePropagation`),
+  not independently compiled. Left as an explicit note in the rule checklist (rule 16) rather
+  than silently assumed symmetric with the confirmed direction.
 
-**Required model change:** a new `DeclarationInfo` field (e.g. `enclosingExtensionIsolation:
-IsolationKind?`), consumed by a new resolution step between tier 1 (explicit-on-declaration) and
-tier 2 (inherited-from-containing-type) — the extension's attribute wins over the type's, but an
-explicit attribute directly on the member still wins over both.
+**Implemented as:** a new `DeclarationInfo` field, `enclosingExtensionIsolation: IsolationKind?`,
+consumed by a new resolution tier in `IsolationInferenceEngine.swift` between tier 1
+(explicit-on-declaration) and tier 3 (inherited-from-containing-type) — the extension's attribute
+wins over the type's propagation, but an explicit attribute directly on the member still wins
+over both. Tests: `extensionAttributeIsolatesOnlyItsOwnMembers`,
+`explicitMemberAttributeBeatsEnclosingExtension`, `enclosingExtensionOverridesTypePropagation`
+(`Tests/IsolationCoreTests/ExtensionAndNestedTypeIsolationTests.swift`).
 
-#### C2 — Nested types (needs a model change)
+#### C2 — Nested types (implemented)
 
 **Nested types are a distinct category, not "a member that happens to be a type" — confirmed by
 two independent, opposite-direction empirical results.**
@@ -235,28 +262,50 @@ two independent, opposite-direction empirical results.**
    MainActor`; the same nested type inside an explicitly `nonisolated` enclosing type stayed
    nonisolated even with the flag on.
 
-**Why this isn't just missing, it's a bug waiting to happen:** if a nested type were modeled
-today the obvious way — pointing `containingTypeUSR` at its enclosing type, like any other member
-— `resolveInheritedIsolation`'s `if case .globalActor = containingIsolation { return
-containingIsolation }` branch (`IsolationInferenceEngine.swift`, tier 2) would **incorrectly**
-propagate the enclosing type's global actor to it, directly contradicting empirical result 1
-above. The naive way to wire nested types into the existing shape produces a wrong answer, not
-just an incomplete one.
+**This was correctly flagged as a bug-in-waiting, not just a gap:** the naive way to wire nested
+types into the pre-existing shape — pointing `containingTypeUSR` at the enclosing type like any
+other member — would have made `resolveInheritedIsolation`'s containing-type-propagation branch
+incorrectly inherit the enclosing type's global actor, directly contradicting empirical result 1
+above.
 
-**Required model change:** `DeclarationInfo` needs an explicit `isNestedType` (or equivalent)
-distinction so nested types are excluded from the tier-2 containing-type-propagation branch
-entirely, and rely solely on tier 3 (module default), gated by the enclosing type's own resolved
-isolation rather than a flat per-declaration bool.
+**Additional interaction verified while implementing** (not covered by the research pass above):
+`06_nested_type_inside_actor.swift` — a `struct` nested inside an `actor` (not just the `@MainActor
+class` case the research pass covered) also does not inherit actor isolation: mutating and
+reading it from a `nonisolated` context compiled with no error. Confirms the "nested types don't
+participate in containing-type propagation" finding generalizes across both isolation sources
+(SE-0306 actor-instance isolation and SE-0316 global-actor propagation), not just the one case
+originally tested.
+
+**Implemented as:** `DeclarationInfo` gained an `isNestedType: Bool` field. In
+`IsolationInferenceEngine.swift`, `resolveInheritedIsolation` now skips the containing-type
+propagation check entirely when `isNestedType` is true (superclass and protocol-conformance
+checks still apply — those are the nested type's own hierarchy, unrelated to nesting), and a new
+`resolveDefaultIsolation` method computes tier-4 eligibility for nested types dynamically:
+recursively resolves the enclosing type's own isolation and only applies the rule set's default
+if that resolution is not `.nonisolated`, rather than trusting a flat
+`isEligibleForModuleDefaultIsolation` bool the way every other declaration kind does. Verified
+with `09_nested_type_default_gate_v2.swift` (compiled with `-default-isolation MainActor`): a
+nested class inside a plain, default-eligible outer class errors (inherits the default), while
+the same nested class inside an explicitly `nonisolated` outer class does not (gate correctly
+excludes it) — both directions in one real compile, confirming the mechanism is the default tier
+picking up the *rule set's* configured actor, not containing-type inheritance smuggled back in
+(also verified in the fixture tests using deliberately different actor names for the outer type's
+own isolation vs. the configured default, to rule out the two mechanisms being conflated). Tests:
+`nestedTypeInsideActorDoesNotInheritActorIsolation`,
+`nestedTypeInsideGlobalActorClassDoesNotInheritViaPropagation`,
+`nestedTypeUsesModuleDefaultWhenEnclosingTypeIsIsolated`,
+`nestedTypeStaysNonisolatedWhenEnclosingTypeIsNonisolated`,
+`nestedTypeStillInheritsFromItsOwnSuperclass` (last one fixture-only, not yet independently
+compiled — see rule 19 in the checklist above).
 
 **Cross-link to [Gap B](#gap-b--iseligibleformoduledefaultisolation-isnt-computed-from-real-data):**
-this is the same field, `isEligibleForModuleDefaultIsolation`, that Gap B already flags as
-fixture-only/not-computed-from-real-data. Gap B's classifier now has a concrete extra requirement
-discovered here: for a nested type, eligibility isn't a standalone fact about the declaration
-itself the way it is for enum cases/typealiases/accessors/`SendableMetatype` types — it depends on
-the *enclosing type's own resolved isolation*, which means the classifier needs read access to the
-engine's resolution of the enclosing type, not just static declaration-shape facts. Whoever builds
-Gap B's classifier should design for this from the start rather than retrofitting it after nested
-types are added.
+the *engine-side* gating logic for nested types is now implemented, but Gap B itself — actually
+computing `isNestedType`/`isEligibleForModuleDefaultIsolation`/`enclosingExtensionIsolation` from
+real SwiftSyntax/IndexStoreDB data rather than fixture input — remains blocked on Priority 2, as
+before. What changed is that Gap B's eventual classifier now has a concrete, documented
+requirement it must satisfy for nested types specifically: it needs read access to the engine's
+resolution of the enclosing type, not just static declaration-shape facts about the nested
+declaration itself.
 
 #### C3 — `@preconcurrency` (confirmed out of scope for this engine)
 
@@ -285,6 +334,11 @@ belongs to Priority 3 (risk-level/reporting: whether a cross-isolation edge is r
 error-equivalent or a downgraded warning), not Priority 1. No further action needed in this
 engine; revisit only when Priority 3's reporting/risk-annotation layer is designed.
 
-**Status:** research phase closed for all three. C1 and C2 are ready to be scoped as real
-implementation work (new `DeclarationInfo` fields + resolution branches + empirical-backed unit
-tests, same discipline as rules 1-13 above); C3 requires no further action in this engine.
+**Status:** C1 and C2 implemented (rules 14-19 in the checklist above, `DeclarationInfo` fields
+`enclosingExtensionIsolation`/`isNestedType`, new resolution logic in
+`IsolationInferenceEngine.swift`, tests in `Tests/IsolationCoreTests/ExtensionAndNestedTypeIsolationTests.swift`).
+C3 required no engine changes, confirmed rather than left as a hypothesis. Remaining open items
+from this pass: rule 16's reverse direction (explicit `nonisolated extension` overriding an
+otherwise-`@MainActor` type) and rule 19 (nested type inheriting from its own superclass) are
+fixture-tested but not yet independently compiled — smaller, lower-risk follow-ups in the same
+style as Gap A.
