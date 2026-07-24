@@ -44,22 +44,30 @@ public struct IndexStoreLocator {
         if fileSystem.directoryExists(at: explicitPath) {
             return .found(explicitPath)
         }
-        // SwiftPM's own indexing-while-building default (on by default, `--auto-index-store`)
-        // nests under a platform triple and build configuration this tool doesn't control:
-        // `.build/<triple>/<config>/index/store` -- confirmed by two independent, fully clean
-        // (`rm -rf .build`) rebuilds of this very project. An earlier, less careful check (during
-        // the Phase 0 spike) found an *additional* `.build/index-build/<triple>/<config>/index/store`
-        // path and assumed that was the real one -- wrong: that check ran against a `.build`
-        // directory with weeks of accumulated state from unrelated commands, and `index-build`
-        // turned out not to be reproducible from any plain `swift build`/`describe`/`test`
-        // invocation tried afterward. Corrected here; see docs/priority-2-phase-0-spike.md's
-        // amendment. Search rather than hardcode the triple/config, since both vary by machine/run.
-        guard fileSystem.directoryExists(at: packageDirectory.appendingPathComponent(".build")) else { return .missing }
-        let buildRoot = packageDirectory.appendingPathComponent(".build")
-        for tripleDirectory in (try? fileSystem.contentsOfDirectory(at: buildRoot)) ?? [] {
-            guard fileSystem.directoryExists(at: tripleDirectory) else { continue }
-            for configDirectory in (try? fileSystem.contentsOfDirectory(at: tripleDirectory)) ?? [] {
-                let candidate = configDirectory.appendingPathComponent("index/store")
+        // SwiftPM's indexing-while-building default (on by default, `--auto-index-store`) can
+        // land under *either* of two roots, depending on what actually triggered the build:
+        // - `.build/<triple>/<config>/index/store` -- from a plain command-line `swift build`.
+        // - `.build/index-build/<triple>/<config>/index/store` -- from Xcode building/indexing
+        //   the package (Xcode maintains its own separate "index build" plan for SPM packages
+        //   opened directly, distinct from a CLI `swift build` -- confirmed by finding
+        //   `.swiftpm/xcode/` present alongside a genuinely populated `index-build` root, both in
+        //   this project and in an unrelated real external package that had been opened in Xcode).
+        // Both roots verified present on real projects, not assumed. Rather than enumerating and
+        // guessing at the platform-triple directory name under each root (fragile: sweeps up
+        // unrelated siblings like `checkouts`/`artifacts`/`repositories`/`index-build` itself,
+        // and can produce a coincidentally-matching wrong path if one of those happens to align
+        // with the loop's expected nesting depth -- found the hard way while testing this against
+        // a real project, not a theoretical concern), this uses the `debug`/`release` symlinks
+        // SwiftPM itself always creates under each root as a triple-independent shortcut to the
+        // active build configuration's directory -- confirmed present (`.build/debug ->
+        // <triple>/debug`) on every real project checked. See docs/priority-2-phase-0-spike.md's
+        // second amendment for the full history of this correction.
+        for root in [
+            packageDirectory.appendingPathComponent(".build"),
+            packageDirectory.appendingPathComponent(".build/index-build")
+        ] {
+            for configuration in ["debug", "release"] {
+                let candidate = root.appendingPathComponent(configuration).appendingPathComponent("index/store")
                 if fileSystem.directoryExists(at: candidate) {
                     return .found(candidate)
                 }
