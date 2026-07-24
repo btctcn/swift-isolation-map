@@ -21,13 +21,33 @@ import IsolationCore
 /// conformance same-file/same-context flags (rules 7-8) are computed correctly for whatever is
 /// visible in this one file, and correctly come out negative for a conformance whose primary
 /// type definition isn't in this file at all -- exactly rule 7's negative case.
+/// The full per-file extraction output, including facts that are only meaningful once combined
+/// with *other* files' extractions -- specifically `protocolGlobalActorNames`, needed so a
+/// multi-file caller (Phase 3's `IndexStoreIntegration`) can backfill a conformance's
+/// `protocolGlobalActorName` when the conformed-to protocol is declared in a *different* file
+/// than the conforming type/witness (this file's own extraction alone can't know that; see
+/// docs/priority-2-phase-3-linking.md).
+public struct ExtractionResult: Equatable, Sendable {
+    public let declarations: [DeclarationInfo]
+    public let protocolGlobalActorNames: [String: String]
+
+    public init(declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String]) {
+        self.declarations = declarations
+        self.protocolGlobalActorNames = protocolGlobalActorNames
+    }
+}
+
 public enum DeclarationExtractor {
     public static func extract(source: String, fileName: String) -> [DeclarationInfo] {
+        extractWithContext(source: source, fileName: fileName).declarations
+    }
+
+    public static func extractWithContext(source: String, fileName: String) -> ExtractionResult {
         let tree = Parser.parse(source: source)
         let converter = SourceLocationConverter(fileName: fileName, tree: tree)
 
         let fileWideNames = FileWideNameCollector.collect(from: tree)
-        let (index, protocolGlobalActorNames) = TypeIndexBuilder.buildIndex(from: tree, fileWideNames: fileWideNames)
+        let (index, protocolGlobalActorNames) = TypeIndexBuilder.buildIndex(from: tree, fileWideNames: fileWideNames, fileName: fileName, converter: converter)
 
         let visitor = DeclarationVisitor(
             fileName: fileName,
@@ -37,7 +57,7 @@ public enum DeclarationExtractor {
             protocolGlobalActorNames: protocolGlobalActorNames
         )
         visitor.walk(tree)
-        return visitor.declarations
+        return ExtractionResult(declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames)
     }
 }
 
@@ -114,6 +134,11 @@ struct TypeIndexEntry {
     var conformedProtocolNames: Set<String> = []
     var containingTypeQualifiedName: String?
     var isNestedType = false
+    /// The *primary* (non-extension) declaration's name-token location -- never overwritten by
+    /// an extension's own location, since IndexStoreDB's definition location for a type points
+    /// at its primary declaration. `nil` if this file only contains an extension of the type,
+    /// never its primary declaration (rule 7's negative case).
+    var location: SymbolLocation?
 }
 
 enum TypeIndexBuilder {
@@ -121,21 +146,30 @@ enum TypeIndexBuilder {
     /// a protocol declared with a global actor attribute, e.g. `@MainActor protocol Refreshable`,
     /// qualifies conformance to it as isolation-relevant) -- needed so `ProtocolConformance`
     /// entries built later know which conformed-to names actually carry isolation meaning.
-    static func buildIndex(from tree: SourceFileSyntax, fileWideNames: FileWideNames) -> (index: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String]) {
-        let visitor = Visitor(fileWideNames: fileWideNames)
+    static func buildIndex(from tree: SourceFileSyntax, fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter) -> (index: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String]) {
+        let visitor = Visitor(fileWideNames: fileWideNames, fileName: fileName, converter: converter)
         visitor.walk(tree)
         return (visitor.index, visitor.protocolGlobalActorNames)
     }
 
     private final class Visitor: SyntaxVisitor {
         let fileWideNames: FileWideNames
+        let fileName: String
+        let converter: SourceLocationConverter
         var index: [String: TypeIndexEntry] = [:]
         var protocolGlobalActorNames: [String: String] = [:]
         private var path: [String] = []
 
-        init(fileWideNames: FileWideNames) {
+        init(fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter) {
             self.fileWideNames = fileWideNames
+            self.fileName = fileName
+            self.converter = converter
             super.init(viewMode: .sourceAccurate)
+        }
+
+        private func location(of nameToken: TokenSyntax) -> SymbolLocation {
+            let loc = converter.location(for: nameToken.positionAfterSkippingLeadingTrivia)
+            return SymbolLocation(file: fileName, line: loc.line, column: loc.column)
         }
 
         override func visit(_ node: ProtocolDeclSyntax) -> SyntaxVisitorContinueKind {
@@ -146,13 +180,14 @@ enum TypeIndexBuilder {
         }
 
         private func recordPrimaryDeclaration(
-            name: String,
+            nameToken: TokenSyntax,
             isActor: Bool,
             isClass: Bool,
             attributes: AttributeListSyntax,
             modifiers: DeclModifierListSyntax,
             inheritance: InheritanceClauseSyntax?
         ) {
+            let name = nameToken.text
             let qualifiedName = SyntacticIdentity.qualifiedName(path + [name])
             var entry = index[qualifiedName] ?? TypeIndexEntry()
             entry.isActor = isActor
@@ -161,6 +196,7 @@ enum TypeIndexBuilder {
             entry.isExplicitlyNonisolated = modifiers.contains { $0.name.text == "nonisolated" }
             entry.isNestedType = !path.isEmpty
             entry.containingTypeQualifiedName = path.isEmpty ? nil : SyntacticIdentity.qualifiedName(path)
+            entry.location = location(of: nameToken)
             applyInheritance(inheritance, isClass: isClass, to: &entry)
             index[qualifiedName] = entry
         }
@@ -185,28 +221,28 @@ enum TypeIndexBuilder {
         }
 
         override func visit(_ node: ActorDeclSyntax) -> SyntaxVisitorContinueKind {
-            recordPrimaryDeclaration(name: node.name.text, isActor: true, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
+            recordPrimaryDeclaration(nameToken: node.name, isActor: true, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
             path.append(node.name.text)
             return .visitChildren
         }
         override func visitPost(_ node: ActorDeclSyntax) { path.removeLast() }
 
         override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
-            recordPrimaryDeclaration(name: node.name.text, isActor: false, isClass: true, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
+            recordPrimaryDeclaration(nameToken: node.name, isActor: false, isClass: true, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
             path.append(node.name.text)
             return .visitChildren
         }
         override func visitPost(_ node: ClassDeclSyntax) { path.removeLast() }
 
         override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
-            recordPrimaryDeclaration(name: node.name.text, isActor: false, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
+            recordPrimaryDeclaration(nameToken: node.name, isActor: false, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
             path.append(node.name.text)
             return .visitChildren
         }
         override func visitPost(_ node: StructDeclSyntax) { path.removeLast() }
 
         override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
-            recordPrimaryDeclaration(name: node.name.text, isActor: false, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
+            recordPrimaryDeclaration(nameToken: node.name, isActor: false, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
             path.append(node.name.text)
             return .visitChildren
         }
@@ -347,13 +383,15 @@ private final class DeclarationVisitor: SyntaxVisitor {
             conformances: conformances,
             isEligibleForModuleDefaultIsolation: isEligible,
             enclosingExtensionIsolation: nil,
-            isNestedType: entry.isNestedType
+            isNestedType: entry.isNestedType,
+            location: entry.location
         ))
     }
 
     private func emitMember(
         name: String,
         node: some SyntaxProtocol,
+        namePosition: AbsolutePosition,
         attributes: AttributeListSyntax,
         modifiers: DeclModifierListSyntax,
         kind: SyntacticDeclarationKind
@@ -361,6 +399,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
         let qualifiedTypeName = SyntacticIdentity.qualifiedName(path)
         let memberUSR = "syntactic:\(qualifiedTypeName).\(name)#\(offset(of: node))"
         let isMemberOfActorType = typeIndex[qualifiedTypeName]?.isActor ?? false
+        let sourceLocation = converter.location(for: namePosition)
+        let memberLocation = SymbolLocation(file: fileName, line: sourceLocation.line, column: sourceLocation.column)
 
         let conformances = currentBodyConformedProtocolNames.map { protocolName in
             ProtocolConformance(
@@ -388,7 +428,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
             conformances: conformances,
             isEligibleForModuleDefaultIsolation: isEligible,
             enclosingExtensionIsolation: currentEnclosingExtensionIsolation,
-            isNestedType: false
+            isNestedType: false,
+            location: memberLocation
         ))
     }
 
@@ -474,41 +515,41 @@ private final class DeclarationVisitor: SyntaxVisitor {
     // MARK: - Members
 
     override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
-        emitMember(name: node.name.text, node: node, attributes: node.attributes, modifiers: node.modifiers, kind: .function)
+        emitMember(name: node.name.text, node: node, namePosition: node.name.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .function)
         return .visitChildren
     }
 
     override func visit(_ node: InitializerDeclSyntax) -> SyntaxVisitorContinueKind {
-        emitMember(name: "init", node: node, attributes: node.attributes, modifiers: node.modifiers, kind: .initializerDecl)
+        emitMember(name: "init", node: node, namePosition: node.initKeyword.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .initializerDecl)
         return .visitChildren
     }
 
     override func visit(_ node: SubscriptDeclSyntax) -> SyntaxVisitorContinueKind {
-        emitMember(name: "subscript", node: node, attributes: node.attributes, modifiers: node.modifiers, kind: .subscriptDecl)
+        emitMember(name: "subscript", node: node, namePosition: node.subscriptKeyword.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .subscriptDecl)
         return .visitChildren
     }
 
     override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
         for binding in node.bindings {
             let name = binding.pattern.trimmedDescription
-            emitMember(name: name, node: binding, attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty)
+            emitMember(name: name, node: binding, namePosition: binding.pattern.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty)
         }
         return .visitChildren
     }
 
     override func visit(_ node: AccessorDeclSyntax) -> SyntaxVisitorContinueKind {
         let name = node.accessorSpecifier.text
-        emitMember(name: name, node: node, attributes: node.attributes, modifiers: [], kind: .accessor)
+        emitMember(name: name, node: node, namePosition: node.accessorSpecifier.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: [], kind: .accessor)
         return .visitChildren
     }
 
     override func visit(_ node: EnumCaseElementSyntax) -> SyntaxVisitorContinueKind {
-        emitMember(name: node.name.text, node: node, attributes: [], modifiers: [], kind: .enumCase)
+        emitMember(name: node.name.text, node: node, namePosition: node.name.positionAfterSkippingLeadingTrivia, attributes: [], modifiers: [], kind: .enumCase)
         return .visitChildren
     }
 
     override func visit(_ node: TypeAliasDeclSyntax) -> SyntaxVisitorContinueKind {
-        emitMember(name: node.name.text, node: node, attributes: node.attributes, modifiers: node.modifiers, kind: .typealiasDecl)
+        emitMember(name: node.name.text, node: node, namePosition: node.name.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .typealiasDecl)
         return .visitChildren
     }
 }

@@ -23,6 +23,17 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// attribute, their own superclass/conformances, or the module default -- and eligibility
     /// for that default is gated by whether their enclosing type itself resolves to nonisolated.
     public let isNestedType: Bool
+    /// Where this declaration's name token sits in real source -- `nil` for fixture-only
+    /// `DeclarationInfo` values that were never extracted from a real file (every existing
+    /// fixture-based test predates this field, hence optional/defaulted, not a breaking change).
+    /// Populated by `SyntaxAnalysis.DeclarationExtractor`; consumed by
+    /// `IndexStoreIntegration`'s USR-linking layer to match this syntactic placeholder against
+    /// IndexStoreDB's real symbol occurrences for the same file. Confirmed empirically that
+    /// SwiftSyntax's `SourceLocation` (1-based line, 1-based UTF-8-byte column, measured at the
+    /// name token) and IndexStoreDB's `SymbolLocation` (`line`/`utf8Column`) use the *same*
+    /// convention and point at the *same* position for the same real symbol -- see
+    /// docs/priority-2-phase-3-linking.md.
+    public let location: SymbolLocation?
 
     public init(
         usr: String,
@@ -35,7 +46,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         conformances: [ProtocolConformance] = [],
         isEligibleForModuleDefaultIsolation: Bool = true,
         enclosingExtensionIsolation: IsolationKind? = nil,
-        isNestedType: Bool = false
+        isNestedType: Bool = false,
+        location: SymbolLocation? = nil
     ) {
         self.usr = usr
         self.name = name
@@ -48,6 +60,7 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.isEligibleForModuleDefaultIsolation = isEligibleForModuleDefaultIsolation
         self.enclosingExtensionIsolation = enclosingExtensionIsolation
         self.isNestedType = isNestedType
+        self.location = location
     }
 }
 
