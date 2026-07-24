@@ -41,7 +41,11 @@ public struct SPMResolvedScheme: SchemeLike, Equatable, Sendable {
     }
 }
 
+/// Pre-existing scaffold bug fixed here (Priority 2 Phase 2a): this protocol originally hardcoded
+/// `XcodeScheme` as its return type, even though `SPMResolvedScheme` -- a distinct, non-`XcodeScheme`
+/// conformer of `SchemeLike` -- already existed in this same file. `SwiftPMSchemeResolver` couldn't
+/// have implemented this protocol as originally typed; `any SchemeLike` is the correct shared type.
 public protocol SchemeResolver {
-    func discoverSchemes(in container: ProjectContainer) throws -> [XcodeScheme]
-    func resolve(named: String, in container: ProjectContainer) throws -> XcodeScheme
+    func discoverSchemes(in container: ProjectContainer) throws -> [any SchemeLike]
+    func resolve(named: String, in container: ProjectContainer) throws -> any SchemeLike
 }

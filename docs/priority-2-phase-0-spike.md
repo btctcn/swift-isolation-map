@@ -109,9 +109,43 @@ Verified against the local toolchain (Apple Swift 6.3, swiftlang-6.3.0.123.5) an
 - `swift build --index-store-path <path>` **does not exist** as a top-level flag anymore.
   `swift build --help` shows only `--auto-index-store`/`--enable-index-store`/
   `--disable-index-store` (no path argument) — indexing-while-building is **on by default**.
-- The real default SPM index store location is
-  `.build/index-build/<triple>/<config>/index/store` (confirmed by building this project itself
-  and inspecting `.build/`), not `.build/index-store` as the doc states.
+- The real default SPM index store location is `.build/<triple>/<config>/index/store` (e.g.
+  `.build/arm64-apple-macosx/debug/index/store`), not `.build/index-store` as the doc states.
+  **Amendment (Phase 2, 2026-07-24):** this entry originally claimed
+  `.build/index-build/<triple>/<config>/index/store` — wrong. That check ran against a `.build`
+  directory with weeks of accumulated build/tooling state, not a clean one, and the extra
+  `index-build` path component wasn't reproducible from any plain `swift build`/`swift package
+  describe`/`swift test` invocation tried during Phase 2's `IndexStoreLocator` work. Two
+  independent, fully clean (`rm -rf .build`) rebuilds of this project both produced only
+  `.build/<triple>/<config>/index/store`, with no `index-build` component at all — corrected here
+  and in `Sources/ProjectResolution/IndexStoreLocator.swift`. Left the original wrong claim struck
+  through in spirit rather than deleted, since silently editing a "verified" claim without saying
+  so would undercut the point of keeping this record at all.
+  **Second amendment (Phase 2, same day, found testing against real external projects):** the
+  amendment above was itself incomplete, not wrong exactly but drawing the wrong conclusion from a
+  real observation. The user asked for `IndexStoreLocator` to be tried against real projects
+  (`/Users/ab/SQLumen`, `/Users/ab/ios`, and a real external SPM package at
+  `/Users/ab/temp/importformatter`) — the `importformatter` package genuinely had a populated
+  `.build/index-build/<triple>/<config>/index/store`, and so, on inspection, did this very
+  project's own `.build`. Both had a `.swiftpm/xcode/package.xcworkspace` present — i.e. both had
+  been **opened directly in Xcode** at some point, not just built via command-line `swift build`.
+  That's the actual explanation: Xcode maintains its own separate "index build" plan for an SPM
+  package opened this way, distinct from (and in addition to) a CLI `swift build`'s own default
+  location — the two coexist rather than one being "the real one." The first amendment's clean
+  `rm -rf .build && swift build` rebuilds were genuinely clean **for the CLI-triggered path only**
+  — they never exercised the Xcode-triggered path at all, so "not reproducible from any plain
+  `swift build`/`describe`/`test` invocation" was true but not the relevant test. Corrected again
+  in `IndexStoreLocator.swift`, which now checks both roots.
+  A related, second bug surfaced by the same real-project testing and fixed in the same pass:
+  the original fallback search enumerated *all* children of `.build` as if they were platform
+  triples (to avoid hardcoding the triple name) — this swept up unrelated siblings like
+  `checkouts`/`artifacts`/`repositories`/`index-build` itself, and on `importformatter` produced a
+  coincidentally-matching but structurally-wrong "found" path (`.build/index-build/debug/index/store`,
+  missing the real triple component, only "working" because `index-build`'s own `debug` symlink
+  happened to align with the search loop's fixed nesting depth by chance). Replaced with directly
+  checking the `debug`/`release` symlinks SwiftPM itself always creates under each root
+  (`.build/debug -> <triple>/debug`) — confirmed present on every real project checked, no triple
+  enumeration/guessing needed at all.
 - An explicit path is still achievable via raw compiler flag passthrough — the form actually used
   by this spike, and verified working:
   ```

@@ -24,7 +24,10 @@ let package = Package(
             ]
         ),
         .target(name: "IsolationCore"),
-        .target(name: "ProjectResolution"),
+        .target(
+            name: "ProjectResolution",
+            dependencies: ["IsolationCore", "SyntaxAnalysis"]
+        ),
         .target(name: "OutputFormat"),
         .target(
             name: "SyntaxAnalysis",
