@@ -109,9 +109,18 @@ Verified against the local toolchain (Apple Swift 6.3, swiftlang-6.3.0.123.5) an
 - `swift build --index-store-path <path>` **does not exist** as a top-level flag anymore.
   `swift build --help` shows only `--auto-index-store`/`--enable-index-store`/
   `--disable-index-store` (no path argument) — indexing-while-building is **on by default**.
-- The real default SPM index store location is
-  `.build/index-build/<triple>/<config>/index/store` (confirmed by building this project itself
-  and inspecting `.build/`), not `.build/index-store` as the doc states.
+- The real default SPM index store location is `.build/<triple>/<config>/index/store` (e.g.
+  `.build/arm64-apple-macosx/debug/index/store`), not `.build/index-store` as the doc states.
+  **Amendment (Phase 2, 2026-07-24):** this entry originally claimed
+  `.build/index-build/<triple>/<config>/index/store` — wrong. That check ran against a `.build`
+  directory with weeks of accumulated build/tooling state, not a clean one, and the extra
+  `index-build` path component wasn't reproducible from any plain `swift build`/`swift package
+  describe`/`swift test` invocation tried during Phase 2's `IndexStoreLocator` work. Two
+  independent, fully clean (`rm -rf .build`) rebuilds of this project both produced only
+  `.build/<triple>/<config>/index/store`, with no `index-build` component at all — corrected here
+  and in `Sources/ProjectResolution/IndexStoreLocator.swift`. Left the original wrong claim struck
+  through in spirit rather than deleted, since silently editing a "verified" claim without saying
+  so would undercut the point of keeping this record at all.
 - An explicit path is still achievable via raw compiler flag passthrough — the form actually used
   by this spike, and verified working:
   ```
