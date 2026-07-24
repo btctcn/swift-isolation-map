@@ -137,8 +137,9 @@ durable record of what was verified and how.
 ## Known gaps and plan
 
 Three gaps, three different situations — not the same kind of "TODO." Ordered here by how
-soon each was actually closable, not by severity. Gap A and Gap C are both closed in full; Gap B
-remains open, the one genuine structural blocker of the three.
+soon each was actually closable, not by severity. Gap A and Gap C are closed in full; Gap B is
+closed for the syntactic half (Priority 2 Phase 1) — what remains is cross-file semantic
+resolution, which is Priority 2 Phase 3's job by design, not an open blocker on this gap anymore.
 
 ### Gap A — Rule 8 has no dedicated empirical fixture (closed)
 
@@ -157,33 +158,55 @@ declared in `Extension.swift`, same extension as the conformance) errored with "
 isolation inferred from conformance to protocol 'Refreshable'" — rule 8's positive case,
 confirmed independently of rule 7's outcome, exactly as SE-0316 describes.
 
-### Gap B — `isEligibleForModuleDefaultIsolation` isn't computed from real data
+### Gap B — `isEligibleForModuleDefaultIsolation` computed from real data (closed, syntactic half)
 
-**What's missing:** this `DeclarationInfo` field (rule 12's SE-0466 exclusion list — enum
+**What was missing:** this `DeclarationInfo` field (rule 12's SE-0466 exclusion list — enum
 cases, typealiases, accessors, `SendableMetatype`-conforming types, nested types in nonisolated
-types) is currently a caller-supplied fixture input, correct by construction in tests but with
-no code anywhere that derives it from an actual declaration.
+types), plus `isNestedType` and `enclosingExtensionIsolation` (added by Gap C1/C2), were all
+caller-supplied fixture input — correct by construction in tests, but with no code anywhere that
+derived them from an actual declaration.
 
-**Why it's open:** genuine structural blocker, not a scope call. Deriving this requires
-classifying real declarations by kind and conformance — that's SwiftSyntax/IndexStoreDB data,
-which doesn't exist in this codebase yet (Priority 2 hasn't started; the CLI is still a stub).
-Writing this classifier against nothing would mean guessing at a shape that Priority 2 would
-likely have to redo anyway.
+**Closed for the syntactic half**, in Priority 2 Phase 1: `Sources/SyntaxAnalysis/DeclarationExtractor.swift`
+walks a real parsed `SourceFileSyntax` (via `swift-syntax`'s `SyntaxVisitor`) and derives every
+field of `DeclarationInfo` that's knowable from syntax alone within a single file, including a
+real implementation of the eligibility classifier
+(`Sources/SyntaxAnalysis/ModuleDefaultIsolationEligibility.swift`) against the exclusion-list
+kinds that are genuinely local per-declaration facts (typealias, enum case, accessor, actor-type
+member, direct `SendableMetatype`/`Sendable` conformance). The nested-type-in-nonisolated-type
+exclusion is **not** duplicated in that classifier — it already lives correctly in
+`IsolationInferenceEngine.resolveDefaultIsolation` (Gap C2's engine-side gating, computed
+dynamically from the enclosing type's resolved isolation, not a static fact); the extractor only
+needs to set `isNestedType` correctly and let the engine do the rest, which it now does.
 
-**Plan:** not closable now. Tracked here as a concrete requirement *for* Priority 2's kickoff,
-not left implicit: whoever builds the SwiftSyntax/IndexStoreDB → `DeclarationInfo` translation
-layer must implement this classifier against the SE-0466 exclusion list already quoted in this
-document, and should add the golden-file/fixture tests for it at that point (real declarations
-of each excluded kind, compiled and checked against `expected-graph.json`, per the testing
-strategy in section 4 of the architecture spec) — not as fixture-only unit tests like today's.
-**See also [Gap C2](#c2--nested-types-implemented)**: nested types added a requirement to this
-same classifier that wasn't obvious from the exclusion list alone — eligibility for a nested
-type depends on the *enclosing type's own resolved isolation*, not just static facts about the
-nested declaration itself. The engine-side gating logic for this is now implemented (see C2
-below); what's still missing is the real classifier this gap describes actually *computing*
-`isNestedType`/`isEligibleForModuleDefaultIsolation`/`enclosingExtensionIsolation` from
-SwiftSyntax/IndexStoreDB data — the fixture inputs are correct by construction, the derivation
-from real source isn't built.
+25 new tests in `Tests/SyntaxAnalysisTests/DeclarationExtractorTests.swift`, including two
+capstone tests that feed real extracted declarations into the **unmodified** `IsolationInferenceEngine`
+and assert on the final resolved `IsolationKind` — proving Phase 1's producer output actually
+composes with Priority 1's already-trusted consumer, not just that the two independently look
+plausible. 58/58 tests passing project-wide (33 prior + 25 new).
+
+**What's still open, and why it's a different kind of gap than before:**
+- **Cross-file resolution is Priority 2 Phase 3's job, not this extractor's.** The extractor
+  operates on one file at a time and produces **syntactic placeholder** identifiers
+  (`"syntactic:<name>"`), not real USRs — documented explicitly in the extractor's own top-level
+  doc comment. Within one file this is fully correct (including rule 7's negative case: a
+  conformance whose primary type definition isn't in the same file correctly does *not* trigger
+  whole-type inference, because the extractor only ever sees what's physically in front of it).
+  Reconciling declarations that genuinely span multiple files needs real USRs from IndexStoreDB,
+  which is Phase 3.
+- **Superclass-vs-protocol disambiguation is a documented syntactic heuristic, not semantic
+  resolution.** An inheritance clause's first entry is treated as a superclass candidate only for
+  `class` declarations, and only when this file doesn't already know (from a file-wide protocol
+  name pre-pass) that the name is actually a protocol. A superclass declared in a different file,
+  or an external framework type whose kind can't be determined syntactically, can't be
+  disambiguated this way — resolved for real once Phase 3 links against real semantic data.
+- **Transitive `SendableMetatype` conformance** (a custom protocol that itself refines
+  `SendableMetatype` without saying so by name) isn't detected — only a literal, direct
+  `SendableMetatype`/`Sendable` conformance is. Needs real protocol-hierarchy resolution, not
+  available from syntax alone.
+
+None of these are the kind of "genuine structural blocker" the pre-Phase-1 version of this gap
+described — they're documented, intentional syntactic-analysis limitations with a clear resolver
+(Phase 3's semantic linking), not missing groundwork.
 
 ### Gap C — `@preconcurrency`, extension isolation override, nested types
 
@@ -301,14 +324,15 @@ own isolation vs. the configured default, to rule out the two mechanisms being c
 `Outer` still errors calling a method inherited from its own `@MainActor` superclass, confirming
 the inheritance is genuinely about the nested type's own class hierarchy, unrelated to nesting.
 
-**Cross-link to [Gap B](#gap-b--iseligibleformoduledefaultisolation-isnt-computed-from-real-data):**
-the *engine-side* gating logic for nested types is now implemented, but Gap B itself — actually
-computing `isNestedType`/`isEligibleForModuleDefaultIsolation`/`enclosingExtensionIsolation` from
-real SwiftSyntax/IndexStoreDB data rather than fixture input — remains blocked on Priority 2, as
-before. What changed is that Gap B's eventual classifier now has a concrete, documented
-requirement it must satisfy for nested types specifically: it needs read access to the engine's
-resolution of the enclosing type, not just static declaration-shape facts about the nested
-declaration itself.
+**Cross-link to [Gap B](#gap-b--iseligibleformoduledefaultisolation-computed-from-real-data-closed-syntactic-half):**
+both halves are now real: the *engine-side* gating logic for nested types (this section) and the
+*syntactic* derivation of `isNestedType`/`enclosingExtensionIsolation`/base
+`isEligibleForModuleDefaultIsolation` from real source (Gap B, Priority 2 Phase 1) are both
+implemented and tested. What Gap B's write-up flagged as a requirement here — the classifier
+needing read access to the enclosing type's resolved isolation, not just static per-declaration
+facts — turned out to belong entirely to the engine (which already had that access via its own
+recursive resolution), not to the syntactic extractor; the extractor only needed to set
+`isNestedType` correctly and stay out of the way.
 
 #### C3 — `@preconcurrency` (confirmed out of scope for this engine)
 

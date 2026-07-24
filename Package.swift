@@ -10,7 +10,8 @@ let package = Package(
         .executable(name: "swift-isolation-map", targets: ["swift-isolation-map"])
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0")
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.2")
     ],
     targets: [
         .executableTarget(
@@ -25,6 +26,14 @@ let package = Package(
         .target(name: "IsolationCore"),
         .target(name: "ProjectResolution"),
         .target(name: "OutputFormat"),
+        .target(
+            name: "SyntaxAnalysis",
+            dependencies: [
+                "IsolationCore",
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftParser", package: "swift-syntax")
+            ]
+        ),
         .testTarget(
             name: "IsolationCoreTests",
             dependencies: ["IsolationCore"]
@@ -32,6 +41,10 @@ let package = Package(
         .testTarget(
             name: "ProjectResolutionTests",
             dependencies: ["ProjectResolution"]
+        ),
+        .testTarget(
+            name: "SyntaxAnalysisTests",
+            dependencies: ["SyntaxAnalysis", "IsolationCore"]
         )
     ]
 )
