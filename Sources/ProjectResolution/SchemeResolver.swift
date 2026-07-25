@@ -33,11 +33,17 @@ public struct SPMResolvedScheme: SchemeLike, Equatable, Sendable {
     public let name: String
     public let buildTargets: [BuildTarget]
     public let sourcePaths: [String]
+    /// The package's declared `swift-tools-version` (e.g. `"6.0"`) -- the package's *language
+    /// mode* default, not necessarily the compiler/toolchain version that builds it (a package
+    /// can be built by a newer toolchain than its declared tools-version; Priority 2 Phase 4
+    /// combines this with the active toolchain's own version to pick the right `IsolationRuleSet`).
+    public let toolsVersion: String
 
-    public init(name: String, buildTargets: [BuildTarget], sourcePaths: [String]) {
+    public init(name: String, buildTargets: [BuildTarget], sourcePaths: [String], toolsVersion: String) {
         self.name = name
         self.buildTargets = buildTargets
         self.sourcePaths = sourcePaths
+        self.toolsVersion = toolsVersion
     }
 }
 

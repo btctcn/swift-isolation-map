@@ -25,6 +25,8 @@ let package = Package(
                 "IsolationCore",
                 "ProjectResolution",
                 "OutputFormat",
+                "SyntaxAnalysis",
+                "IndexStoreIntegration",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
@@ -65,6 +67,10 @@ let package = Package(
         .testTarget(
             name: "IndexStoreIntegrationTests",
             dependencies: ["IndexStoreIntegration"]
+        ),
+        .testTarget(
+            name: "swift-isolation-mapTests",
+            dependencies: ["swift-isolation-map"]
         )
     ]
 )

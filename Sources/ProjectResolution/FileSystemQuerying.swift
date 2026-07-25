@@ -9,6 +9,10 @@ public protocol FileSystemQuerying: Sendable {
     func directoryExists(at url: URL) -> Bool
     func contentsOfDirectory(at url: URL) throws -> [URL]
     func readData(at url: URL) throws -> Data
+    /// Added for Priority 2 Phase 4's `StalenessOrchestration`, which is the first thing in this
+    /// project that needs to persist a manifest, not just read/discover existing files -- every
+    /// prior phase's `FileSystemQuerying` usage was read-only.
+    func write(data: Data, to url: URL) throws
 }
 
 public struct LiveFileSystem: FileSystemQuerying {
@@ -32,5 +36,9 @@ public struct LiveFileSystem: FileSystemQuerying {
 
     public func readData(at url: URL) throws -> Data {
         try Data(contentsOf: url)
+    }
+
+    public func write(data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
     }
 }

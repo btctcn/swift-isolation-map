@@ -1,8 +1,9 @@
 import Foundation
 @testable import ProjectResolution
 
-/// Records invocations and returns a canned result per (executable, arguments) pair, or throws
-/// if none was registered -- keeps CLI-logic tests from ever shelling out for real.
+/// Same pattern as `ProjectResolutionTests/TestDoubles.swift`'s `FakeProcessRunner` -- kept as a
+/// separate copy rather than shared/exported, since `ProjectResolutionTests`'s copy is private to
+/// that test target (`@testable import` doesn't re-export test-target-only types).
 final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
     struct Invocation: Hashable {
         let executable: String
@@ -28,8 +29,9 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
     }
 }
 
-/// A tiny in-memory filesystem: directories and files are both just entries in a dictionary
-/// keyed by absolute path, distinguished by whether they carry `Data` or not.
+/// Same pattern as `ProjectResolutionTests/TestDoubles.swift`'s `FakeFileSystem` -- kept as a
+/// separate copy for the same reason as `FakeProcessRunner` above (test-target-only types aren't
+/// re-exported by `@testable import`).
 final class FakeFileSystem: FileSystemQuerying, @unchecked Sendable {
     private var files: [String: Data] = [:]
     private var directories: Set<String> = []

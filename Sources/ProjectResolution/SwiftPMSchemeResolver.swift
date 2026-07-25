@@ -3,14 +3,21 @@ import Foundation
 /// Decodes `swift package describe --type json`'s real output shape (verified empirically against
 /// this project's own package before writing this model -- see the commit introducing this file).
 /// Deliberately does not model every field SwiftPM emits (`dependencies`, `platforms`,
-/// `tools_version`, per-target `c99name`/`module_type`/`target_dependencies`/`product_memberships`,
+/// per-target `c99name`/`module_type`/`target_dependencies`/`product_memberships`,
 /// products' associated-value `type`) -- `Decodable` simply ignores keys with no matching property,
-/// and none of the omitted fields are needed for scheme/target resolution.
+/// and none of the omitted fields are needed for scheme/target resolution. `tools_version` *is*
+/// modeled -- needed by Priority 2 Phase 4 for Swift-version detection.
 struct SPMPackageDescription: Decodable {
     let name: String
     let path: String
     let products: [SPMProductDescription]
     let targets: [SPMTargetDescription]
+    let toolsVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case name, path, products, targets
+        case toolsVersion = "tools_version"
+    }
 }
 
 struct SPMProductDescription: Decodable {
@@ -90,7 +97,7 @@ public struct SwiftPMSchemeResolver: SchemeResolver {
                     packagePath.appendingPathComponent(target.path).appendingPathComponent($0).path
                 }
             }
-            return SPMResolvedScheme(name: name, buildTargets: buildTargets, sourcePaths: sourcePaths)
+            return SPMResolvedScheme(name: name, buildTargets: buildTargets, sourcePaths: sourcePaths, toolsVersion: description.toolsVersion)
         }
 
         let productSchemes = description.products.map { resolvedScheme(name: $0.name, targetNames: $0.targets) }
