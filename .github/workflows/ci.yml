@@ -14,4 +14,10 @@ jobs:
       - name: Build
         run: swift build
       - name: Test
-        run: swift test
+        # Release, not debug: once IndexStoreDB (Priority 2 Phase 3) is linked into the combined
+        # test bundle, the debug-configuration build of swiftpm-testing-helper reproducibly
+        # segfaults (signal 11, inside libswiftCore/the swift-testing runtime itself -- not in
+        # this project's own code, and not related to which tests actually run). Release is
+        # unaffected -- verified stable across repeated runs. See
+        # docs/priority-2-phase-3-linking.md for the full investigation.
+        run: swift test -c release

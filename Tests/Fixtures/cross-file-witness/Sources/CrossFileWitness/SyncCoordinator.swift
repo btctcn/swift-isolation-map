@@ -1,0 +1,3 @@
+class SyncCoordinator {
+    func unrelatedMethod() {}
+}
