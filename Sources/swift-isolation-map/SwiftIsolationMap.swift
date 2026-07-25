@@ -289,6 +289,13 @@ struct SwiftIsolationMap: ParsableCommand {
     /// form (`-Xswiftc -index-store-path -Xswiftc <path>`, not the architecture doc's originally
     /// assumed `swift build --index-store-path`, which no longer exists) was verified empirically
     /// in the Phase 0 spike; see docs/priority-2-phase-0-spike.md.
+    ///
+    /// Xcode's form was *also* wrong as originally assumed from the architecture doc: there is no
+    /// `-indexStoreEnable` flag (`xcodebuild -indexStoreEnable YES` fails with "invalid option",
+    /// confirmed against a real project, Xcode 26.4.0) -- indexing-while-building is controlled
+    /// by the build setting `COMPILER_INDEX_STORE_ENABLE` (confirmed present, value `Default`, in
+    /// real `xcodebuild -showBuildSettings` output), passed the same way any other build setting
+    /// override is: a bare `KEY=VALUE` argument, not a `-flag`.
     private func build(container: ProjectContainer, locator: IndexStoreLocator, processRunning: ProcessRunning) throws -> URL {
         switch container {
         case .swiftPackage(let packageURL):
@@ -305,12 +312,13 @@ struct SwiftIsolationMap: ParsableCommand {
             return storePath
 
         case .xcodeproj, .xcworkspace:
-            var arguments = ["-scheme", scheme, "-indexStoreEnable", "YES", "build"]
+            var arguments = ["-scheme", scheme]
             switch container {
             case .xcodeproj(let url): arguments += ["-project", url.path]
             case .xcworkspace(let url): arguments += ["-workspace", url.path]
             case .swiftPackage: break
             }
+            arguments += ["COMPILER_INDEX_STORE_ENABLE=YES", "build"]
             let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
             guard result.exitCode == 0 else {
                 throw ProcessFailure(command: "xcodebuild", exitCode: result.exitCode, standardError: result.standardError)

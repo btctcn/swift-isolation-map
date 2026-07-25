@@ -85,6 +85,25 @@ routing every status/prompt line through a dedicated `eprint` helper to stderr; 
 every `/` in a JSON string as `\/`, which is valid JSON but needlessly noisy for a
 machine-readable, human-inspectable contract).
 
+## A third real bug, found on an independent real project after merge
+
+Per [[feedback_verify_against_independent_real_world_cases]]'s lesson (re-testing the same
+environment can produce a second wrong "correction" rather than a real fix), this phase's own
+merged validation had only exercised the Xcode rebuild path indirectly — `~/ios` already had a
+populated `DerivedData` index store, so `resolveIndexStoreURL`'s `.promptUser` → "use it anyway"
+branch was taken, never the real `build()` invocation for an `.xcodeproj`/`.xcworkspace` container.
+Running against `SQLumen` (no existing `DerivedData/.../Index.noindex/DataStore`, so `--auto-build`
+genuinely had to rebuild) hit it for the first time: `xcodebuild -indexStoreEnable YES build` fails
+outright — `xcodebuild: error: invalid option '-indexStoreEnable'` (confirmed against a real
+project, Xcode 26.4.0) — there is no such flag. `xcodebuild -showBuildSettings` output for the same
+project shows the real, working mechanism: `COMPILER_INDEX_STORE_ENABLE` is a build *setting*
+(value `Default` by default), passed the same way any other setting override is — a bare
+`KEY=VALUE` argument, not a `-flag`. Fixed by building the argument list as
+`-scheme <name> [-project|-workspace <path>] COMPILER_INDEX_STORE_ENABLE=YES build`. This is the
+same class of bug Phase 0 found for `swift build --index-store-path` (a plausible-sounding flag
+from the architecture doc that doesn't exist on the real, current toolchain) — the Xcode side of
+the same rebuild mechanism just hadn't been exercised for real yet.
+
 ## Real-world validation
 
 Ran the built CLI against `swift-isolation-map`'s own codebase (61 real `.swift` files):
@@ -93,6 +112,17 @@ report — 546 types, 1236 linked declarations, 267 call-graph edges, 0 cross-ac
 project doesn't use `actor` types itself, so that's the correct answer, not a bug), exit code 0.
 `--force-reindex` (the real rebuild path, `swift build -Xswiftc -index-store-path -Xswiftc ...`)
 completed in ~23s and produced the same coherent result afterward.
+
+Ran against two independent, unrelated real projects afterward, both under Swift 5 language mode
+(so `Swift5RuleSet` applied regardless of the Swift 6.3 toolchain compiling them):
+- **`~/ios`** (`lsboutique.xcworkspace`, scheme `ls.net.ru`, CocoaPods-based, 2209 `.swift` files
+  including dependency sources): 46438 nodes, 1021 cross-isolation edges, **164 high-risk**
+  (overwhelmingly `nonisolated` code reaching `@MainActor` state), 4 real actors, 133 `@MainActor`
+  types, using the project's existing `DerivedData` index store (accepted via the `.promptUser`
+  "use it anyway" path, no rebuild needed).
+- **`~/SQLumen`**: 1457 nodes, 216 cross-isolation edges, **38 high-risk**, 8 real actors (including
+  a `PostgreSQLDriver` actor), 19 `@MainActor` types — via a genuine `--auto-build` rebuild (the
+  path that surfaced the `COMPILER_INDEX_STORE_ENABLE` bug above), confirming the fix end to end.
 
 ## Capstone golden-fixture test
 
