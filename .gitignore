@@ -3,3 +3,5 @@
 *.xcodeproj/xcuserdata/
 DerivedData/
 .DS_Store
+.swift-isolation-map-manifest.json
+.swift-isolation-map-index-db/

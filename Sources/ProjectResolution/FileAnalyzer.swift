@@ -4,6 +4,10 @@ import SyntaxAnalysis
 
 public struct FileAnalysisResult: Equatable, Sendable {
     public let declarations: [DeclarationInfo]
+    /// Threaded through from `ExtractionResult` (Priority 2 Phase 3) so a caller linking multiple
+    /// files' results (`IndexStoreIntegration.DeclarationLinker`) has what it needs for cross-file
+    /// `protocolGlobalActorName` backfill, without a second parse of the same source.
+    public let protocolGlobalActorNames: [String: String]
     public let contentHash: String
 }
 
@@ -27,7 +31,11 @@ public struct FileAnalyzer {
         guard let source = String(data: data, encoding: .utf8) else {
             throw FileAnalysisError.notUTF8(url)
         }
-        let declarations = DeclarationExtractor.extract(source: source, fileName: url.path)
-        return FileAnalysisResult(declarations: declarations, contentHash: contentHash(of: data))
+        let extraction = DeclarationExtractor.extractWithContext(source: source, fileName: url.path)
+        return FileAnalysisResult(
+            declarations: extraction.declarations,
+            protocolGlobalActorNames: extraction.protocolGlobalActorNames,
+            contentHash: contentHash(of: data)
+        )
     }
 }

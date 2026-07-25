@@ -16,6 +16,19 @@ func analyzeYieldsDeclarationsAndHash() throws {
     #expect(result.contentHash == contentHash(of: Data(source.utf8)))
 }
 
+@Test("Analyzing a file also yields its protocolGlobalActorNames, for cross-file linking")
+func analyzeYieldsProtocolGlobalActorNames() throws {
+    let fileSystem = FakeFileSystem()
+    let url = URL(fileURLWithPath: "/project/Sources/Refreshable.swift")
+    let source = "@MainActor protocol Refreshable {}"
+    fileSystem.addFile(at: url, contents: source)
+
+    let analyzer = FileAnalyzer(fileSystem: fileSystem)
+    let result = try analyzer.analyze(fileAt: url)
+
+    #expect(result.protocolGlobalActorNames["Refreshable"] == "MainActor")
+}
+
 @Test("Non-UTF8 file content throws rather than silently producing garbage")
 func nonUTF8ContentThrows() {
     let fileSystem = FakeFileSystem()
