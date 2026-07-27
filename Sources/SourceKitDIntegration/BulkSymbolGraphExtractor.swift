@@ -41,9 +41,15 @@ public enum BulkSymbolGraphExtractor {
     public static let defaultModules = ["UIKit", "AppKit", "SwiftUI", "Foundation", "ObjectiveC", "CoreGraphics", "Dispatch", "Swift", "CoreFoundation"]
 
     /// A hung or pathologically slow module (a large/misconfigured third-party framework) must
-    /// not be able to stall the whole bulk phase indefinitely -- generous relative to the ~14s
-    /// `AppKit` extraction already on record, but bounded.
-    static let perModuleTimeout: TimeInterval = 60
+    /// not be able to stall the whole bulk phase indefinitely -- bounded, but generous. The
+    /// original 60s (4x the ~14s `AppKit` extraction measured on an 8-core dev machine) was proven
+    /// too tight this session: a real `macos-latest` CI run's weaker hardware reproducibly (3 of 3
+    /// consecutive runs) hit this exact timeout extracting `AppKit`, silently returning an empty
+    /// result (`extract()`'s own documented fail-soft behavior on a non-zero exit) and failing
+    /// `BulkSymbolGraphExtractorTests`'s live-toolchain assertion -- not a hang, just genuinely
+    /// slower hardware needing more than 60s for the same real work. Raised with a much larger
+    /// margin so a slower CI runner (or a heavier module than AppKit) doesn't hit this again.
+    static let perModuleTimeout: TimeInterval = 300
 
     /// Extracts and merges every module in `moduleNames` (well-known SDK modules, `-sdk`/`-target`
     /// only) plus every `discoveredModules` entry (real third-party modules found in the project's
