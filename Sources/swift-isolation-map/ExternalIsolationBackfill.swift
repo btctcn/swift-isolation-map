@@ -61,6 +61,10 @@ enum ExternalIsolationBackfill {
             environmentProvider: environmentProvider, processRunning: processRunning,
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
+        let diagKeys = bulkCache.keys.filter {
+            $0.contains("PlainNonisolated") || $0.contains("DivergentIsolation") || $0.contains("IsolatedRoot") || $0.contains("View") || $0.contains("ProjectView")
+        }
+        FileHandle.standardError.write(Data("DIAG: bulkCache has \(bulkCache.count) entries; environment=\((try? environmentProvider.environment()).map { "sdk=\($0.sdkPath) target=\($0.target) discoveredModules=\($0.discoveredModules.map(\.name))" } ?? "nil"); matching keys: \(diagKeys.map { "\($0)=\(bulkCache[$0]!)" })\n".utf8))
 
         await resolveEdgeLevelTriggers(
             linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
