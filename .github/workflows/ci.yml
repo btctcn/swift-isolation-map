@@ -24,10 +24,5 @@ jobs:
         # --no-parallel: PR #12's first run (30257978327) hit a real `"Another instance of SwiftPM
         # is already running ... disk I/O error"` on the cross-file-witness fixture's shared `.build`
         # -- two concurrently-scheduled tests both drove real subprocesses against the same fixture
-        # directory. Confirmed fixed by this flag (a rerun with it clean on that specific failure).
-        # A second, separate failure (`CompiledDependencyCLITests.fullFixtureMatrix`) persisted even
-        # serialized and is still under investigation -- see the DIAG dump step below.
+        # directory. Fixed by this flag.
         run: swift test -c release --no-parallel
-      - name: Dump diagnostics
-        if: always()
-        run: cat /tmp/swift-isolation-map-diag.log 2>/dev/null || echo "(no diagnostics written)"

@@ -31,22 +31,6 @@ struct ExternalIsolationResolution {
 /// that bug is a pure inheritance-chain failure, not a call-graph-edge case at all, so an
 /// edge-only trigger would never have caught it.
 enum ExternalIsolationBackfill {
-    /// TEMP diagnostic-only helper: appends to a real file rather than stdout/stderr, which a
-    /// subprocess-capturing `ProcessRunning` may not drain concurrently (a large-enough write to an
-    /// undrained stderr pipe deadlocks the child on `write()` -- confirmed empirically this
-    /// session). Never call this from production code.
-    private static func diagLog(_ message: String) {
-        let path = "/tmp/swift-isolation-map-diag.log"
-        guard let data = (message + "\n").data(using: .utf8) else { return }
-        if let handle = FileHandle(forWritingAtPath: path) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            handle.closeFile()
-        } else {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
-    }
-
     /// `environmentProvider`/`bulkModuleNames` drive an eager, one-time bulk pre-resolution
     /// (`BulkSymbolGraphExtractor`) of well-known SDK modules (UIKit/AppKit/SwiftUI by default)
     /// *plus* every real third-party module `environmentProvider` discovers from the project's own
@@ -210,9 +194,6 @@ enum ExternalIsolationBackfill {
         var conformancePairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
 
         for declaration in linked.declarations.values {
-            if declaration.usr.contains("ProjectView") {
-                diagLog("ProjectView decl seen -- usr=\(declaration.usr) explicitIsolation=\(String(describing: declaration.explicitIsolation)) enclosingExtensionIsolation=\(String(describing: declaration.enclosingExtensionIsolation)) conformances=\(declaration.conformances)")
-            }
             guard declaration.explicitIsolation == nil, declaration.enclosingExtensionIsolation == nil else { continue }
 
             var unresolvedSuperclassUSR = declaration.superclassUSR.flatMap { superclassUSR in
@@ -367,19 +348,11 @@ enum ExternalIsolationBackfill {
         fileSystem: FileSystemQuerying,
         bulkCache: [String: IsolationKind]
     ) async -> QueryOutcome {
-        // TEMP diagnostic: only these fixture types are under investigation -- keeps diagLog output
-        // small (a full raw dump, e.g. of bulkCache or a symbol graph, was multi-megabyte and got
-        // silently dropped by CI's own log capture).
-        let interesting = ["DivergentIsolation", "PlainNonisolated", "IsolatedRoot", "ProjectView", "7SwiftUI4ViewP"]
-            .contains { targetUSR.contains($0) }
-        func truncated(_ s: String, _ limit: Int = 300) -> String { s.count > limit ? String(s.prefix(limit)) + "…(\(s.count) chars)" : s }
-
         // The primary win for the edge-level trigger: a direct call into a bulk-covered SDK
         // module (e.g. `someUIView.someMethod()`) resolves from an in-memory dictionary, no
         // `sourcekitd` round trip at all. A no-op lookup for the declaration-level trigger's own
         // `targetUSR` (always a project-local declaration, never itself in an SDK module's cache).
         if let cached = bulkCache[targetUSR] {
-            if interesting { diagLog("bulkCache HIT for \(targetUSR) -- \(cached)") }
             return .resolved(cached)
         }
         do {
@@ -390,24 +363,15 @@ enum ExternalIsolationBackfill {
             let arguments = CompilerArgumentsSanitizing.sanitized(rawArguments)
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
-            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else {
-                if interesting { diagLog("no USR match for \(targetUSR) at \(file):\(line):\(utf8Column) -- primary usr: \(result.primary.usr), secondary usrs: \(result.secondary.map(\.usr))") }
-                return .unknown
-            }
+            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
             if let symbolGraphJSON = symbol.symbolGraphJSON, let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON) {
-                if interesting { diagLog("live-resolved \(targetUSR) via symbolGraphJSON -- \(isolation)") }
                 return .resolved(isolation)
             }
             if let xml = symbol.fullyAnnotatedDeclXML, let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml) {
-                if interesting { diagLog("live-resolved \(targetUSR) via XML -- \(isolation)") }
                 return .resolved(isolation)
-            }
-            if interesting {
-                diagLog("matched \(targetUSR) but no isolation parsed -- symbolGraphJSON: \(truncated(symbol.symbolGraphJSON ?? "nil")), xml: \(truncated(symbol.fullyAnnotatedDeclXML ?? "nil"))")
             }
             return .unknown
         } catch {
-            if interesting { diagLog("query threw for \(targetUSR) at \(file):\(line):\(utf8Column) -- \(error)") }
             return .unknown
         }
     }

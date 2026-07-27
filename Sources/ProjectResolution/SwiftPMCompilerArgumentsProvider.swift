@@ -49,25 +49,6 @@ public final class LiveSwiftPMCompilerArgumentsProvider: CompilerArgumentsProvid
         }
         let parsed = CompilerArgsLogParser.parse(buildLog: result.standardOutput)
         cachedArguments = parsed
-        // TEMP diagnostic: investigating why some Consumer fixture files throw argumentsNotFound
-        // on CI only -- see if the raw `swift build -v` log even mentions them, versus the parser
-        // silently dropping a present-but-differently-shaped line.
-        if result.standardOutput.contains("compiled-dependency") {
-            let path = "/tmp/swift-isolation-map-diag.log"
-            let interestingNames = ["NegativeControl.swift", "Divergent.swift", "MechanismB.swift", "Case4.swift", "MechanismA.swift"]
-            let rawMentions = interestingNames.map { "\($0): rawLogContains=\(result.standardOutput.contains($0))" }.joined(separator: ", ")
-            let parsedFiles = parsed.keys.map { ($0 as NSString).lastPathComponent }.sorted()
-            let message = "SwiftPMCompilerArgumentsProvider: rawLog.count=\(result.standardOutput.count) parsed.count=\(parsed.count) \(rawMentions); parsedFiles=\(parsedFiles)\n"
-            if let data = message.data(using: .utf8) {
-                if let handle = FileHandle(forWritingAtPath: path) {
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                    handle.closeFile()
-                } else {
-                    try? data.write(to: URL(fileURLWithPath: path))
-                }
-            }
-        }
         return parsed
     }
 }

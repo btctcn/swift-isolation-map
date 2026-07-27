@@ -10,10 +10,15 @@ import Foundation
 /// `key.compilerargs` needs -- the full sibling-file list included, so cross-file symbol
 /// resolution within the same module works exactly like the real build's.
 enum CompilerArgsLogParser {
-    /// Maps each file path found as a `-primary-file` argument (single-file/non-WMO compiles, the
-    /// common case) -- or, for whole-module-optimization compiles where no single file is ever
-    /// marked primary, every `.swift` file named positionally in a `-wmo` invocation -- to the
-    /// full compiler argument list from that one line (everything after the executable path
+    /// Maps each file path found as a `-primary-file` argument -- one per file for a plain
+    /// single-file-per-invocation compile, or *several* per line under batch mode, where the
+    /// driver groups multiple files into one `swift-frontend` invocation and marks each with its
+    /// own `-primary-file` flag (confirmed empirically: a real CI run with fewer cores than a dev
+    /// machine grouped multiple fixture files into shared batch lines, and mapping only the first
+    /// `-primary-file` per line silently dropped the rest, throwing `argumentsNotFound` for files
+    /// that were genuinely compiled) -- or, for whole-module-optimization compiles where no single
+    /// file is ever marked primary, every `.swift` file named positionally in a `-wmo` invocation --
+    /// to the full compiler argument list from that one line (everything after the executable path
     /// itself). A file that never appears as a compile target in the log (e.g. it wasn't actually
     /// built, or the log doesn't cover it) is simply absent from the result -- callers surface
     /// that as `CompilerArgumentsError.argumentsNotFound`, not a crash.
@@ -26,9 +31,21 @@ enum CompilerArgsLogParser {
             let args = Array(tokens.dropFirst())
             guard args.contains("-frontend") else { continue }
 
-            if let primaryIndex = args.firstIndex(of: "-primary-file"), args.index(after: primaryIndex) < args.count {
-                let file = args[args.index(after: primaryIndex)]
-                result[file] = args
+            let primaryIndices = args.indices.filter { args[$0] == "-primary-file" }
+            if !primaryIndices.isEmpty {
+                // Batch mode: the Swift driver groups several files into one `swift-frontend`
+                // invocation, each marked with its own `-primary-file` flag (count/grouping driven
+                // by core count, so this varies by machine -- confirmed empirically: a single-file-
+                // per-batch run never hit this, but a lower-core CI runner grouping multiple files
+                // per invocation did). Every primary file in the line maps to the same `args` --
+                // `CompilerArgumentsSanitizing.sanitized` strips every `-primary-file` flag anyway
+                // (keeping the file itself as a plain positional), so the sanitized result is
+                // identical regardless of which of this batch's files it's requested for.
+                for primaryIndex in primaryIndices {
+                    let fileIndex = args.index(after: primaryIndex)
+                    guard fileIndex < args.count else { continue }
+                    result[args[fileIndex]] = args
+                }
             } else if args.contains("-wmo") {
                 for token in args where isLikelySwiftSourceFile(token) {
                     result[token] = args

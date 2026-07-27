@@ -36,6 +36,28 @@ func doesNotMapSiblingFilesToTheWrongPrimaryFilesLine() {
     #expect(result["/Users/ab/swift-isolation-map/Sources/IsolationCore/DeclarationInfo.swift"] == nil)
 }
 
+/// Real bug found this session: a lower-core-count CI runner's Swift driver batched three fixture
+/// files into one `swift-frontend` invocation, each marked with its own `-primary-file` flag --
+/// `CompilerArgsLogParser.parse` only ever recorded the *first* one, silently dropping the other
+/// two (`argumentsNotFound` for genuinely-compiled files, only on that weaker-core machine; an
+/// 8-core dev machine's driver never batched more than one file per line, so this was invisible
+/// locally). Shape (multiple `-primary-file <file>` flags in one line, non-primary siblings
+/// interspersed with no flag) confirmed against real Swift driver batch-mode output.
+@Test
+func handlesBatchModeLinesWithMultiplePrimaryFilesOnOneLine() throws {
+    let batchLine = """
+    /usr/bin/swift-frontend -frontend -c -primary-file /project/Sources/A.swift /project/Sources/B.swift -primary-file /project/Sources/C.swift -target arm64-apple-macosx13.0 -module-name Demo -o /tmp/A.o -o /tmp/C.o
+    """
+    let result = CompilerArgsLogParser.parse(buildLog: batchLine)
+    let argsA = try #require(result["/project/Sources/A.swift"])
+    let argsC = try #require(result["/project/Sources/C.swift"])
+    #expect(argsA == argsC)
+    #expect(argsA.contains("/project/Sources/B.swift"))
+    // B.swift is a non-primary sibling on this line, same as the single-primary case above -- it
+    // must not get its own entry just for appearing as a plain positional argument.
+    #expect(result["/project/Sources/B.swift"] == nil)
+}
+
 @Test
 func handlesWholeModuleOptimizationLinesWithNoPrimaryFile() throws {
     let wmoLine = """
