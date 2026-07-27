@@ -21,16 +21,13 @@ jobs:
         # unaffected -- verified stable across repeated runs. See
         # docs/priority-2-phase-3-linking.md for the full investigation.
         #
-        # --no-parallel: PR #12's run (30257978327) failed on this shared `macos-latest` runner --
-        # confirmed NOT a logic bug (full local suite is 220/220 green both in parallel, 43.8s, and
-        # serialized, 73.4s, on an 8-core machine). Root cause, read directly from that run's log:
-        # two concurrently-scheduled tests both drove real `swift build`/`xcrun swiftc`/`sourcekitd`
-        # subprocesses against the same fixture, and the weaker CI runner's resource contention
-        # produced a literal `"Another instance of SwiftPM is already running ... disk I/O error"`
-        # on a shared `.build` database, plus silent `.unknown` oracle resolutions elsewhere in the
-        # same run (query()'s documented fail-soft catch-all). Swift Testing parallelizes real
-        # subprocess-heavy suites by default regardless of this flag's own stated default; forcing
-        # serial execution here removes the contention at a real but small cost (~1.7x wall time
-        # locally) -- this run was the first to add this much subprocess-heavy real E2E coverage
-        # (Priority 3), so the constrained runner had never been stressed like this before.
+        # --no-parallel: PR #12's first run (30257978327) hit a real `"Another instance of SwiftPM
+        # is already running ... disk I/O error"` on the cross-file-witness fixture's shared `.build`
+        # -- two concurrently-scheduled tests both drove real subprocesses against the same fixture
+        # directory. Confirmed fixed by this flag (a rerun with it clean on that specific failure).
+        # A second, separate failure (`CompiledDependencyCLITests.fullFixtureMatrix`) persisted even
+        # serialized and is still under investigation -- see the DIAG dump step below.
         run: swift test -c release --no-parallel
+      - name: Dump diagnostics
+        if: always()
+        run: cat /tmp/swift-isolation-map-diag.log 2>/dev/null || echo "(no diagnostics written)"

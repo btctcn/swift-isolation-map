@@ -31,6 +31,22 @@ struct ExternalIsolationResolution {
 /// that bug is a pure inheritance-chain failure, not a call-graph-edge case at all, so an
 /// edge-only trigger would never have caught it.
 enum ExternalIsolationBackfill {
+    /// TEMP diagnostic-only helper: appends to a real file rather than stdout/stderr, which a
+    /// subprocess-capturing `ProcessRunning` may not drain concurrently (a large-enough write to an
+    /// undrained stderr pipe deadlocks the child on `write()` -- confirmed empirically this
+    /// session). Never call this from production code.
+    private static func diagLog(_ message: String) {
+        let path = "/tmp/swift-isolation-map-diag.log"
+        guard let data = (message + "\n").data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.closeFile()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     /// `environmentProvider`/`bulkModuleNames` drive an eager, one-time bulk pre-resolution
     /// (`BulkSymbolGraphExtractor`) of well-known SDK modules (UIKit/AppKit/SwiftUI by default)
     /// *plus* every real third-party module `environmentProvider` discovers from the project's own
@@ -61,6 +77,13 @@ enum ExternalIsolationBackfill {
             environmentProvider: environmentProvider, processRunning: processRunning,
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
+        let diagBulkKeys = bulkCache.keys.filter {
+            $0.contains("PlainNonisolated") || $0.contains("DivergentIsolation") || $0.contains("IsolatedRoot") || $0.contains("View")
+        }
+        let diagDeclKeys = linked.declarations.keys.filter {
+            $0.contains("PlainNonisolated") || $0.contains("DivergentIsolation") || $0.contains("IsolatedRoot") || $0.contains("View")
+        }
+        diagLog("bulkCache.count=\(bulkCache.count) matching bulkCache entries: \(diagBulkKeys.map { "\($0)=\(bulkCache[$0]!)" }); matching linked.declarations keys: \(diagDeclKeys)")
 
         await resolveEdgeLevelTriggers(
             linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
@@ -364,7 +387,7 @@ enum ExternalIsolationBackfill {
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else {
-                FileHandle.standardError.write(Data("DIAG: no USR match for \(targetUSR) at \(file):\(line):\(utf8Column) -- raw result: \(result)\n".utf8))
+                diagLog("no USR match for \(targetUSR) at \(file):\(line):\(utf8Column) -- raw result: \(result)")
                 return .unknown
             }
             if let symbolGraphJSON = symbol.symbolGraphJSON, let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON) {
@@ -373,10 +396,10 @@ enum ExternalIsolationBackfill {
             if let xml = symbol.fullyAnnotatedDeclXML, let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml) {
                 return .resolved(isolation)
             }
-            FileHandle.standardError.write(Data("DIAG: matched \(targetUSR) but no isolation parsed -- symbolGraphJSON: \(symbol.symbolGraphJSON ?? "nil"), xml: \(symbol.fullyAnnotatedDeclXML ?? "nil")\n".utf8))
+            diagLog("matched \(targetUSR) but no isolation parsed -- symbolGraphJSON: \(symbol.symbolGraphJSON ?? "nil"), xml: \(symbol.fullyAnnotatedDeclXML ?? "nil")")
             return .unknown
         } catch {
-            FileHandle.standardError.write(Data("DIAG: query threw for \(targetUSR) at \(file):\(line):\(utf8Column) -- \(error)\n".utf8))
+            diagLog("query threw for \(targetUSR) at \(file):\(line):\(utf8Column) -- \(error)")
             return .unknown
         }
     }
