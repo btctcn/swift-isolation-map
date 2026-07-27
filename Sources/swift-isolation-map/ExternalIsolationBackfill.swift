@@ -363,15 +363,20 @@ enum ExternalIsolationBackfill {
             let arguments = CompilerArgumentsSanitizing.sanitized(rawArguments)
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
-            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else {
+                FileHandle.standardError.write(Data("DIAG: no USR match for \(targetUSR) at \(file):\(line):\(utf8Column) -- raw result: \(result)\n".utf8))
+                return .unknown
+            }
             if let symbolGraphJSON = symbol.symbolGraphJSON, let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON) {
                 return .resolved(isolation)
             }
             if let xml = symbol.fullyAnnotatedDeclXML, let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml) {
                 return .resolved(isolation)
             }
+            FileHandle.standardError.write(Data("DIAG: matched \(targetUSR) but no isolation parsed -- symbolGraphJSON: \(symbol.symbolGraphJSON ?? "nil"), xml: \(symbol.fullyAnnotatedDeclXML ?? "nil")\n".utf8))
             return .unknown
         } catch {
+            FileHandle.standardError.write(Data("DIAG: query threw for \(targetUSR) at \(file):\(line):\(utf8Column) -- \(error)\n".utf8))
             return .unknown
         }
     }
