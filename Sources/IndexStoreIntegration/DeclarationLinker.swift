@@ -112,6 +112,7 @@ public struct DeclarationLinker {
         }
 
         byUSR = resolveInheritanceViaBaseOfRelation(byUSR)
+        byUSR = resolveExtensionContainingTypeViaChildOfRelation(byUSR)
 
         let knownUSRs = Set(usrRewriteMap.values)
         var rawCallGraph: [CallGraphEdge] = []
@@ -256,6 +257,69 @@ public struct DeclarationLinker {
                 isStaticMember: declaration.isStaticMember,
                 superclassUSR: superclassUSR,
                 conformances: conformances,
+                isEligibleForModuleDefaultIsolation: declaration.isEligibleForModuleDefaultIsolation,
+                enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
+                isNestedType: declaration.isNestedType,
+                location: declaration.location
+            )
+        }
+    }
+
+    /// Extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md):
+    /// resolves a member's `containingTypeUSR` when it's still `syntactic:`-prefixed because the
+    /// extended type has no primary declaration among the linked files (a genuinely external
+    /// SDK/Pods type, or a project-local type simply not in this analysis run's file set) --
+    /// via IndexStoreDB's `.childOf`/`.extendedBy` relation chain, never a location or a name
+    /// (the extension's own `extendedType` token position is recorded nowhere in `DeclarationInfo`,
+    /// and capturing it would require a `SyntaxAnalysis` change this fix deliberately avoids).
+    ///
+    /// **Two hops, kept as two distinct calls, per an external review's own amendment**: the
+    /// naive-but-convenient alternative -- resolve once per shared bare-name placeholder
+    /// (`"syntactic:UIViewController"`) and fan the answer out to every member pointing at it --
+    /// would silently reintroduce exactly the collision the bare-name scheme already has (every
+    /// extension of anything *named* `UIViewController` anywhere in the project, Pods sources
+    /// included, sharing one answer). Hop 1 runs per member (`containingExtensionUSR`, a fast,
+    /// in-memory index lookup) and naturally produces the correct per-extension grouping for free
+    /// -- two different extension blocks, even of the same-named type, have distinct synthetic
+    /// USRs of their own, so no placeholder-based grouping ever needs to exist in this pass at all.
+    /// Hop 2 (`extendedTypeUSR`) is memoized per distinct extension USR, not per member, mirroring
+    /// Gap B's own per-nominal memoization precedent (`resolveInheritanceViaBaseOfRelation`'s
+    /// `baseTypeNames`).
+    ///
+    /// **Residual, evidenced limitation**: a member whose own `usr` never resolved to a real USR
+    /// (this declaration's own location-based linking failed, for whatever reason) has no hop-1
+    /// entry point at all -- it's left exactly as it is today (placeholder containing type,
+    /// `.nonisolated`, false-positive-only per this task's own verified scope note, never a worse
+    /// outcome than before this fix).
+    private func resolveExtensionContainingTypeViaChildOfRelation(_ byUSR: [String: DeclarationInfo]) -> [String: DeclarationInfo] {
+        var extendedTypeUSRByExtension: [String: String?] = [:]
+
+        func extendedTypeUSR(forExtensionUSR extensionUSR: String) -> String? {
+            if let cached = extendedTypeUSRByExtension[extensionUSR] { return cached }
+            let resolved = indexStore.extendedTypeUSR(forExtensionUSR: extensionUSR)
+            extendedTypeUSRByExtension[extensionUSR] = resolved
+            return resolved
+        }
+
+        return byUSR.mapValues { declaration in
+            guard let containingTypeUSR = declaration.containingTypeUSR,
+                  containingTypeUSR.hasPrefix("syntactic:"),
+                  !declaration.usr.hasPrefix("syntactic:") else {
+                return declaration
+            }
+            guard let extensionUSR = indexStore.containingExtensionUSR(forMemberUSR: declaration.usr),
+                  let realContainingTypeUSR = extendedTypeUSR(forExtensionUSR: extensionUSR) else {
+                return declaration
+            }
+            return DeclarationInfo(
+                usr: declaration.usr,
+                name: declaration.name,
+                explicitIsolation: declaration.explicitIsolation,
+                isActorType: declaration.isActorType,
+                containingTypeUSR: realContainingTypeUSR,
+                isStaticMember: declaration.isStaticMember,
+                superclassUSR: declaration.superclassUSR,
+                conformances: declaration.conformances,
                 isEligibleForModuleDefaultIsolation: declaration.isEligibleForModuleDefaultIsolation,
                 enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
                 isNestedType: declaration.isNestedType,

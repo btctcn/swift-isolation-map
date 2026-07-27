@@ -14,6 +14,9 @@ final class FakeIndexStoreQuerying: IndexStoreQuerying, @unchecked Sendable {
     var callSitesByFile: [String: [CallGraphEdge]] = [:]
     var owningPropertyUSRByAccessorUSR: [String: String] = [:]
     var baseTypeUSRsByUSR: [String: [(usr: String, name: String)]] = [:]
+    var containingExtensionUSRByMemberUSR: [String: String] = [:]
+    var extendedTypeUSRByExtensionUSR: [String: String] = [:]
+    private(set) var extendedTypeUSRCallCount = 0
 
     func definedSymbols(inFile path: String) -> [IndexedSymbol] {
         symbolsByFile[path] ?? []
@@ -33,6 +36,15 @@ final class FakeIndexStoreQuerying: IndexStoreQuerying, @unchecked Sendable {
 
     func baseTypeUSRs(forUSR usr: String) -> [(usr: String, name: String)] {
         baseTypeUSRsByUSR[usr] ?? []
+    }
+
+    func containingExtensionUSR(forMemberUSR usr: String) -> String? {
+        containingExtensionUSRByMemberUSR[usr]
+    }
+
+    func extendedTypeUSR(forExtensionUSR usr: String) -> String? {
+        extendedTypeUSRCallCount += 1
+        return extendedTypeUSRByExtensionUSR[usr]
     }
 }
 
@@ -314,4 +326,92 @@ func knownCallSiteIsNotDuplicated() {
     let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:])])
 
     #expect(linked.callGraph == [expectedEdge])
+}
+
+// MARK: - Extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md)
+
+@Test("A member's containingTypeUSR resolves via the .childOf/.extendedBy chain when the extended type has no primary declaration")
+func extensionContainingTypeResolvesViaChildOfExtendedByChain() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    fake.symbolsByFile["/f.swift"] = [IndexedSymbol(usr: "s:realMethod", name: "method", location: location)]
+    fake.containingExtensionUSRByMemberUSR["s:realMethod"] = "s:extensionUSR"
+    fake.extendedTypeUSRByExtensionUSR["s:extensionUSR"] = "c:objc(cs)ExternalType"
+
+    let member = makeDeclaration(usr: "syntactic:Widget.method#0", name: "method", location: location, containingTypeUSR: "syntactic:ExternalType")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [member], protocolGlobalActorNames: [:])])
+
+    let linkedMember = try #require(linked.declarations["s:realMethod"])
+    #expect(linkedMember.containingTypeUSR == "c:objc(cs)ExternalType")
+}
+
+@Test("Hop 2 (.extendedBy) is memoized per distinct extension USR, not queried once per member")
+func extensionContainingTypeHop2IsMemoizedPerExtension() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location1 = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let location2 = SymbolLocation(file: "/f.swift", line: 2, column: 1)
+    fake.symbolsByFile["/f.swift"] = [
+        IndexedSymbol(usr: "s:realMethod1", name: "method1", location: location1),
+        IndexedSymbol(usr: "s:realMethod2", name: "method2", location: location2)
+    ]
+    // Both members declared in the same extension block -- same hop-1 answer.
+    fake.containingExtensionUSRByMemberUSR["s:realMethod1"] = "s:extensionUSR"
+    fake.containingExtensionUSRByMemberUSR["s:realMethod2"] = "s:extensionUSR"
+    fake.extendedTypeUSRByExtensionUSR["s:extensionUSR"] = "c:objc(cs)ExternalType"
+
+    let member1 = makeDeclaration(usr: "syntactic:Widget.method1#0", name: "method1", location: location1, containingTypeUSR: "syntactic:ExternalType")
+    let member2 = makeDeclaration(usr: "syntactic:Widget.method2#1", name: "method2", location: location2, containingTypeUSR: "syntactic:ExternalType")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [member1, member2], protocolGlobalActorNames: [:])])
+
+    #expect(fake.extendedTypeUSRCallCount == 1)
+    #expect(linked.declarations["s:realMethod1"]?.containingTypeUSR == "c:objc(cs)ExternalType")
+    #expect(linked.declarations["s:realMethod2"]?.containingTypeUSR == "c:objc(cs)ExternalType")
+}
+
+@Test("Resolution is per-extension, not per-bare-name: two same-named extended types in different modules resolve independently")
+func extensionContainingTypeResolutionIsPerExtensionNotPerBareName() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location1 = SymbolLocation(file: "/a.swift", line: 1, column: 1)
+    let location2 = SymbolLocation(file: "/b.swift", line: 1, column: 1)
+    fake.symbolsByFile["/a.swift"] = [IndexedSymbol(usr: "s:methodA", name: "methodA", location: location1)]
+    fake.symbolsByFile["/b.swift"] = [IndexedSymbol(usr: "s:methodB", name: "methodB", location: location2)]
+    // Two distinct extension blocks, both extending something named "SameName" -- but in two
+    // different modules, hence two different real extended-type USRs.
+    fake.containingExtensionUSRByMemberUSR["s:methodA"] = "s:extensionA"
+    fake.containingExtensionUSRByMemberUSR["s:methodB"] = "s:extensionB"
+    fake.extendedTypeUSRByExtensionUSR["s:extensionA"] = "c:objc(cs)ModuleA.SameName"
+    fake.extendedTypeUSRByExtensionUSR["s:extensionB"] = "c:objc(cs)ModuleB.SameName"
+
+    // Both members' own syntactic placeholder shares the exact same bare-name containingTypeUSR
+    // today -- the pre-fix collision this test exists to rule out.
+    let memberA = makeDeclaration(usr: "syntactic:SameName.methodA#0", name: "methodA", location: location1, containingTypeUSR: "syntactic:SameName")
+    let memberB = makeDeclaration(usr: "syntactic:SameName.methodB#0", name: "methodB", location: location2, containingTypeUSR: "syntactic:SameName")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [memberA, memberB], protocolGlobalActorNames: [:])])
+
+    #expect(linked.declarations["s:methodA"]?.containingTypeUSR == "c:objc(cs)ModuleA.SameName")
+    #expect(linked.declarations["s:methodB"]?.containingTypeUSR == "c:objc(cs)ModuleB.SameName")
+}
+
+@Test("A member whose own USR never resolved to a real USR is left unchanged -- no hop-1 entry point")
+func extensionContainingTypeLeftUnchangedWhenMemberUSRUnresolved() throws {
+    let fake = FakeIndexStoreQuerying()
+    // No symbolsByFile entry at all -- the member's own placeholder never resolves to a real USR.
+    let member = makeDeclaration(usr: "syntactic:Widget.method#0", name: "method", location: nil, containingTypeUSR: "syntactic:ExternalType")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [member], protocolGlobalActorNames: [:])])
+
+    let linkedMember = try #require(linked.declarations["syntactic:Widget.method#0"])
+    #expect(linkedMember.containingTypeUSR == "syntactic:ExternalType")
+}
+
+@Test("A member whose hop-1/hop-2 chain doesn't resolve is left unchanged, not guessed")
+func extensionContainingTypeLeftUnchangedWhenChainMisses() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    fake.symbolsByFile["/f.swift"] = [IndexedSymbol(usr: "s:realMethod", name: "method", location: location)]
+    // containingExtensionUSRByMemberUSR left empty -- hop 1 misses entirely.
+
+    let member = makeDeclaration(usr: "syntactic:Widget.method#0", name: "method", location: location, containingTypeUSR: "syntactic:ExternalType")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [member], protocolGlobalActorNames: [:])])
+
+    #expect(linked.declarations["s:realMethod"]?.containingTypeUSR == "syntactic:ExternalType")
 }

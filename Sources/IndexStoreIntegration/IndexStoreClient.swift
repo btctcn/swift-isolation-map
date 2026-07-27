@@ -26,6 +26,8 @@ public protocol IndexStoreQuerying: Sendable {
     func callSites(inFile path: String) -> [CallGraphEdge]
     func owningPropertyUSR(forUSR usr: String) -> String?
     func baseTypeUSRs(forUSR usr: String) -> [(usr: String, name: String)]
+    func containingExtensionUSR(forMemberUSR usr: String) -> String?
+    func extendedTypeUSR(forExtensionUSR usr: String) -> String?
 }
 
 /// Wraps `IndexStoreDB`/`IndexStoreLibrary` -- confirmed working end to end against a real
@@ -155,6 +157,37 @@ public final class IndexStoreClient: IndexStoreQuerying, @unchecked Sendable {
             results.append(contentsOf: db.occurrences(relatedToUSR: extensionUSR, roles: .baseOf).map { ($0.symbol.usr, $0.symbol.name) })
         }
         return results
+    }
+
+    /// Hop 1 of the extension-of-an-external-type chain (docs/task-external-type-extension-
+    /// isolation.md): a member's own `.definition` occurrence's `.childOf` relation names its
+    /// *immediately enclosing* symbol -- the extension's own synthetic USR for a member declared
+    /// inside an `extension`, or the nominal type directly for a member declared in a primary
+    /// body. Direction and shape confirmed empirically this session, on two real index stores (the
+    /// `cross-file-witness` fixture and the real motivating `~/ios` `UIViewController+Navigation
+    /// .swift` case): `refresh()`'s `.childOf` pointed at `SyncCoordinatorRefreshable.swift`'s own
+    /// extension USR (not at `SyncCoordinator` directly), and `setCartCount`'s `.childOf` pointed
+    /// at the real `UIViewController` extension's own synthetic USR (built from that extension's
+    /// *first* member, not `setCartCount` itself -- confirms the per-extension synthetic-USR
+    /// scheme `baseTypeUSRs` above already established for `.baseOf`). `nil` if `usr` has no
+    /// `.definition` occurrence at all (an unresolved/external `usr`) or no `.childOf` relation.
+    public func containingExtensionUSR(forMemberUSR usr: String) -> String? {
+        db.occurrences(ofUSR: usr, roles: .definition)
+            .first?.relations.first(where: { $0.roles.contains(.childOf) })?.symbol.usr
+    }
+
+    /// Hop 2 of the same chain: `usr` is expected to be an extension's own synthetic USR (from
+    /// `containingExtensionUSR` above); `occurrences(relatedToUSR: usr, roles: .extendedBy)`
+    /// returns the *extended type's own real occurrence* -- for an ObjC-imported type this is its
+    /// real clang USR (confirmed empirically: `c:objc(cs)UIViewController`, exactly the shape
+    /// `BulkSymbolGraphExtractor`'s UIKit bulk-cache entries are keyed by -- deliberately not
+    /// derived by parsing the member's own Swift-mangled USR string, which would produce the wrong,
+    /// Swift-mangled spelling and silently miss the bulk cache). The reverse query direction
+    /// (`occurrences(ofUSR: usr, roles: .extendedBy)`) was tried and confirmed empirically to
+    /// return nothing -- `relatedToUSR` is the correct direction, matching `baseTypeUSRs`'s own
+    /// established `.extendedBy` usage above.
+    public func extendedTypeUSR(forExtensionUSR usr: String) -> String? {
+        db.occurrences(relatedToUSR: usr, roles: .extendedBy).first?.symbol.usr
     }
 
     public func callSites(inFile path: String) -> [CallGraphEdge] {

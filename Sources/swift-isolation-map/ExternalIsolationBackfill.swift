@@ -199,6 +199,16 @@ enum ExternalIsolationBackfill {
             var unresolvedSuperclassUSR = declaration.superclassUSR.flatMap { superclassUSR in
                 linked.declarations[superclassUSR] == nil && backfilled[superclassUSR] == nil ? superclassUSR : nil
             }
+            // Extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md):
+            // a member whose `containingTypeUSR` `DeclarationLinker`'s own `.childOf`/`.extendedBy`
+            // chain rewrote to a real, external USR (the extended type has no primary declaration
+            // among the linked files) needs that type's own isolation backfilled here, exactly the
+            // way an external superclass already does -- same store, same `declarations[usr]`
+            // lookup `IsolationInferenceEngine.resolveInheritedIsolation`'s containing-type-
+            // propagation branch already performs, no engine change needed.
+            var unresolvedContainingTypeUSR = declaration.containingTypeUSR.flatMap { containingTypeUSR in
+                linked.declarations[containingTypeUSR] == nil && backfilled[containingTypeUSR] == nil ? containingTypeUSR : nil
+            }
             var unresolvedConformanceIndices = declaration.conformances.indices.filter { index in
                 let conformance = declaration.conformances[index]
                 guard conformance.protocolGlobalActorName == nil,
@@ -206,7 +216,7 @@ enum ExternalIsolationBackfill {
                       linked.declarations[conformance.protocolUSR] == nil else { return false }
                 return true
             }
-            guard unresolvedSuperclassUSR != nil || !unresolvedConformanceIndices.isEmpty else { continue }
+            guard unresolvedSuperclassUSR != nil || unresolvedContainingTypeUSR != nil || !unresolvedConformanceIndices.isEmpty else { continue }
 
             // Bulk-cache fast path: satisfy whichever needs a bulk-extracted SDK module already
             // answers -- the external symbol's own real isolation, keyed directly by USR -- so the
@@ -221,6 +231,12 @@ enum ExternalIsolationBackfill {
                     usr: superclassUSR, name: superclassUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
                 )
                 unresolvedSuperclassUSR = nil
+            }
+            if let containingTypeUSR = unresolvedContainingTypeUSR, let cachedIsolation = bulkCache[containingTypeUSR] {
+                backfilled[containingTypeUSR] = DeclarationInfo(
+                    usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                )
+                unresolvedContainingTypeUSR = nil
             }
             unresolvedConformanceIndices = unresolvedConformanceIndices.filter { index in
                 guard case .globalActor(let actorName)? = bulkCache[conformances[index].protocolUSR] else { return true }
@@ -258,7 +274,7 @@ enum ExternalIsolationBackfill {
                 updated[declaration.usr] = rebuilt(declaration, conformances: conformances)
             }
 
-            guard unresolvedSuperclassUSR != nil || !unresolvedConformanceIndices.isEmpty,
+            guard unresolvedSuperclassUSR != nil || unresolvedContainingTypeUSR != nil || !unresolvedConformanceIndices.isEmpty,
                   let location = declaration.location else { continue }
 
             switch await query(
@@ -269,6 +285,11 @@ enum ExternalIsolationBackfill {
                 if let superclassUSR = unresolvedSuperclassUSR {
                     backfilled[superclassUSR] = DeclarationInfo(
                         usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    )
+                }
+                if let containingTypeUSR = unresolvedContainingTypeUSR {
+                    backfilled[containingTypeUSR] = DeclarationInfo(
+                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
                     )
                 }
                 if !unresolvedConformanceIndices.isEmpty {
