@@ -29,7 +29,14 @@ enum MermaidWriter {
         for edge in report.edges {
             guard let callerID = idByUSR[edge.callerUSR], let calleeID = idByUSR[edge.calleeUSR] else { continue }
             lines.append("    \(callerID) --> \(calleeID)")
-            linkStyleLines.append("    linkStyle \(linkIndex) stroke:\(strokeColor(for: edge.risk)),stroke-width:2px")
+            // Drawn distinctly (gray, dashed) rather than by `risk` color for the same reason as
+            // `DotWriter` -- `risk` is still a real, orthogonal value for an `isUnknown` edge, but
+            // coloring it as a confirmed finding would visually misrepresent "no idea" as a real
+            // one. See `AnalysisEdge.isUnknown`'s own doc comment.
+            let style = edge.isUnknown
+                ? "stroke:\(unknownStrokeColor),stroke-width:2px,stroke-dasharray:5 5"
+                : "stroke:\(strokeColor(for: edge.risk)),stroke-width:2px"
+            linkStyleLines.append("    linkStyle \(linkIndex) \(style)")
             linkIndex += 1
         }
         lines.append(contentsOf: linkStyleLines)
@@ -44,6 +51,8 @@ enum MermaidWriter {
         case .low: return "#43a047"
         }
     }
+
+    private static let unknownStrokeColor = "#9e9e9e"
 
     private static func escapeLabel(_ text: String) -> String {
         text.replacingOccurrences(of: "\"", with: "'")

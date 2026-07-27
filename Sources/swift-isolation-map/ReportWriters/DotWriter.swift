@@ -17,7 +17,16 @@ enum DotWriter {
         }
 
         for edge in report.edges {
-            let attributes = "color=\(quote(strokeColor(for: edge.risk))), penwidth=\(penwidth(for: edge.risk)), label=\(quote(edge.risk.rawValue))"
+            // An `isUnknown` edge is drawn distinctly (gray, dashed) rather than by its `risk`
+            // color/weight -- `risk` is still a real, computed value for such an edge (the two
+            // are orthogonal, see `AnalysisEdge.isUnknown`'s own doc comment), but coloring it as
+            // if it were a confirmed finding would visually misrepresent exactly the "no idea"
+            // outcome this field exists to keep distinct from a real one.
+            let color = edge.isUnknown ? unknownStrokeColor : strokeColor(for: edge.risk)
+            let width = edge.isUnknown ? unknownPenwidth : penwidth(for: edge.risk)
+            let style = edge.isUnknown ? ", style=dashed" : ""
+            let label = edge.isUnknown ? "unknown" : edge.risk.rawValue
+            let attributes = "color=\(quote(color)), penwidth=\(width), label=\(quote(label))\(style)"
             lines.append("    \(quote(edge.callerUSR)) -> \(quote(edge.calleeUSR)) [\(attributes)];")
         }
 
@@ -40,6 +49,9 @@ enum DotWriter {
         case .low: return "1.0"
         }
     }
+
+    private static let unknownStrokeColor = "#9e9e9e"
+    private static let unknownPenwidth = "1.0"
 
     private static func quote(_ text: String) -> String {
         "\"\(escape(text))\""

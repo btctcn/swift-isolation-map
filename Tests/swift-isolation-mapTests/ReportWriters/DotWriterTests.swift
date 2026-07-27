@@ -42,6 +42,39 @@ struct DotWriterTests {
         #expect(output.contains("penwidth=2.5"))
     }
 
+    @Test("an isUnknown edge is styled distinctly (gray, dashed) instead of by its risk color, even though risk is still present")
+    func unknownEdgeIsStyledDistinctly() {
+        let report = AnalysisReport(
+            schemaVersion: "1.0",
+            toolVersion: "0.1.0",
+            swiftVersion: "6.0",
+            ruleSetUsed: "Swift60RuleSet",
+            summary: AnalysisSummary(typesAnalyzed: 1, actors: 1, mainActorTypes: 0, unspecifiedIsolation: 1, crossActorBoundaries: 1, highRiskBoundaries: 0),
+            nodes: [
+                AnalysisNode(usr: "usr:actor", name: "increment", isolation: "actor(Counter)", location: AnalysisLocation(file: "T.swift", line: 1)),
+                AnalysisNode(usr: "usr:external", name: "external", isolation: "unspecified", location: AnalysisLocation(file: "", line: 0))
+            ],
+            edges: [
+                AnalysisEdge(
+                    callerUSR: "usr:actor",
+                    calleeUSR: "usr:external",
+                    callerIsolation: "actor(Counter)",
+                    calleeIsolation: "unspecified",
+                    risk: .high,
+                    explanation: "isolation for one side of this call could not be determined",
+                    location: AnalysisLocation(file: "T.swift", line: 1),
+                    isUnknown: true
+                )
+            ]
+        )
+
+        let output = DotWriter.write(report)
+        #expect(output.contains("style=dashed"))
+        #expect(output.contains("#9e9e9e"))
+        #expect(!output.contains("#e53935")) // not the high-risk red, even though risk == .high
+        #expect(output.contains(#"label="unknown""#))
+    }
+
     @Test("quotes and escapes USRs/labels containing quotes and backslashes")
     func escapesSpecialCharacters() {
         let report = AnalysisReport(

@@ -20,4 +20,9 @@ jobs:
         # this project's own code, and not related to which tests actually run). Release is
         # unaffected -- verified stable across repeated runs. See
         # docs/priority-2-phase-3-linking.md for the full investigation.
-        run: swift test -c release
+        #
+        # --no-parallel: PR #12's first run (30257978327) hit a real `"Another instance of SwiftPM
+        # is already running ... disk I/O error"` on the cross-file-witness fixture's shared `.build`
+        # -- two concurrently-scheduled tests both drove real subprocesses against the same fixture
+        # directory. Fixed by this flag.
+        run: swift test -c release --no-parallel

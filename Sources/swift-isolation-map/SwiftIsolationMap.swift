@@ -4,6 +4,7 @@ import IndexStoreIntegration
 import IsolationCore
 import OutputFormat
 import ProjectResolution
+import SourceKitDIntegration
 import SyntaxAnalysis
 
 enum OutputFormatOption: String, ExpressibleByArgument, CaseIterable {
@@ -37,6 +38,14 @@ struct ProcessFailure: Error, CustomStringConvertible {
     var description: String {
         "\(command) failed (exit \(exitCode)): \(standardError)"
     }
+}
+
+/// Carries a value out of the `Task` spawned by `runAsyncBridge` -- `@unchecked Sendable` is safe
+/// here specifically because access is serialized by the semaphore itself: the write inside the
+/// `Task` always happens-before the `semaphore.signal()` that unblocks the read after
+/// `semaphore.wait()` returns, so there is no actual concurrent access to `value`.
+private final class ResultBox<T>: @unchecked Sendable {
+    var value: T?
 }
 
 @main
@@ -125,12 +134,31 @@ struct SwiftIsolationMap: ParsableCommand {
         let linked = linker.link(extractionResults)
         logVerbose("Linked \(linked.declarations.count) declaration(s), \(linked.callGraph.count) call-graph edge(s)")
 
-        let engine = IsolationInferenceEngine(declarations: linked.declarations, callGraph: linked.callGraph, ruleSet: ruleSet)
+        let externalResolution = runAsyncBridge {
+            await resolveExternalIsolation(
+                linked: linked, container: container, processRunning: processRunning, fileSystem: fileSystem
+            )
+        }
+        logVerbose(
+            "External oracle: \(externalResolution.backfilledDeclarations.count) resolved, "
+                + "\(externalResolution.updatedDeclarations.count) conformance(s) updated, "
+                + "\(externalResolution.unknownUSRs.count) unknown"
+        )
+        var mergedDeclarations = linked.declarations
+        for (usr, info) in externalResolution.updatedDeclarations {
+            mergedDeclarations[usr] = info
+        }
+        for (usr, info) in externalResolution.backfilledDeclarations where mergedDeclarations[usr] == nil {
+            mergedDeclarations[usr] = info
+        }
+
+        let engine = IsolationInferenceEngine(declarations: mergedDeclarations, callGraph: linked.callGraph, ruleSet: ruleSet)
         let report = AnalysisReportBuilder.build(
             engine: engine,
             swiftVersion: effectiveVersion,
             ruleSetUsed: String(describing: type(of: ruleSet)),
-            toolVersion: Self.toolVersion
+            toolVersion: Self.toolVersion,
+            unknownUSRs: externalResolution.unknownUSRs
         )
 
         try StalenessOrchestration.writeManifest(StalenessManifest(contentHashesByFilePath: currentHashes), to: manifestURL, fileSystem: fileSystem)
@@ -328,6 +356,79 @@ struct SwiftIsolationMap: ParsableCommand {
             }
             return url
         }
+    }
+
+    // MARK: - Sync/async bridge
+    //
+    // `SwiftIsolationMap` stays a plain, synchronous `ParsableCommand` deliberately, not
+    // `AsyncParsableCommand` -- switching it (needed to `await` `ExternalIsolationBackfill`,
+    // an `actor`-based API) caused the built test bundle to invoke this CLI's own `@main` entry
+    // point as part of the *test process itself* (`swift test` failed immediately with this
+    // tool's own "Missing expected argument '--scheme'" usage error, before running a single real
+    // test) -- a real toolchain interaction between `@main`-on-`AsyncParsableCommand` and a test
+    // target linking the same executable target, not something worth taking on for one call site.
+    // A one-shot blocking bridge is the standard, safe pattern instead: the spawned `Task` runs on
+    // the default global executor's own thread pool, distinct from the thread blocking on the
+    // semaphore, so this does not deadlock.
+    private func runAsyncBridge<T: Sendable>(_ operation: @escaping @Sendable () async -> T) -> T {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResultBox<T>()
+        Task {
+            box.value = await operation()
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return box.value!
+    }
+
+    // MARK: - External isolation (compiled-dependency oracle)
+
+    /// Resolves every USR the analyzed project references but doesn't declare itself (external
+    /// superclasses/protocols/call targets in compiled dependencies) via `sourcekitd`, per
+    /// docs/task-compiled-dependency-isolation.md. Deliberately fail-soft end to end: if the
+    /// toolchain has no `sourcekitdInProc` at all, or the compiler-arguments provider itself can't
+    /// be constructed, this returns an empty resolution (today's exact prior behavior) rather than
+    /// aborting the whole analysis over one optional enrichment step failing.
+    private func resolveExternalIsolation(
+        linked: LinkedAnalysis,
+        container: ProjectContainer,
+        processRunning: ProcessRunning,
+        fileSystem: FileSystemQuerying
+    ) async -> ExternalIsolationResolution {
+        let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
+
+        let compilerArguments: CompilerArgumentsProviding
+        let environmentProvider: BulkExtractionEnvironmentProviding
+        switch container {
+        case .swiftPackage(let packageURL):
+            let packageDirectory = packageURL.deletingLastPathComponent()
+            compilerArguments = LiveSwiftPMCompilerArgumentsProvider(
+                packageDirectory: packageDirectory, processRunning: processRunning
+            )
+            environmentProvider = SwiftPMBulkExtractionEnvironmentProvider(
+                packageDirectory: packageDirectory, processRunning: processRunning, fileSystem: fileSystem
+            )
+        case .xcodeproj, .xcworkspace:
+            compilerArguments = LiveXcodeCompilerArgumentsProvider(
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
+            )
+            environmentProvider = LiveXcodeBulkExtractionEnvironmentProvider(
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
+            )
+        }
+
+        let sourceKitD: SourceKitDClient
+        do {
+            sourceKitD = try SourceKitDClient()
+        } catch {
+            eprint("Warning: sourcekitd unavailable (\(error)) -- compiled-dependency isolation will not be resolved this run.")
+            return empty
+        }
+
+        return await ExternalIsolationBackfill.resolve(
+            linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+            processRunning: processRunning, environmentProvider: environmentProvider
+        )
     }
 
     // MARK: - Output

@@ -17,7 +17,7 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
         responses[Invocation(executable: executable, arguments: arguments)] = result
     }
 
-    func run(executable: String, arguments: [String], workingDirectory: URL?) throws -> ProcessResult {
+    func run(executable: String, arguments: [String], workingDirectory: URL?, timeout: TimeInterval?) throws -> ProcessResult {
         let invocation = Invocation(executable: executable, arguments: arguments)
         invocations.append(invocation)
         guard let result = responses[invocation] else {

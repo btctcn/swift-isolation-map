@@ -27,6 +27,7 @@ let package = Package(
                 "OutputFormat",
                 "SyntaxAnalysis",
                 "IndexStoreIntegration",
+                "SourceKitDIntegration",
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ]
         ),
@@ -52,6 +53,28 @@ let package = Package(
                 .product(name: "IndexStoreDB", package: "indexstore-db")
             ]
         ),
+        // A plain C target, not a systemLibrary -- `sourcekitd_variant_t` (24 bytes, passed/
+        // returned by value) is passed indirectly per the platform ABI once it exceeds 16 bytes,
+        // which a hand-declared Swift `@convention(c)` closure type cannot express ("not
+        // representable in Objective-C", hit empirically before this target existed). Real C code
+        // has no such restriction, and Swift's ClangImporter already knows how to bridge genuine C
+        // structs correctly (the same mechanism `CGPoint`/`CGRect` rely on) -- so the hard ABI part
+        // lives here, in C, dlopen'd at runtime (never linked at build time), and
+        // SourceKitDIntegration imports this target as an ordinary C module.
+        .target(name: "CSourceKitD"),
+        // No external package dependency, unlike IndexStoreIntegration -- `sourcekitdInProc` has
+        // no Swift-wrapper package equivalent to `indexstore-db`. dlopen'd directly at runtime
+        // (see ToolchainLocating.swift/SourceKitDClient.swift), same pattern IndexStoreIntegration
+        // uses for `libIndexStore.dylib`, just without a package doing the dlopen for us. See
+        // docs/priority-3-phase-b-sourcekitd-client.md for the full decision record.
+        .target(
+            name: "SourceKitDIntegration",
+            dependencies: [
+                "IsolationCore",
+                "ProjectResolution",
+                "CSourceKitD"
+            ]
+        ),
         .testTarget(
             name: "IsolationCoreTests",
             dependencies: ["IsolationCore"]
@@ -67,6 +90,10 @@ let package = Package(
         .testTarget(
             name: "IndexStoreIntegrationTests",
             dependencies: ["IndexStoreIntegration"]
+        ),
+        .testTarget(
+            name: "SourceKitDIntegrationTests",
+            dependencies: ["SourceKitDIntegration"]
         ),
         .testTarget(
             name: "swift-isolation-mapTests",

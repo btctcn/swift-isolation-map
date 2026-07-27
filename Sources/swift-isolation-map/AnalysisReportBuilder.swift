@@ -12,7 +12,8 @@ enum AnalysisReportBuilder {
         engine: IsolationInferenceEngine,
         swiftVersion: String,
         ruleSetUsed: String,
-        toolVersion: String
+        toolVersion: String,
+        unknownUSRs: Set<String> = []
     ) -> AnalysisReport {
         let declarations = engine.declarations
         // A declaration with no location (never matched to a real IndexStoreDB symbol -- see
@@ -33,14 +34,23 @@ enum AnalysisReportBuilder {
             let callerIsolation = engine.resolveIsolation(for: edge.callerUSR)
             let calleeIsolation = engine.resolveIsolation(for: edge.calleeUSR)
             let risk = riskLevel(caller: callerIsolation, callee: calleeIsolation)
+            // Orthogonal to `risk` (computed above, unchanged, still a pure function of the two
+            // resolved `IsolationKind`s) -- whether either endpoint is a USR the compiled-
+            // dependency oracle tried and failed to resolve, per
+            // docs/task-compiled-dependency-isolation.md's binding requirement that "no idea"
+            // must never be conflated with a confirmed risk.
+            let isUnknown = unknownUSRs.contains(edge.callerUSR) || unknownUSRs.contains(edge.calleeUSR)
             return AnalysisEdge(
                 callerUSR: edge.callerUSR,
                 calleeUSR: edge.calleeUSR,
                 callerIsolation: describe(callerIsolation),
                 calleeIsolation: describe(calleeIsolation),
                 risk: risk,
-                explanation: explanation(caller: callerIsolation, callee: calleeIsolation, risk: risk),
-                location: AnalysisLocation(file: edge.location.file, line: edge.location.line)
+                explanation: isUnknown
+                    ? "isolation for one side of this call could not be determined (compiled dependency, oracle resolution failed) -- not a confirmed risk"
+                    : explanation(caller: callerIsolation, callee: calleeIsolation, risk: risk),
+                location: AnalysisLocation(file: edge.location.file, line: edge.location.line),
+                isUnknown: isUnknown
             )
         }
 
@@ -94,7 +104,7 @@ enum AnalysisReportBuilder {
             mainActorTypes: mainActorTypeCount,
             unspecifiedIsolation: unspecifiedCount,
             crossActorBoundaries: edges.count,
-            highRiskBoundaries: edges.filter { $0.risk == .high }.count
+            highRiskBoundaries: edges.filter { $0.risk == .high && !$0.isUnknown }.count
         )
 
         return AnalysisReport(
