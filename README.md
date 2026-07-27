@@ -42,7 +42,13 @@ The core analysis engine isn't implemented yet (see [Roadmap](#roadmap)) — rig
 ```
 swift build              # debug build
 swift build -c release   # release build
-swift test                # run the test suite
+swift test -c release    # run the test suite -- release, not debug: once IndexStoreDB and
+                          # sourcekitdInProc (both C/C++-interop dependencies) are linked into
+                          # the test bundle, a plain debug-config `swift test` reproducibly
+                          # segfaults inside the swift-testing runtime itself (unrelated to this
+                          # project's own code; release builds are unaffected). See
+                          # docs/priority-2-phase-3-linking.md and
+                          # docs/priority-3-phase-b-sourcekitd-client.md.
 swift run swift-isolation-map --help
 ```
 

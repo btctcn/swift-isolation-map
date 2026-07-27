@@ -91,4 +91,34 @@ struct AnalysisReportBuilderTests {
         // usr:external is the one call-graph endpoint outside the analyzed set.
         #expect(report.summary.unspecifiedIsolation == 1)
     }
+
+    @Test("unknownUSRs: an edge whose raw risk would be high is excluded from highRiskBoundaries, but still counted and still marked isUnknown")
+    func unknownEdgeExcludedFromHighRiskBoundaries() throws {
+        // `usr:free` resolves to a real, known `.nonisolated` (not `.unspecified` -- this
+        // specifically models the compiled-dependency oracle's declaration-level-trigger-failure
+        // case, docs/priority-3-phase-c-oracle-triggers.md: the *triggering* declaration itself
+        // still has a real project-local `DeclarationInfo`, resolved via the engine's own
+        // existing default fallback, even when the external chain it depends on never got
+        // resolved -- unlike an edge-level failure, where the unresolved USR has no
+        // `DeclarationInfo` at all and resolves to `.unspecified`, naturally excluding it from
+        // `.high` by construction). `usr:actor` genuinely resolves `.actor` -- so the edge's *raw*
+        // `riskLevel(caller: .nonisolated, callee: .actor(...))` is `.high`, exactly the case the
+        // `unknownUSRs` exclusion exists to keep out of `highRiskBoundaries`.
+        let freeFunction = DeclarationInfo(usr: "usr:free", name: "trigger", explicitIsolation: .nonisolated)
+        let actorType = DeclarationInfo(usr: "usr:actor", name: "UserSession", isActorType: true)
+        let declarations: [String: DeclarationInfo] = ["usr:free": freeFunction, "usr:actor": actorType]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:free", calleeUSR: "usr:actor", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            unknownUSRs: ["usr:free"]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .high, "the raw risk classification is untouched -- isUnknown is an orthogonal marker, not a risk override")
+        #expect(edge.isUnknown)
+        #expect(report.summary.crossActorBoundaries == 1, "still counted as a cross-isolation boundary")
+        #expect(report.summary.highRiskBoundaries == 0, "but excluded from highRiskBoundaries -- never conflated with a confirmed risk")
+    }
 }

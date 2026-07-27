@@ -262,6 +262,60 @@ func locallyKnownProtocolIsNotMistakenForSuperclass() {
     #expect(widget?.conformances.contains { $0.protocolUSR.hasSuffix("Refreshable") } == true)
 }
 
+// MARK: - Inheritance-entry placeholder normalization (Gap B Phase I1)
+
+@Test("An attributed conformance (@unchecked Sendable) normalizes to a well-formed placeholder, not the attribute text")
+func attributedConformanceStripsAttribute() {
+    // A struct, not a class: a class's first inheritance entry is treated as a superclass
+    // candidate unless locally known to be a protocol (a separate, pre-existing heuristic --
+    // see `locallyKnownProtocolIsNotMistakenForSuperclass`), which would confound this test.
+    let decls = declarations("struct Widget: @unchecked Sendable {}")
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" } == true)
+}
+
+@Test("A @preconcurrency-attributed conformance normalizes to a well-formed placeholder")
+func preconcurrencyConformanceStripsAttribute() {
+    let decls = declarations("""
+    protocol P {}
+
+    class Widget: @preconcurrency P {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:P" } == true)
+}
+
+@Test("A generic superclass reference normalizes to its bare name, stripping the argument list")
+func genericSuperclassStripsGenericArguments() {
+    let decls = declarations("""
+    class Container<T> {}
+
+    class IntContainer: Container<Int> {}
+    """)
+    let intContainer = find(decls, name: "IntContainer")
+    #expect(intContainer?.superclassUSR == "syntactic:Container")
+}
+
+@Test("A qualified conformance reference normalizes to its rightmost component")
+func qualifiedConformanceUsesRightmostComponent() {
+    let decls = declarations("""
+    enum Namespace {
+        protocol Proto {}
+    }
+
+    class Widget: Namespace.Proto {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:Proto" } == true)
+}
+
+@Test("A suppression entry (~Copyable) is skipped entirely, not turned into a placeholder conformance")
+func suppressionEntryIsSkipped() {
+    let decls = declarations("struct Widget: ~Copyable {}")
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.isEmpty == true)
+}
+
 // MARK: - SE-0466 exclusion list (rule 12 / Gap B)
 
 @Test("An enum case is not eligible for the module default")

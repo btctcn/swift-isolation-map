@@ -5,3 +5,7 @@ DerivedData/
 .DS_Store
 .swift-isolation-map-manifest.json
 .swift-isolation-map-index-db/
+# Tests/Fixtures/compiled-dependency/ExternalDep's build output -- built fresh by
+# CompiledDependencyCLITests.swift every run, never pre-built/committed (binary artifacts vary by
+# toolchain, see docs/priority-3-phase-e-fixtures.md).
+Tests/Fixtures/compiled-dependency/ExternalDep/build/

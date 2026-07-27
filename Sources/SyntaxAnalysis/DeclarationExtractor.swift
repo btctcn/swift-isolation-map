@@ -77,6 +77,29 @@ enum SyntacticIdentity {
     static func typeUSR(named name: String) -> String {
         "syntactic:\(name)"
     }
+
+    /// Normalizes one inheritance-clause entry (a superclass or conformance reference) to the
+    /// bare name used for placeholder-USR / by-name matching. Plain `.trimmedDescription` mangles
+    /// several routine shapes: an attributed reference (`@unchecked Sendable`, `@preconcurrency P`)
+    /// keeps the attribute text; a generic reference (`Container<Int>`) keeps the argument list,
+    /// which never matches the index symbol's own bare name (`"Container"`); a qualified reference
+    /// (`Namespace.Proto`) needs its rightmost component to match; and a suppression (`~Copyable`,
+    /// `~Escapable`, SE-0427) isn't a conformance at all. Returns `nil` to mean "skip this entry".
+    static func normalizedInheritedName(_ type: TypeSyntaxProtocol) -> String? {
+        if let attributed = type.as(AttributedTypeSyntax.self) {
+            return normalizedInheritedName(attributed.baseType)
+        }
+        if let identifier = type.as(IdentifierTypeSyntax.self) {
+            return identifier.name.text
+        }
+        if let member = type.as(MemberTypeSyntax.self) {
+            return member.name.text
+        }
+        if type.is(SuppressedTypeSyntax.self) {
+            return nil
+        }
+        return type.trimmedDescription
+    }
 }
 
 /// Names collected in a single whole-file pre-pass, before anything else runs, precisely because
@@ -203,7 +226,7 @@ enum TypeIndexBuilder {
 
         private func applyInheritance(_ inheritance: InheritanceClauseSyntax?, isClass: Bool, to entry: inout TypeIndexEntry) {
             guard let inheritance else { return }
-            let entries = inheritance.inheritedTypes.map { $0.type.trimmedDescription }
+            let entries = inheritance.inheritedTypes.compactMap { SyntacticIdentity.normalizedInheritedName($0.type) }
             for (offset, name) in entries.enumerated() {
                 // A superclass, if present, is always the first entry -- but only classes can
                 // have one, and never if this file already knows `name` is a protocol (protocol
@@ -256,7 +279,9 @@ enum TypeIndexBuilder {
             }
             if let inheritance = node.inheritanceClause {
                 for inherited in inheritance.inheritedTypes {
-                    entry.conformedProtocolNames.insert(inherited.type.trimmedDescription)
+                    if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
+                        entry.conformedProtocolNames.insert(name)
+                    }
                 }
             }
             index[extendedName] = entry
@@ -447,7 +472,9 @@ private final class DeclarationVisitor: SyntaxVisitor {
         var protocolNames = Set<String>()
         if let inheritance {
             for inherited in inheritance.inheritedTypes {
-                protocolNames.insert(inherited.type.trimmedDescription)
+                if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
+                    protocolNames.insert(name)
+                }
             }
         }
         currentBodyConformedProtocolNamesStack.append(protocolNames)
@@ -500,7 +527,9 @@ private final class DeclarationVisitor: SyntaxVisitor {
         var protocolNames = Set<String>()
         if let inheritance = node.inheritanceClause {
             for inherited in inheritance.inheritedTypes {
-                protocolNames.insert(inherited.type.trimmedDescription)
+                if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
+                    protocolNames.insert(name)
+                }
             }
         }
         currentBodyConformedProtocolNamesStack.append(protocolNames)

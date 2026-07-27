@@ -44,6 +44,35 @@ struct MermaidWriterTests {
         #expect(output.contains("linkStyle 0 stroke:#e53935,stroke-width:2px"))
     }
 
+    @Test("an isUnknown edge is styled distinctly (gray, dashed) instead of by its risk color, even though risk is still present")
+    func unknownEdgeIsStyledDistinctly() {
+        let base = Self.sampleReport()
+        let report = AnalysisReport(
+            schemaVersion: base.schemaVersion,
+            toolVersion: base.toolVersion,
+            swiftVersion: base.swiftVersion,
+            ruleSetUsed: base.ruleSetUsed,
+            summary: base.summary,
+            nodes: base.nodes,
+            edges: [
+                AnalysisEdge(
+                    callerUSR: "usr:free",
+                    calleeUSR: "usr:actor.member",
+                    callerIsolation: "nonisolated",
+                    calleeIsolation: "actor(UserSession)",
+                    risk: .high,
+                    explanation: "isolation for one side of this call could not be determined",
+                    location: AnalysisLocation(file: "T.swift", line: 1),
+                    isUnknown: true
+                )
+            ]
+        )
+        let output = MermaidWriter.write(report)
+        #expect(output.contains("stroke-dasharray:5 5"))
+        #expect(output.contains("#9e9e9e"))
+        #expect(!output.contains("#e53935")) // not the high-risk red, even though risk == .high
+    }
+
     @Test("an edge referencing a USR with no node is skipped rather than emitting a dangling link")
     func skipsEdgeWithMissingNode() {
         var report = Self.sampleReport()

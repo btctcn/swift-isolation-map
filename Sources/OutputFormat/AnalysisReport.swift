@@ -89,6 +89,14 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
     public let risk: RiskLevel
     public let explanation: String
     public let location: AnalysisLocation
+    /// True when the compiled-dependency oracle tried and failed to resolve one side of this
+    /// edge (docs/task-compiled-dependency-isolation.md) -- a distinct, first-class "no idea"
+    /// outcome, never conflated with a confirmed risk. `risk` is still computed and present (the
+    /// two are orthogonal), but `AnalysisReportBuilder`'s `highRiskBoundaries` count excludes
+    /// `isUnknown` edges even when `risk == .high`, since a `high` risk value here reflects one
+    /// side resolving to `.unspecified` (never queried/never found), not a confirmed real risk.
+    /// Defaulted so existing JSON without this field still decodes.
+    public let isUnknown: Bool
 
     public init(
         callerUSR: String,
@@ -97,7 +105,8 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         calleeIsolation: String,
         risk: RiskLevel,
         explanation: String,
-        location: AnalysisLocation
+        location: AnalysisLocation,
+        isUnknown: Bool = false
     ) {
         self.callerUSR = callerUSR
         self.calleeUSR = calleeUSR
@@ -106,5 +115,22 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         self.risk = risk
         self.explanation = explanation
         self.location = location
+        self.isUnknown = isUnknown
+    }
+
+    // Swift's synthesized `Decodable` would otherwise *require* `isUnknown` to be present in the
+    // JSON (a non-optional stored property's key isn't implicitly treated as defaultable just
+    // because the memberwise init defaults it) -- decoded explicitly here so JSON written before
+    // this field existed still decodes, with `isUnknown` defaulting to `false`.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        callerUSR = try container.decode(String.self, forKey: .callerUSR)
+        calleeUSR = try container.decode(String.self, forKey: .calleeUSR)
+        callerIsolation = try container.decode(String.self, forKey: .callerIsolation)
+        calleeIsolation = try container.decode(String.self, forKey: .calleeIsolation)
+        risk = try container.decode(RiskLevel.self, forKey: .risk)
+        explanation = try container.decode(String.self, forKey: .explanation)
+        location = try container.decode(AnalysisLocation.self, forKey: .location)
+        isUnknown = try container.decodeIfPresent(Bool.self, forKey: .isUnknown) ?? false
     }
 }

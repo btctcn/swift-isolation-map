@@ -5,6 +5,11 @@ import SyntaxAnalysis
 public struct LinkedAnalysis: Equatable, Sendable {
     public let declarations: [String: DeclarationInfo]
     public let callGraph: [CallGraphEdge]
+
+    public init(declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge]) {
+        self.declarations = declarations
+        self.callGraph = callGraph
+    }
 }
 
 /// The trickiest new logic in Priority 2 Phase 3: reconciles Phase 1's per-file, syntactic-
@@ -53,7 +58,36 @@ public struct DeclarationLinker {
         }
 
         let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
-        func rewritten(_ usr: String) -> String { usrRewriteMap[usr] ?? usr }
+
+        // Nesting-mismatch fallback (Gap B Phase I2, per external review): a nested type's own
+        // declaration placeholder is qualified (`"syntactic:Outer.Inner"`, from
+        // `SyntacticIdentity.typeUSR(_:)`), but a bare-name inheritance-clause/extension reference
+        // to that same type is never qualified (`"syntactic:Inner"`, from `typeUSR(named:)`) --
+        // confirmed a real, separate bug by directly reading `SyntacticIdentity`'s two USR-building
+        // functions. A direct `usrRewriteMap` lookup for the bare-name reference therefore always
+        // misses even though the qualified declaration resolved just fine. Precomputed once (not
+        // scanned per lookup): every resolved qualified placeholder indexed by its own bare
+        // (rightmost-component) name, so a miss on the direct lookup can fall back to "the unique
+        // qualified key ending in `.<name>`" -- multiple matches must fall through unresolved
+        // rather than guess, same "never guess" philosophy as `disambiguate`.
+        var nestedKeysByBareName: [String: [String]] = [:]
+        for key in usrRewriteMap.keys {
+            guard key.hasPrefix("syntactic:") else { continue }
+            let qualified = key.dropFirst("syntactic:".count)
+            guard let dotIndex = qualified.lastIndex(of: ".") else { continue }
+            let bareName = String(qualified[qualified.index(after: dotIndex)...])
+            nestedKeysByBareName[bareName, default: []].append(key)
+        }
+        func rewritten(_ usr: String) -> String {
+            if let real = usrRewriteMap[usr] { return real }
+            guard usr.hasPrefix("syntactic:") else { return usr }
+            let bareName = String(usr.dropFirst("syntactic:".count))
+            guard let candidates = nestedKeysByBareName[bareName], candidates.count == 1,
+                  let real = usrRewriteMap[candidates[0]] else {
+                return usr
+            }
+            return real
+        }
 
         var byUSR: [String: DeclarationInfo] = [:]
         for declaration in allDeclarations {
@@ -77,12 +111,157 @@ public struct DeclarationLinker {
             byUSR[linked.usr] = linked
         }
 
-        var callGraph: [CallGraphEdge] = []
-        for realUSR in Set(usrRewriteMap.values) {
-            callGraph.append(contentsOf: indexStore.callGraphEdges(forUSR: realUSR))
+        byUSR = resolveInheritanceViaBaseOfRelation(byUSR)
+
+        let knownUSRs = Set(usrRewriteMap.values)
+        var rawCallGraph: [CallGraphEdge] = []
+        for realUSR in knownUSRs {
+            rawCallGraph.append(contentsOf: indexStore.callGraphEdges(forUSR: realUSR))
+        }
+
+        // `callGraphEdges(forUSR:)` above is a reverse lookup keyed by a USR this project already
+        // knows about, so it can never surface an edge whose *callee* is external -- see
+        // `IndexStoreClient.callSites(inFile:)`'s own doc comment for the full explanation. Scan
+        // every analyzed file's call sites too and fold in only the ones `callGraphEdges` couldn't
+        // have found (callee not already known), so the combined `callGraph` can, for the first
+        // time, contain edges into compiled-dependency code -- exactly what the compiled-
+        // dependency-isolation oracle's edge-level trigger needs
+        // (docs/task-compiled-dependency-isolation.md), and what `IsolationInferenceEngine.
+        // crossIsolationEdges()` (unmodified) will evaluate correctly once such a callee's
+        // isolation is backfilled into `declarations`.
+        let filesToQuery = Set(allDeclarations.compactMap { $0.location?.file })
+        for file in filesToQuery {
+            for edge in indexStore.callSites(inFile: file) where !knownUSRs.contains(edge.calleeUSR) {
+                rawCallGraph.append(edge)
+            }
+        }
+
+        // Canonicalize both sides of every edge through IndexStoreDB's own `.accessorOf` relation
+        // -- a property read/write is recorded as a call to that property's *synthesized accessor*
+        // (a USR distinct from the property's own), which would otherwise make every property
+        // access anywhere in the codebase look like an unresolvable external reference, even for
+        // completely ordinary project-local properties (confirmed empirically against `~/ios`: 60%
+        // of edge-level "external" misses carried the project's own module USR prefix -- see
+        // docs/task-compiled-dependency-isolation-usr-granularity.md). Both `callerUSR` and
+        // `calleeUSR` are rewritten, not just the callee: a call originating inside a property
+        // observer body (`willSet`/`didSet`) could plausibly have its `.calledBy` relation
+        // attributed to the observer's own accessor-suffixed USR, and `IsolationInferenceEngine
+        // .resolveIsolation(for:)` treats any USR absent from `declarations` as `.unspecified` with
+        // no special-casing between the two sides. Memoized per `link()` call (matching
+        // `usrRewriteMap`'s own lifetime) -- `IndexStoreDB` queries are in-process local reads, but
+        // a hot property's accessor can appear on thousands of edges.
+        var accessorOwnerCache: [String: String] = [:]
+        func canonicalized(_ usr: String) -> String {
+            if let cached = accessorOwnerCache[usr] { return cached }
+            let resolved = indexStore.owningPropertyUSR(forUSR: usr) ?? usr
+            accessorOwnerCache[usr] = resolved
+            return resolved
+        }
+        let callGraph = rawCallGraph.map { edge in
+            CallGraphEdge(callerUSR: canonicalized(edge.callerUSR), calleeUSR: canonicalized(edge.calleeUSR), location: edge.location)
         }
 
         return LinkedAnalysis(declarations: byUSR, callGraph: callGraph)
+    }
+
+    /// Gap B Phase I2's core fix (docs/task-gap-b-implementation-plan.md): resolves whatever
+    /// `superclassUSR`/`conformances[].protocolUSR` placeholders are *still* `syntactic:`-prefixed
+    /// after the location-based rewrite above, via IndexStoreDB's `.baseOf` relation
+    /// (`IndexStoreClient.baseTypeUSRs(forUSR:)`). The location-based rewrite only ever resolves a
+    /// declaration's *own* identity, never a *reference* to another declaration's name -- every
+    /// inheritance-clause placeholder is a bare "syntactic:<Name>" string, produced once per file
+    /// with no notion of other files, so it never matches any real symbol's own location. This
+    /// pass closes that gap for both project-local references (which then match an entry already
+    /// in `byUSR`, short-circuiting `ExternalIsolationBackfill`'s oracle trigger entirely -- the
+    /// H-local fix) and external/SDK references (which resolve to their own real, compiler-mangled
+    /// USR and route through the bulk-symbol-graph-cache-first oracle machinery instead of failing
+    /// a live query against a nonsense placeholder name -- the H-external fix).
+    ///
+    /// **Query the nominal, not the member.** `.baseOf` is a type-level relation -- querying it
+    /// against a *member*'s own USR (a method/property) returns nothing, since members have no
+    /// base types of their own. But the real corpus's `needs=` lists overwhelmingly ride on
+    /// *member* declarations, because `SyntaxAnalysis.DeclarationExtractor` attaches a copy of the
+    /// enclosing type's conformances to every member's own `DeclarationInfo` (see
+    /// `ExternalIsolationBackfill`'s own per-member-duplication finding). So for a member, the
+    /// nominal to query is `declaration.containingTypeUSR` (already rewritten to a real USR by the
+    /// loop above, wherever the containing type itself resolved) -- reusing this existing field
+    /// rather than inventing a second, parallel member->nominal derivation. For a top-level or
+    /// nested type's own entry, the nominal is the declaration's own (already-rewritten) `usr`.
+    /// Resolved once per distinct nominal (memoized): a type conformed-to by hundreds of members
+    /// is only ever queried once.
+    private func resolveInheritanceViaBaseOfRelation(_ byUSR: [String: DeclarationInfo]) -> [String: DeclarationInfo] {
+        var baseTypeNamesByNominal: [String: [String: String]] = [:]
+
+        // Every real base type/protocol `nominalUSR` inherits from, indexed by bare name --
+        // memoized per nominal. Same-bare-name collisions (e.g. `ModuleA.Foo`/`ModuleB.Foo` both
+        // trimming to `"Foo"`) are skipped, not guessed, matching `disambiguate`'s own "return nil
+        // rather than guess" philosophy -- this same per-nominal map is also the mechanism
+        // `ExternalIsolationBackfill`'s own per-member dedup (Phase I3) keys against, so the two
+        // phases share one "which nominal does this declaration belong to" answer, not two.
+        func baseTypeNames(forNominal nominalUSR: String) -> [String: String] {
+            if let cached = baseTypeNamesByNominal[nominalUSR] { return cached }
+            var byName: [String: String] = [:]
+            var collidedNames: Set<String> = []
+            for candidate in indexStore.baseTypeUSRs(forUSR: nominalUSR) {
+                if byName[candidate.name] != nil {
+                    collidedNames.insert(candidate.name)
+                } else {
+                    byName[candidate.name] = candidate.usr
+                }
+            }
+            for name in collidedNames { byName.removeValue(forKey: name) }
+            baseTypeNamesByNominal[nominalUSR] = byName
+            return byName
+        }
+
+        func nominalUSR(for declaration: DeclarationInfo) -> String {
+            declaration.containingTypeUSR ?? declaration.usr
+        }
+
+        // Resolves one placeholder against `declaration`'s own nominal -- `nil` (leave the
+        // placeholder as-is) if the nominal itself never resolved to a real USR (Phase I2 can't
+        // help there; the nesting-mismatch fallback above is the only thing that can), or if the
+        // bare name has no unique match among the nominal's own base types.
+        func resolved(_ placeholder: String, for declaration: DeclarationInfo) -> String? {
+            guard placeholder.hasPrefix("syntactic:") else { return nil }
+            let nominal = nominalUSR(for: declaration)
+            guard !nominal.hasPrefix("syntactic:") else { return nil }
+            let bareName = String(placeholder.dropFirst("syntactic:".count))
+            return baseTypeNames(forNominal: nominal)[bareName]
+        }
+
+        return byUSR.mapValues { declaration in
+            var superclassUSR = declaration.superclassUSR
+            if let current = superclassUSR, let realUSR = resolved(current, for: declaration) {
+                superclassUSR = realUSR
+            }
+            let conformances = declaration.conformances.map { conformance -> ProtocolConformance in
+                guard let realUSR = resolved(conformance.protocolUSR, for: declaration) else { return conformance }
+                return ProtocolConformance(
+                    protocolUSR: realUSR,
+                    protocolGlobalActorName: conformance.protocolGlobalActorName,
+                    declaredInSameFileAsPrimaryDefinition: conformance.declaredInSameFileAsPrimaryDefinition,
+                    declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness
+                )
+            }
+            guard superclassUSR != declaration.superclassUSR || conformances != declaration.conformances else {
+                return declaration
+            }
+            return DeclarationInfo(
+                usr: declaration.usr,
+                name: declaration.name,
+                explicitIsolation: declaration.explicitIsolation,
+                isActorType: declaration.isActorType,
+                containingTypeUSR: declaration.containingTypeUSR,
+                isStaticMember: declaration.isStaticMember,
+                superclassUSR: superclassUSR,
+                conformances: conformances,
+                isEligibleForModuleDefaultIsolation: declaration.isEligibleForModuleDefaultIsolation,
+                enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
+                isNestedType: declaration.isNestedType,
+                location: declaration.location
+            )
+        }
     }
 
     private func relink(

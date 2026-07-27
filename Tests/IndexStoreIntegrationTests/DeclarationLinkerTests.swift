@@ -88,3 +88,111 @@ func crossFileProtocolWitnessResolvesCorrectly() throws {
     let crossEdges = engine.crossIsolationEdges()
     #expect(crossEdges.contains { $0.callerUSR == trigger.usr && $0.calleeUSR == refresh.usr })
 }
+
+/// Verifies, against a real index store (not assumed from reading `swiftlang/indexstore-db`'s
+/// source alone -- the code that actually *populates* which occurrence carries `.accessorOf`
+/// lives in the Swift compiler itself, not anything checked out in this repo), which side of the
+/// relation carries the accessor->property mapping: on the accessor's own definition occurrence
+/// (pointing at the property), or on the property's own occurrence (pointing at each accessor).
+/// Gap A, docs/task-compiled-dependency-isolation-usr-granularity.md -- `SyncCoordinator.counter`
+/// (`Tests/Fixtures/cross-file-witness/Sources/CrossFileWitness/SyncCoordinator.swift`) is a
+/// plain stored property added specifically for this test.
+@Test("owningPropertyUSR(forUSR:) maps a real synthesized getter/setter USR back to the property's own real USR")
+func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
+    let fixtureRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/cross-file-witness")
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-store"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-db"
+    try? FileManager.default.removeItem(atPath: indexStorePath)
+    try? FileManager.default.removeItem(atPath: databasePath)
+    try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+
+    // Real symbols reported by IndexStoreDB at `counter`'s own declaration location -- per
+    // `DeclarationLinker.disambiguate`'s own established, already-verified finding, a stored
+    // property's implicit getter/setter report at the *same* (line, column) as the property
+    // itself, distinguished only by name (`getter:counter`/`setter:counter` vs. plain `counter`).
+    let counterFile = sourcesDirectory.appendingPathComponent("SyncCoordinator.swift").path
+    let symbolsAtLocation = indexStoreClient.definedSymbols(inFile: counterFile).filter { $0.name.contains("counter") }
+    let property = try #require(symbolsAtLocation.first { $0.name == "counter" })
+    let getter = try #require(symbolsAtLocation.first { $0.name == "getter:counter" })
+    let setter = try #require(symbolsAtLocation.first { $0.name == "setter:counter" })
+
+    #expect(indexStoreClient.owningPropertyUSR(forUSR: getter.usr) == property.usr)
+    #expect(indexStoreClient.owningPropertyUSR(forUSR: setter.usr) == property.usr)
+    // The property's own USR is not itself an accessor of anything.
+    #expect(indexStoreClient.owningPropertyUSR(forUSR: property.usr) == nil)
+}
+
+/// Verifies, against a real index store, which side of IndexStoreDB's `.baseOf` relation carries
+/// the supertype/conformance mapping -- Gap B, docs/task-gap-b-implementation-plan.md's Phase I2.
+/// Deliberately reuses `cross-file-witness`'s existing `extension SyncCoordinator: Refreshable`
+/// (`SyncCoordinatorRefreshable.swift`) rather than a fresh `class C: P` fixture: an
+/// extension-declared conformance is the corpus's *dominant* real-world shape (confirmed against
+/// `~/ios`), and a fixture with only a direct `class C: P` conformance would validate the relation
+/// without validating the shape that actually produced the 28134-trigger real-world problem.
+@Test("baseTypeUSRs(forUSR:) resolves a real supertype/conformance, including one declared via an extension")
+func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
+    let fixtureRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/cross-file-witness")
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-store"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-db"
+    try? FileManager.default.removeItem(atPath: indexStorePath)
+    try? FileManager.default.removeItem(atPath: databasePath)
+    try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+
+    let coordinatorFile = sourcesDirectory.appendingPathComponent("SyncCoordinator.swift").path
+    let coordinator = try #require(indexStoreClient.definedSymbols(inFile: coordinatorFile).first { $0.name == "SyncCoordinator" })
+
+    let protocolFile = sourcesDirectory.appendingPathComponent("Protocol.swift").path
+    let refreshable = try #require(indexStoreClient.definedSymbols(inFile: protocolFile).first { $0.name == "Refreshable" })
+
+    // `SyncCoordinator`'s own conformance to `Refreshable` is declared in a *third* file
+    // (`SyncCoordinatorRefreshable.swift`, via `extension SyncCoordinator: Refreshable`) --
+    // neither `SyncCoordinator`'s nor `Refreshable`'s own declaration file. `baseTypeUSRs`
+    // must surface it anyway, purely from the index relation.
+    let baseTypes = indexStoreClient.baseTypeUSRs(forUSR: coordinator.usr)
+    #expect(baseTypes.contains { $0.usr == refreshable.usr })
+
+    // The reverse direction must not hold: `Refreshable` (a protocol, no base types of its own
+    // in this fixture) does not report `SyncCoordinator` as one of its own base types -- confirms
+    // the relation wasn't queried backwards.
+    let reverseBaseTypes = indexStoreClient.baseTypeUSRs(forUSR: refreshable.usr)
+    #expect(!reverseBaseTypes.contains { $0.usr == coordinator.usr })
+
+    // The *direct* inheritance shape (declared on the primary declaration itself, e.g.
+    // `class DerivedWidget: BaseWidget {}`, `DirectInheritance.swift`) resolves through the same
+    // query without needing the extension hop -- confirmed separately from the extension-declared
+    // shape above, not assumed to work the same way just because both use `.baseOf`.
+    let directInheritanceFile = sourcesDirectory.appendingPathComponent("DirectInheritance.swift").path
+    let directSymbols = indexStoreClient.definedSymbols(inFile: directInheritanceFile)
+    let baseWidget = try #require(directSymbols.first { $0.name == "BaseWidget" })
+    let derivedWidget = try #require(directSymbols.first { $0.name == "DerivedWidget" })
+    let derivedBaseTypes = indexStoreClient.baseTypeUSRs(forUSR: derivedWidget.usr)
+    #expect(derivedBaseTypes.contains { $0.usr == baseWidget.usr })
+}
