@@ -272,6 +272,71 @@ Phases I1-I5, each with its own verification). Summary:
   direction-verification live test extended with an extension-declared-conformance fixture, 1 for
   I3's cache-and-apply dedup).
 
+## Extension-of-an-external-type fix — closed this session
+
+Full problem statement, mechanism trace, and two independent external-review rounds (both
+independently re-verified before being trusted, per this project's standing discipline):
+`docs/task-external-type-extension-isolation.md`. Summary:
+
+- **The fix**: a two-hop IndexStoreDB relation chain (`.childOf` -> the member's own enclosing
+  extension's synthetic USR, then `.extendedBy` -> the extension's own real extended-type USR),
+  added to `IndexStoreClient` and consumed by a new `DeclarationLinker` pass that rewrites an
+  extension member's `containingTypeUSR` to that real USR whenever the extended type has no
+  primary declaration among the linked files (a genuinely external SDK/Pods type, or a project-
+  local type simply outside this analysis run). `ExternalIsolationBackfill` gained a third
+  "unresolved need" (alongside the existing superclass/conformance ones) that backfills the
+  extended type's own isolation via the *same* bulk-cache-first, live-oracle-fallback machinery
+  already used for external superclasses — `IsolationInferenceEngine` itself needed **zero**
+  changes, confirmed by tracing its containing-type-propagation branch directly. Two rounds of
+  external review caught a real design-shape flaw (resolving per shared bare-name placeholder
+  would have silently reintroduced the exact collision-blindness the fix exists to close) before
+  any code was written; the shipped design resolves per-member (`.childOf`, free, in-memory) with
+  hop 2 memoized per distinct extension USR, giving correct per-extension identity for free.
+- **Real, measured result on `~/ios`, and it is larger than originally scoped — reported
+  honestly, not just the number that was predicted.** The pre-registered baseline (before any
+  fix, from the already-captured real run) was 20 of 129 confirmed high-risk boundaries matching
+  the false-positive shape on the *caller* side. The real before/after diff of confirmed
+  high-risk edges:
+  - **22 resolved (removed)** — the pre-registered 20 (`UIViewController+Navigation.swift`'s 5,
+    plus `UICollectionViewLayoutAttributes`/`WKWebViewConfiguration`/`UITabBarController`/
+    `MKMapView` extensions elsewhere), plus 2 more found only by running the real diff (an
+    `AppDelegate` extension method in the test target, and a Pods-internal `Mindbox` case) —
+    confirming the fix's own scope note that it closes the general "no primary declaration among
+    linked files" case, not just the genuinely-external one.
+  - **156 newly appeared** — traced, not just counted: 144 of 156 (92%, and effectively all once
+    an ObjC-category USR shape a diagnostic regex missed is accounted for) are the *same root
+    cause, the other direction*. The original bug affected the *caller* side of an extension-of-
+    external-type method (reported `.nonisolated` when it should inherit the extended type's real
+    isolation) — but it affected the **callee** side identically: a call *into* a project-local
+    extension method of `UINavigationController`/`UIApplication`/`UIViewController`/etc. (e.g.
+    `pushViewController(_:animated:)`, `topViewController(base:)`) previously saw that callee
+    report `.nonisolated` too, so a `nonisolated`-caller-into-`nonisolated`-callee edge was never
+    flagged at all — a **false negative**, the strictly worse failure class this tool's whole
+    value proposition cannot tolerate. Fixing the callee's own isolation the same way as the
+    caller's necessarily un-masks every one of these real, previously-invisible risks at once.
+    Net: **129 → 253 confirmed high-risk boundaries** (unique caller/callee pairs) — a real,
+    substantial increase, and a *correct* one: every sampled case traced to a genuine, previously
+    wrong `.nonisolated` classification on one side of a real UIKit/AppKit-derived type, not a new
+    bug in the fix itself.
+  - `External oracle: 2606 resolved, 11005 conformance(s) updated, 3234 unknown` (up slightly from
+    Gap B's own 2434/10898/3208, consistent with the new containingTypeUSR need triggering a
+    modest number of additional resolutions).
+- Full `swift test -c release`: 230/230 passing (220 pre-fix plus 10 new: 5 `DeclarationLinker`-
+  level unit tests for the two-hop chain and per-extension grouping, 2 real golden-fixture tests
+  covering V1-V4 including the two new nested/generic shapes, 1 `ExternalIsolationBackfill` unit
+  test for the new containing-type need, 1 real end-to-end test combining `DeclarationLinker` +
+  `ExternalIsolationBackfill` + a real `AppKit` bulk extraction + the unmodified
+  `IsolationInferenceEngine`, plus one real, subtle path-identity bug found and fixed along the
+  way: macOS's `/var` is an APFS *firmlink* to `/private/var`, invisible to `Foundation`'s
+  `URL.resolvingSymlinksInPath()` but resolved by the real compiler/index-store machinery and by
+  POSIX `realpath(3)` — test fixtures built under `NSTemporaryDirectory()` now resolve via
+  `realpath(3)` before use, fixing a real (if test-only) location-matching failure).
+- **Residual, evidenced limitation** (per the task's own DoD): an extension none of whose members
+  ever resolved to a real USR has no hop-1 entry point into this fix at all — left exactly as
+  before (placeholder containing type, `.nonisolated`, false-positive-only, never worse). Not
+  separately re-measured this session; expected near-zero post-Gap-B, worth a future check if a
+  suspiciously-nonisolated extension member is ever reported.
+
 ## What's still open
 
 - The `~/ios` `highRiskBoundaries` before/after diff, now that Gap B is closed and a full run can

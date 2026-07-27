@@ -196,3 +196,121 @@ func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
     let derivedBaseTypes = indexStoreClient.baseTypeUSRs(forUSR: derivedWidget.usr)
     #expect(derivedBaseTypes.contains { $0.usr == baseWidget.usr })
 }
+
+/// Copies `cross-file-witness` (source only, never any stale `.build`) into a fresh, unique temp
+/// directory. Several tests in this file build this fixture; running `swift build` concurrently
+/// against one *shared* directory's `.build/build.db` was found, empirically, to race (a real
+/// SwiftPM build-database "disk I/O error" under concurrent `swift-testing` execution) once enough
+/// tests did it at once -- giving each test its own private copy removes the race entirely rather
+/// than serializing around it.
+///
+/// **Real-path resolution below is load-bearing, not cosmetic**: `NSTemporaryDirectory()` returns
+/// a path under `/var/folders/...`, but `/var` is an APFS *firmlink* to `/private/var` on macOS --
+/// not a regular symlink, so `Foundation`'s `URL.resolvingSymlinksInPath()` does *not* resolve it
+/// (confirmed empirically: it returned the path completely unchanged). The real compiler/index-
+/// store machinery records every source file's path already resolved (`/private/var/folders/...`,
+/// confirmed via the POSIX `realpath(3)` call below, and via a real build+index showing IndexStoreDB's
+/// own recorded locations in that form) -- an unresolved-path copy left every declaration's own
+/// location using the *unresolved* form, which then never matched any real indexed symbol's
+/// location, silently leaving `containingTypeUSR` unresolved (a real, subtle path-identity bug
+/// found and fixed this session, not a guess). `realpath(3)` (not `resolvingSymlinksInPath`)
+/// correctly resolves firmlinks since it asks the OS/VFS directly, not a naive per-component
+/// `readlink` walk -- called on `NSTemporaryDirectory()` itself (which exists) before appending
+/// this fixture copy's own not-yet-existing subdirectory name.
+private func copiedCrossFileWitnessFixture() throws -> URL {
+    let originalRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/cross-file-witness")
+    var pathBuffer = [Int8](repeating: 0, count: Int(PATH_MAX))
+    let realTempDir: URL
+    if let resolved = realpath(NSTemporaryDirectory(), &pathBuffer) {
+        realTempDir = URL(fileURLWithPath: String(cString: resolved))
+    } else {
+        realTempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+    }
+    let copyRoot = realTempDir.appendingPathComponent("swift-isolation-map-fixture-copy-\(UUID().uuidString)")
+    try? FileManager.default.removeItem(at: copyRoot)
+    try FileManager.default.createDirectory(at: copyRoot, withIntermediateDirectories: true)
+    for name in ["Package.swift", "Sources"] {
+        try FileManager.default.copyItem(at: originalRoot.appendingPathComponent(name), to: copyRoot.appendingPathComponent(name))
+    }
+    return copyRoot
+}
+
+/// Extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md): verifies
+/// the `.childOf`/`.extendedBy` chain (`containingExtensionUSR` + `extendedTypeUSR`) resolves a
+/// member's extended type correctly for three real shapes -- a genuinely external SDK type
+/// (`NSView`, real AppKit, `@MainActor`), a nested extended type (V4), and a generic extended type
+/// (V4) -- against a real index store, not assumed.
+@Test("containingExtensionUSR + extendedTypeUSR resolve the real extended type for an external SDK type, a nested type, and a generic type")
+func extensionChainResolvesExternalNestedAndGenericExtendedTypes() throws {
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extchain-store-\(UUID().uuidString)"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extchain-db-\(UUID().uuidString)"
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let extensionFile = sourcesDirectory.appendingPathComponent("ExtensionOfExternalType.swift").path
+    let symbols = indexStoreClient.definedSymbols(inFile: extensionFile)
+
+    // Real SDK type (external, no primary declaration in this project) -- the motivating shape.
+    let realExtensionMethod = try #require(symbols.first { $0.name == "realExtensionMethod()" })
+    let realExtensionUSR = try #require(indexStoreClient.containingExtensionUSR(forMemberUSR: realExtensionMethod.usr))
+    let realExtendedTypeUSR = try #require(indexStoreClient.extendedTypeUSR(forExtensionUSR: realExtensionUSR))
+    #expect(realExtendedTypeUSR == "c:objc(cs)NSView")
+
+    // V4: nested extended type.
+    let nestedInner = try #require(symbols.first { $0.name == "Inner" })
+    let nestedMethod = try #require(symbols.first { $0.name == "nestedExtensionMethod()" })
+    let nestedExtensionUSR = try #require(indexStoreClient.containingExtensionUSR(forMemberUSR: nestedMethod.usr))
+    let nestedExtendedTypeUSR = try #require(indexStoreClient.extendedTypeUSR(forExtensionUSR: nestedExtensionUSR))
+    #expect(nestedExtendedTypeUSR == nestedInner.usr)
+
+    // V4: generic extended type.
+    let genericContainer = try #require(symbols.first { $0.name == "GenericContainer" })
+    let genericMethod = try #require(symbols.first { $0.name == "genericExtensionMethod()" })
+    let genericExtensionUSR = try #require(indexStoreClient.containingExtensionUSR(forMemberUSR: genericMethod.usr))
+    let genericExtendedTypeUSR = try #require(indexStoreClient.extendedTypeUSR(forExtensionUSR: genericExtensionUSR))
+    #expect(genericExtendedTypeUSR == genericContainer.usr)
+}
+
+/// The full `DeclarationLinker.link(_:)` pass: `realExtensionMethod`'s `containingTypeUSR` (a
+/// `syntactic:NSView` placeholder with no primary declaration to resolve against) gets rewritten
+/// to `NSView`'s own real clang USR, exactly the fact `ExternalIsolationBackfill` needs to backfill
+/// its isolation and `IsolationInferenceEngine` needs to propagate it -- confirming the full
+/// pipeline seam this task's own DoD insists on, not just the two raw index queries above.
+@Test("DeclarationLinker.link(_:) rewrites an extension member's containingTypeUSR to the real extended type's USR")
+func linkRewritesExtensionMemberContainingTypeUSR() throws {
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extlink-store-\(UUID().uuidString)"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extlink-db-\(UUID().uuidString)"
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let extensionFile = sourcesDirectory.appendingPathComponent("ExtensionOfExternalType.swift")
+    let source = try String(contentsOf: extensionFile, encoding: .utf8)
+    let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let linker = DeclarationLinker(indexStore: indexStoreClient)
+    let linked = linker.link([extractionResult])
+
+    let realExtensionMethod = try #require(linked.declarations.values.first { $0.name == "realExtensionMethod" })
+    #expect(realExtensionMethod.containingTypeUSR == "c:objc(cs)NSView")
+}

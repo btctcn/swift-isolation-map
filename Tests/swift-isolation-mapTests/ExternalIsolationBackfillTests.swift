@@ -4,6 +4,7 @@ import IsolationCore
 import IndexStoreIntegration
 import ProjectResolution
 import SourceKitDIntegration
+import SyntaxAnalysis
 @testable import swift_isolation_map
 
 final class FakeCompilerArgumentsProviding: CompilerArgumentsProviding, @unchecked Sendable {
@@ -273,4 +274,122 @@ func declarationLevelTriggerDedupesPerMemberConformanceCopies() async throws {
     #expect(sourceKitD.callCount == 1)
     #expect(resolution.updatedDeclarations["s:Widget.method1"]?.conformances.first?.protocolGlobalActorName == "MainActor")
     #expect(resolution.updatedDeclarations["s:Widget.method2"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+}
+
+@Test("A member whose containingTypeUSR was rewritten to a real external USR (extension-of-external-type fix) gets that type's isolation backfilled via its own hover")
+func declarationLevelTriggerBackfillsExtendedExternalContainingType() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    // Mirrors DeclarationLinker's own .childOf/.extendedBy fix: containingTypeUSR already
+    // rewritten to a real, external USR (e.g. UIViewController's own clang USR) by the time
+    // ExternalIsolationBackfill sees it.
+    let member = DeclarationInfo(usr: "s:Widget.method", name: "method", containingTypeUSR: "c:objc(cs)ExternalType", location: location)
+    let linked = LinkedAnalysis(declarations: ["s:Widget.method": member], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Hovering the member's own declaration returns its already-fully-resolved effective
+    // isolation, inherited from the extended external type -- same "hover the project's own
+    // declaration" shape already established for the external-superclass case.
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Widget.method", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Widget.method")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["c:objc(cs)ExternalType"]?.explicitIsolation == .globalActor(name: "MainActor"))
+}
+
+/// A real environment (real SDK path, real target), so `ExternalIsolationBackfill.resolve`'s own
+/// bulk-cache phase performs a real `AppKit` `symbolgraph-extract` -- the last unverified seam in
+/// the extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md):
+/// `DeclarationLinker`'s `.childOf`/`.extendedBy` chain rewrites `containingTypeUSR` to
+/// `"c:objc(cs)NSView"` (confirmed live in `DeclarationLinkerTests.swift`), and this test confirms
+/// that *same* real key is what the real bulk cache backfills -- not just two isolated tests that
+/// happen to use the same literal string.
+private struct RealAppKitEnvironmentProviding: BulkExtractionEnvironmentProviding {
+    func environment() throws -> BulkExtractionEnvironment {
+        let sdkResult = try LiveProcessRunner().run(executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-path"], workingDirectory: nil)
+        let sdkPath = sdkResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        #if arch(arm64)
+        let target = "arm64-apple-macosx13.0"
+        #else
+        let target = "x86_64-apple-macosx13.0"
+        #endif
+        return BulkExtractionEnvironment(sdkPath: sdkPath, target: target, discoveredModules: [])
+    }
+}
+
+@Test("End to end, real toolchain: an extension member of a real external @MainActor SDK type (NSView) resolves correctly through DeclarationLinker + ExternalIsolationBackfill + the unmodified IsolationInferenceEngine")
+func extensionOfExternalTypeResolvesEndToEndWithRealAppKit() async throws {
+    // A private copy, not the shared fixture path: several tests across two test targets build
+    // `cross-file-witness` concurrently, and running `swift build` against one *shared*
+    // `.build/build.db` was found, empirically, to race under concurrent `swift-testing`
+    // execution (a real SwiftPM build-database "disk I/O error") -- see
+    // `DeclarationLinkerTests.swift`'s own `copiedCrossFileWitnessFixture()` doc comment.
+    let originalRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // ExternalIsolationBackfillTests.swift -> swift-isolation-mapTests
+        .deletingLastPathComponent() // swift-isolation-mapTests -> Tests
+        .appendingPathComponent("Fixtures/cross-file-witness")
+    // Real-path (`realpath(3)`, not `resolvingSymlinksInPath`) resolution is load-bearing here,
+    // not cosmetic -- see `DeclarationLinkerTests.swift`'s `copiedCrossFileWitnessFixture()` doc
+    // comment: `/var` (hence `NSTemporaryDirectory()`) is an APFS *firmlink* to `/private/var` on
+    // macOS, invisible to `Foundation`'s own symlink-resolution API, but real to the compiler/
+    // index-store machinery, which records every source file's path already resolved.
+    var pathBuffer = [Int8](repeating: 0, count: Int(PATH_MAX))
+    let realTempDir: URL
+    if let resolved = realpath(NSTemporaryDirectory(), &pathBuffer) {
+        realTempDir = URL(fileURLWithPath: String(cString: resolved))
+    } else {
+        realTempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+    }
+    let fixtureRoot = realTempDir.appendingPathComponent("swift-isolation-map-fixture-copy-\(UUID().uuidString)")
+    try? FileManager.default.removeItem(at: fixtureRoot)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    for name in ["Package.swift", "Sources"] {
+        try FileManager.default.copyItem(at: originalRoot.appendingPathComponent(name), to: fixtureRoot.appendingPathComponent(name))
+    }
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extend2end-store-\(UUID().uuidString)"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extend2end-db-\(UUID().uuidString)"
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let extensionFile = sourcesDirectory.appendingPathComponent("ExtensionOfExternalType.swift")
+    let source = try String(contentsOf: extensionFile, encoding: .utf8)
+    let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let linker = DeclarationLinker(indexStore: indexStoreClient)
+    let linked = linker.link([extractionResult])
+
+    let realExtensionMethod = try #require(linked.declarations.values.first { $0.name == "realExtensionMethod" })
+    #expect(realExtensionMethod.containingTypeUSR == "c:objc(cs)NSView")
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked,
+        compilerArguments: FakeCompilerArgumentsProviding(),
+        sourceKitD: FakeSourceKitDQuerying(),
+        fileSystem: LiveFileSystem(),
+        processRunning: processRunner,
+        environmentProvider: RealAppKitEnvironmentProviding(),
+        bulkModuleNames: ["AppKit"]
+    )
+
+    #expect(resolution.backfilledDeclarations["c:objc(cs)NSView"]?.explicitIsolation == .globalActor(name: "MainActor"))
+
+    var declarations = linked.declarations
+    declarations.merge(resolution.backfilledDeclarations) { existing, _ in existing }
+    let engine = IsolationInferenceEngine(declarations: declarations, callGraph: linked.callGraph, ruleSet: Swift63RuleSet())
+    #expect(engine.resolveIsolation(for: realExtensionMethod.usr) == .globalActor(name: "MainActor"))
 }
