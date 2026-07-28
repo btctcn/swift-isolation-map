@@ -314,3 +314,60 @@ func linkRewritesExtensionMemberContainingTypeUSR() throws {
     let realExtensionMethod = try #require(linked.declarations.values.first { $0.name == "realExtensionMethod" })
     #expect(realExtensionMethod.containingTypeUSR == "c:objc(cs)NSView")
 }
+
+/// Cross-file type-entry collision fix (docs/task-cross-file-type-entry-collision.md): `MultiFileType`'s
+/// primary declaration (`MultiFileType.swift`: superclass `MultiFileBase`, conformance to
+/// `MultiFileFirstProtocol`) and its extension in a *different* file (`MultiFileTypeExtension.swift`:
+/// conformance to `MultiFileSecondProtocol`, no location of its own) must merge into one entry
+/// carrying *both* files' facts, regardless of which file is extracted/linked first -- mirrors the
+/// real `~/ios` case (`AppDelegate: MindboxAppDelegate` in `AppDelegate.swift`, a second,
+/// unrelated `extension AppDelegate { ... }` in a separate test file) that exposed this bug: the
+/// old plain-overwrite `byUSR[linked.usr] = linked` let whichever file's entry was processed last
+/// silently destroy the other's superclass/conformance/location facts.
+@Test("DeclarationLinker.link(_:) merges a real cross-file type+extension pair regardless of extraction order")
+func linkMergesRealCrossFileTypeAndExtensionRegardlessOfOrder() throws {
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
+    let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-multifile-store-\(UUID().uuidString)"
+    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-multifile-db-\(UUID().uuidString)"
+
+    let processRunner = LiveProcessRunner()
+    let buildResult = try processRunner.run(
+        executable: "swift",
+        arguments: ["build", "-Xswiftc", "-index-store-path", "-Xswiftc", indexStorePath],
+        workingDirectory: fixtureRoot
+    )
+    #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
+
+    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+
+    func extract(_ fileName: String) throws -> ExtractionResult {
+        let fileURL = sourcesDirectory.appendingPathComponent(fileName)
+        let source = try String(contentsOf: fileURL, encoding: .utf8)
+        return DeclarationExtractor.extractWithContext(source: source, fileName: fileURL.path)
+    }
+    let typeFile = try extract("MultiFileType.swift")
+    let extensionFile = try extract("MultiFileTypeExtension.swift")
+
+    for order in [[typeFile, extensionFile], [extensionFile, typeFile]] {
+        let linker = DeclarationLinker(indexStore: indexStoreClient)
+        let linked = linker.link(order)
+        let merged = try #require(linked.declarations.values.first { $0.name == "MultiFileType" })
+
+        #expect(!merged.usr.hasPrefix("syntactic:"), "must resolve to a real USR")
+        #expect(merged.location != nil, "real location must survive regardless of processing order")
+        #expect(
+            merged.superclassUSR.map { !$0.hasPrefix("syntactic:") } ?? false,
+            "superclass must survive and resolve to a real USR regardless of processing order"
+        )
+        // Two *distinct* conformances must survive the merge -- checked by distinct USR (whether
+        // or not Gap B's own separate `.baseOf` pass, later in the same `link(_:)` call, also
+        // resolved them to real USRs is that pass's own concern, not this fix's); a failed merge
+        // would silently drop one file's conformance, collapsing this to 1.
+        let distinctConformanceUSRs = Set(merged.conformances.map(\.protocolUSR))
+        #expect(
+            distinctConformanceUSRs.count == 2,
+            "both files' conformances must be present regardless of processing order, got \(merged.conformances.map(\.protocolUSR))"
+        )
+    }
+}

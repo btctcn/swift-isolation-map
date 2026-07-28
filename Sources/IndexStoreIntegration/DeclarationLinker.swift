@@ -39,9 +39,21 @@ public struct LinkedAnalysis: Equatable, Sendable {
 /// unresolved entries for the same name can overwrite each other in the final dictionary. This
 /// doesn't produce an incorrect *resolution* for rule 7 (whole-type inference already correctly
 /// requires the primary declaration to be in the same file, per Phase 1's design) -- it can only
-/// discard already-irrelevant-to-rule-7 data, not corrupt a real answer. A full general solution
-/// (merging every extension-only fragment of a type across files) is out of scope for what this
-/// phase's "done" criterion (a cross-file protocol-witness call resolving correctly) requires.
+/// discard already-irrelevant-to-rule-7 data, not corrupt a real answer.
+///
+/// **A related, more serious case, closed this session
+/// (docs/task-cross-file-type-entry-collision.md): a type *with* a primary declaration in the
+/// linked set, but *also* extended in a different file, could have its own rich entry (superclass,
+/// conformances, real location) silently overwritten by an empty one from the other file's own
+/// independent, primary-declaration-blind extraction.** Both files' per-file extractions produce
+/// their own `"syntactic:<Name>"` placeholder for the same type (`SyntaxAnalysis` has no notion of
+/// other files by design), both correctly rewrite to the same real USR, and used to collide via a
+/// plain dictionary overwrite (`byUSR[linked.usr] = linked`) -- whichever file's entry was
+/// processed last won, discarding the other's facts entirely, non-deterministically (file
+/// processing order is not a meaningful tiebreaker). Fixed by merging on collision instead of
+/// overwriting (see `merged(_:_:)` below) -- confirmed real on `~/ios`
+/// (`AppDelegate: MindboxAppDelegate`'s own superclass link was being silently destroyed by an
+/// unrelated test target's own `extension AppDelegate { ... }`).
 public struct DeclarationLinker {
     let indexStore: IndexStoreQuerying
 
@@ -108,7 +120,11 @@ public struct DeclarationLinker {
                 isNestedType: declaration.isNestedType,
                 location: declaration.location
             )
-            byUSR[linked.usr] = linked
+            if let existing = byUSR[linked.usr] {
+                byUSR[linked.usr] = Self.merged(existing, linked)
+            } else {
+                byUSR[linked.usr] = linked
+            }
         }
 
         byUSR = resolveInheritanceViaBaseOfRelation(byUSR)
@@ -385,6 +401,47 @@ public struct DeclarationLinker {
         if let exact = candidates.first(where: { $0.name == declarationName }) { return exact }
         if let prefixMatch = candidates.first(where: { $0.name.hasPrefix("\(declarationName)(") }) { return prefixMatch }
         return nil
+    }
+
+    /// Merges two per-file `DeclarationInfo`s that both rewrote to the same real USR -- the
+    /// cross-file type-entry collision fix (docs/task-cross-file-type-entry-collision.md): a type
+    /// with a primary declaration in one file and an extension in another each get their own,
+    /// independent per-file entry from `SyntaxAnalysis` (which has no notion of other files), and
+    /// both correctly rewrite to the identical real USR. Field-by-field rules, each informed by
+    /// what `DeclarationExtractor.swift` can actually make differ between two such entries (not
+    /// guessed):
+    /// - `superclassUSR`/`location`/`isActorType`/`explicitIsolation`: only a *primary* declaration
+    ///   can ever set these (`applyInheritance`/`recordPrimaryDeclaration`'s own construction) --
+    ///   at most one side is ever non-nil/true in practice, so preferring whichever is present is
+    ///   safe, not a guess between two conflicting real facts.
+    /// - `conformances`: concatenated, not picked -- both sides can carry real, *different*
+    ///   conformances (the entire shape of the bug: one file's own extension states a conformance
+    ///   the other file's entry never saw), and each `ProtocolConformance` already carries its own
+    ///   correctly-computed-per-file rule 7/8 flags, so concatenation preserves both without
+    ///   recomputing anything.
+    /// - `isEligibleForModuleDefaultIsolation`: conservative AND -- each side only ever saw its
+    ///   *own* conformances when computing this, so a disqualifying `Sendable`/`SendableMetatype`
+    ///   conformance declared in the *other* file wouldn't be visible to the side that didn't see
+    ///   it; ANDing keeps the real SE-0466 exclusion correct regardless of which file it came from.
+    /// Commutative in every field but `conformances`' own array *order* (concatenation order
+    /// depends on which side is `existing` vs. `incoming`) -- harmless, since every conformances
+    /// consumer (`IsolationInferenceEngine`) searches the whole array for a match, never depends on
+    /// order.
+    static func merged(_ existing: DeclarationInfo, _ incoming: DeclarationInfo) -> DeclarationInfo {
+        DeclarationInfo(
+            usr: existing.usr,
+            name: existing.name,
+            explicitIsolation: existing.explicitIsolation ?? incoming.explicitIsolation,
+            isActorType: existing.isActorType || incoming.isActorType,
+            containingTypeUSR: existing.containingTypeUSR ?? incoming.containingTypeUSR,
+            isStaticMember: existing.isStaticMember || incoming.isStaticMember,
+            superclassUSR: existing.superclassUSR ?? incoming.superclassUSR,
+            conformances: existing.conformances + incoming.conformances,
+            isEligibleForModuleDefaultIsolation: existing.isEligibleForModuleDefaultIsolation && incoming.isEligibleForModuleDefaultIsolation,
+            enclosingExtensionIsolation: existing.enclosingExtensionIsolation ?? incoming.enclosingExtensionIsolation,
+            isNestedType: existing.isNestedType || incoming.isNestedType,
+            location: existing.location ?? incoming.location
+        )
     }
 }
 
