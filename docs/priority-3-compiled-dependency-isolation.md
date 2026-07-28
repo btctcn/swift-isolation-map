@@ -337,6 +337,54 @@ independently re-verified before being trusted, per this project's standing disc
   separately re-measured this session; expected near-zero post-Gap-B, worth a future check if a
   suspiciously-nonisolated extension member is ever reported.
 
+## Cross-file type-entry collision fix — closed this session
+
+Found while spot-checking the extension-of-external-type fix's own real `~/ios` output:
+`AppDelegate` (`lsboutique/AppDelegate.swift`) appeared with an empty location despite having a
+real, visible superclass (`MindboxAppDelegate`). Root cause, confirmed by direct code reading:
+`SyntaxAnalysis.DeclarationExtractor` runs per-file with no cross-file awareness. When a type has
+its primary declaration in one file and an extension stating a *different* conformance in a
+*second* file (real, confirmed shape: `AppDelegate: MindboxAppDelegate` in `AppDelegate.swift`,
+`extension AppDelegate` in a separate test target file), each file independently produces its own
+`DeclarationInfo` for that type — one rich (superclass, conformance, real location), one empty
+(the extension-only file's own entry, `hasPrimaryDeclarationInFile: false`) — and both correctly
+rewrite via `usrRewriteMap` to the *same* real USR. `DeclarationLinker.link(_:)`'s `byUSR[usr] =
+linked` was a plain overwrite, so whichever file's entry was processed last (file-processing-order
+dependent, non-deterministic) silently destroyed the other's facts.
+
+- **Fix**: changed the `byUSR` construction loop from overwrite to merge-on-collision, backed by a
+  new `static func merged(_:_:)` with explicit field-by-field rules — prefer non-nil for singular
+  facts (`explicitIsolation`, `containingTypeUSR`, `superclassUSR`, `location`), OR for booleans
+  that should be "sticky" once true (`isActorType`, `isStaticMember`, `isNestedType`), concatenate
+  `conformances` (both files' conformances are real and additive), and AND for
+  `isEligibleForModuleDefaultIsolation` (conservative: eligibility requires it to hold in every
+  file the type is seen in). Verified against a real, committed fixture
+  (`MultiFileType.swift`/`MultiFileTypeExtension.swift` in `cross-file-witness`, mirroring the real
+  `AppDelegate`/`MindboxAppDelegate` shape exactly) with a live test asserting the merged result is
+  identical regardless of which file is extracted first.
+- **Real, measured result on `~/ios`.** Pre-registered baseline (a precise heuristic: project-local
+  USR prefix, empty location, real name ≠ USR, to exclude `ExternalIsolationBackfill`'s own
+  synthetic entries) found **13 real collision-victim types** before the fix. After the fix: **0
+  remaining** — all 13, including `AppDelegate` and `NotificationsListViewController`, confirmed
+  individually now carrying a real, non-empty location and the correct, inherited
+  `globalActor(MainActor)` isolation. The specific edges the investigation started from
+  (`AppDelegate.swift:69,77,100,104`, calls into `MindboxAppDelegate`'s own same-named lifecycle
+  methods) no longer appear as cross-isolation edges at all — both sides now correctly resolve to
+  the same actor. Lines 76/130/215 still appear, now correctly downgraded from a confident
+  false-positive-high-risk to an honest `medium`/`isUnknown: true` (the callee side of those
+  specific calls remains genuinely unresolved for an unrelated reason — reported as "don't know,"
+  not silently assumed safe).
+  - Confirmed high-risk boundaries: **253 → 289** (net +36: 17 resolved as genuinely same-actor,
+    53 newly surfaced as real, previously-masked risk) — the same shape as the extension-of-
+    external-type fix's own before/after: restoring a lost isolation fact reveals both false
+    positives and previously-invisible true positives at once.
+- Full `swift test -c release`: 235/235 passing (230 pre-fix plus 5 new: 3 `merged(_:_:)` unit
+  tests covering the field-by-field rules, 1 fake-index order-independence integration test, 1
+  real fixture live test against `MultiFileType.swift`/`MultiFileTypeExtension.swift`).
+- **Residual, evidenced limitation** (unchanged, pre-existing, not this fix's scope): a type with
+  **no** primary declaration among the linked files at all (genuinely external, or simply outside
+  this analysis run) still has no rich entry to merge into — left exactly as before.
+
 ## What's still open
 
 - The `~/ios` `highRiskBoundaries` before/after diff, now that Gap B is closed and a full run can

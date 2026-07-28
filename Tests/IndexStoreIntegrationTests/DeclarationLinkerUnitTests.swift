@@ -415,3 +415,81 @@ func extensionContainingTypeLeftUnchangedWhenChainMisses() throws {
 
     #expect(linked.declarations["s:realMethod"]?.containingTypeUSR == "syntactic:ExternalType")
 }
+
+// MARK: - Cross-file type-entry collision fix (docs/task-cross-file-type-entry-collision.md)
+
+@Test("DeclarationLinker.merged(_:_:) prefers a non-nil superclassUSR/location/isActorType/explicitIsolation from either side")
+func mergedPrefersNonNilSingularFields() {
+    let rich = DeclarationInfo(
+        usr: "s:real", name: "AppDelegate", explicitIsolation: nil, isActorType: false,
+        superclassUSR: "s:Base", conformances: [], location: SymbolLocation(file: "/AppDelegate.swift", line: 8, column: 7)
+    )
+    let empty = DeclarationInfo(usr: "s:real", name: "AppDelegate", conformances: [])
+
+    let merged = DeclarationLinker.merged(rich, empty)
+    #expect(merged.superclassUSR == "s:Base")
+    #expect(merged.location == SymbolLocation(file: "/AppDelegate.swift", line: 8, column: 7))
+
+    // Order shouldn't matter for which side contributes the fact.
+    let mergedReversed = DeclarationLinker.merged(empty, rich)
+    #expect(mergedReversed.superclassUSR == "s:Base")
+    #expect(mergedReversed.location == SymbolLocation(file: "/AppDelegate.swift", line: 8, column: 7))
+}
+
+@Test("DeclarationLinker.merged(_:_:) concatenates conformances from both sides rather than picking one")
+func mergedConcatenatesConformances() {
+    let conformanceA = placeholderConformance("syntactic:ProtoA")
+    let conformanceB = placeholderConformance("syntactic:ProtoB")
+    let fileA = DeclarationInfo(usr: "s:real", name: "AppDelegate", conformances: [conformanceA])
+    let fileB = DeclarationInfo(usr: "s:real", name: "AppDelegate", conformances: [conformanceB])
+
+    let merged = DeclarationLinker.merged(fileA, fileB)
+    let mergedProtocolUSRs = Set(merged.conformances.map(\.protocolUSR))
+    #expect(mergedProtocolUSRs == ["syntactic:ProtoA", "syntactic:ProtoB"])
+}
+
+@Test("DeclarationLinker.merged(_:_:) is conservative (AND) for isEligibleForModuleDefaultIsolation")
+func mergedIsConservativeForModuleDefaultEligibility() {
+    let eligible = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], isEligibleForModuleDefaultIsolation: true)
+    let ineligible = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], isEligibleForModuleDefaultIsolation: false)
+
+    #expect(DeclarationLinker.merged(eligible, ineligible).isEligibleForModuleDefaultIsolation == false)
+    #expect(DeclarationLinker.merged(ineligible, eligible).isEligibleForModuleDefaultIsolation == false)
+    #expect(DeclarationLinker.merged(eligible, eligible).isEligibleForModuleDefaultIsolation == true)
+}
+
+@Test("link(_:) merges a type's primary-declaration entry with its extension-in-a-different-file entry, regardless of processing order")
+func linkMergesCrossFileTypeEntriesRegardlessOfOrder() throws {
+    let location = SymbolLocation(file: "/AppDelegate.swift", line: 1, column: 7)
+    let conformanceFromPrimaryFile = placeholderConformance("syntactic:ProductNotificationSchedulerDelegate")
+    let conformanceFromExtensionFile = placeholderConformance("syntactic:InAppMessagesDelegate")
+
+    // Primary file: real location, a superclass, one conformance -- mirrors `AppDelegate.swift`
+    // itself (`class AppDelegate: MindboxAppDelegate, ...`).
+    let primaryFileEntry = makeDeclaration(
+        usr: "syntactic:AppDelegate", name: "AppDelegate", location: location,
+        superclassUSR: "syntactic:MindboxAppDelegate", conformances: [conformanceFromPrimaryFile]
+    )
+    // A different file's own extension of the same type: no location (no primary declaration in
+    // that file), no superclass, a *different* conformance -- mirrors
+    // `AppDelegateGiftCertificateEdgeCasesTests.swift`'s own `extension AppDelegate { ... }`.
+    let extensionFileEntry = makeDeclaration(
+        usr: "syntactic:AppDelegate", name: "AppDelegate", location: nil, conformances: [conformanceFromExtensionFile]
+    )
+
+    let fake = FakeIndexStoreQuerying()
+    fake.symbolsByFile["/AppDelegate.swift"] = [IndexedSymbol(usr: "s:realAppDelegate", name: "AppDelegate", location: location)]
+
+    for order in [[primaryFileEntry, extensionFileEntry], [extensionFileEntry, primaryFileEntry]] {
+        let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: order, protocolGlobalActorNames: [:])])
+        let merged = try #require(linked.declarations["s:realAppDelegate"])
+
+        #expect(merged.location == location, "real location must survive regardless of processing order")
+        #expect(merged.superclassUSR == "syntactic:MindboxAppDelegate", "superclass must survive regardless of processing order")
+        let conformanceUSRs = Set(merged.conformances.map(\.protocolUSR))
+        #expect(
+            conformanceUSRs == ["syntactic:ProductNotificationSchedulerDelegate", "syntactic:InAppMessagesDelegate"],
+            "both files' conformances must be present regardless of processing order"
+        )
+    }
+}
