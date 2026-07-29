@@ -18,12 +18,35 @@ jobs:
       - name: Get latest Swift release
         id: latest
         run: |
-          LATEST=$(curl -s https://api.github.com/repos/apple/swift/releases/latest | jq -r '.tag_name')
-          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          # `apple/swift` was renamed to `swiftlang/swift` -- the old path 301-redirects, and
+          # plain `curl -s` (no `-L`) doesn't follow redirects, so it silently returned the
+          # redirect *notice* JSON (no `tag_name` field) instead of release data. `jq -r
+          # '.tag_name'` on that yields the literal string "null", which then always compared
+          # unequal to the known version and opened a bogus "New Swift release detected: null"
+          # issue every run (see #20). Fixed URL, `-L` kept anyway as cheap insurance against a
+          # future rename repeating this. `/releases/latest` itself excludes drafts/prereleases,
+          # confirmed against the real endpoint to return a real, non-prerelease tag.
+          RESPONSE=$(curl -sL https://api.github.com/repos/swiftlang/swift/releases/latest)
+          TAG=$(echo "$RESPONSE" | jq -r '.tag_name // empty')
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not read a tag_name from the GitHub API response: $RESPONSE"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Real tags look like `swift-6.3.3-RELEASE` -- extract just major.minor so a patch
+          # release (6.3.1 -> 6.3.2 -> 6.3.3) doesn't trigger a review every few weeks; only a
+          # genuinely new minor/major version (isolation semantics can change there) should.
+          MAJOR_MINOR=$(echo "$TAG" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+          if [ -z "$MAJOR_MINOR" ]; then
+            echo "::error::Could not parse a major.minor version out of tag '$TAG'"
+            exit 1
+          fi
+          echo "version=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
       - name: Compare with known versions
         id: compare
         run: |
-          KNOWN=$(cat SUPPORTED_SWIFT_VERSIONS.md | tail -1)
+          KNOWN=$(tail -1 SUPPORTED_SWIFT_VERSIONS.md)
+          echo "known=$KNOWN" >> "$GITHUB_OUTPUT"
           if [ "${{ steps.latest.outputs.version }}" != "$KNOWN" ]; then
             echo "new_version=true" >> "$GITHUB_OUTPUT"
           fi
@@ -49,7 +72,7 @@ jobs:
             github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `New Swift release detected: ${{ steps.latest.outputs.version }}`,
-              body: 'Needs RuleSet review for isolation semantics changes.',
+              title: `New Swift release detected: ${{ steps.latest.outputs.tag }}`,
+              body: `Latest release tag: \`${{ steps.latest.outputs.tag }}\` (${{ steps.latest.outputs.version }}). Last version reviewed: \`${{ steps.compare.outputs.known }}\`. Needs RuleSet review for isolation semantics changes.`,
               labels: ['swift-version-watch']
             });
