@@ -170,6 +170,73 @@ func liveXcodeProviderFallsBackToCleanBuildWhenTheFirstAttemptYieldsNoInvocation
     #expect(runner.invocations.count == 2)
 }
 
+@Test("A non-zero xcodebuild exit code doesn't discard compiler invocations already parsed for targets that DID compile -- only a genuinely empty result is a hard failure")
+func liveXcodeProviderUsesPartialResultsWhenBuildFailsButSomeInvocationsWereParsed() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    let fileListURL = URL(fileURLWithPath: "/DerivedData/SQLumen.SwiftFileList")
+    fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
+
+    // Real shape: the main target's own compile line appears in the verbose log (and parses
+    // fine), but the overall `xcodebuild` invocation still exits non-zero because a completely
+    // unrelated target failed later in the build (confirmed against a real `~/ios` build with two
+    // broken notification-extension targets sharing no dependency with the main app).
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        result: ProcessResult(
+            exitCode: 1,
+            standardOutput: realSQLumenCompileLine.replacingOccurrences(
+                of: "/Users/dev/Library/Developer/Xcode/DerivedData/SQLumen-axiwtafjwewywncnfqkujtirqdpd/Build/Intermediates.noindex/SQLumen.build/Debug/SQLumen.build/Objects-normal/arm64/SQLumen.SwiftFileList",
+                with: "/DerivedData/SQLumen.SwiftFileList"
+            ),
+            standardError: "** BUILD FAILED ** (unrelated target)"
+        )
+    )
+
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    // Must not throw, and must not re-invoke xcodebuild a second time (no retry needed -- real,
+    // non-empty data was already recovered).
+    let args = try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
+    #expect(args.contains("-target"))
+    #expect(runner.invocations.count == 1)
+}
+
+@Test("A non-zero xcodebuild exit code with nothing at all parseable is still a hard failure")
+func liveXcodeProviderThrowsWhenBuildFailsAndNothingWasParsed() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
+    )
+    // The "empty means up-to-date, retry with clean" fallback also gets a chance, and also fails
+    // to produce anything usable.
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "clean", "build"],
+        result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
+    )
+
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    #expect(throws: CompilerArgumentsError.self) {
+        try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
+    }
+}
+
 @Test
 func liveXcodeProviderThrowsForAFileNotInAnyTargetsFileList() throws {
     let runner = FakeProcessRunner()

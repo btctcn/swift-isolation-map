@@ -73,6 +73,20 @@ final class SourceKitDKeys {
     var compilerArgs: SourceKitDUID { uid("key.compilerargs") }
     var retrieveSymbolGraph: SourceKitDUID { uid("key.retrieve_symbol_graph") }
     var cursorInfoRequest: SourceKitDUID { uid("source.request.cursorinfo") }
+    /// Confirmed real both by `strings -a` on the installed `sourcekitdInProc` binary and by
+    /// reading the real upstream source (`swiftlang/swift`,
+    /// `tools/SourceKit/lib/SwiftLang/SwiftASTManager.cpp`'s `OncePerASTToken` mechanism): the
+    /// documented default (`1`) makes a new cursor-info request implicitly cancel every other
+    /// still-in-flight cursor-info request sharing the same process-wide cancellation token, not
+    /// just a similar one. Was a required, binding safeguard for hypothesis 1's concurrent-issuance
+    /// spike (`docs/task-oracle-query-concurrency.md` §3) -- used directly by
+    /// `ConcurrentIssuanceSpike.swift`'s own raw requests. **Not** set by `SourceKitDClient.cursorInfo`
+    /// itself: hypothesis 1 concluded against shipping concurrent issuance (sourcekitd serializes
+    /// all real AST building through one process-wide serial queue regardless of client-side
+    /// concurrency -- see the decision record), and in today's sequential-only issuance this key
+    /// would be a behavioral no-op anyway (the client's own `actor` never has two requests
+    /// in-flight at once). Kept here only because the spike still needs it.
+    var cancelOnSubsequentRequest: SourceKitDUID { uid("key.cancel_on_subsequent_request") }
     var usr: SourceKitDUID { uid("key.usr") }
     var secondarySymbols: SourceKitDUID { uid("key.secondary_symbols") }
     var fullyAnnotatedDecl: SourceKitDUID { uid("key.fully_annotated_decl") }
