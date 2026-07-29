@@ -79,6 +79,151 @@ swift-isolation-map ./MyApp.xcworkspace --scheme MyApp --auto-build --output jso
 Exit codes: `0` — no high-risk boundaries found; `1` — high-risk boundaries found (fail a CI
 gate on this); a thrown error otherwise (bad scheme, unreachable index store, etc.).
 
+## Understanding the output
+
+Take this real, tiny package (a background-sync helper that has to reach both an `actor` and a
+`@MainActor` view controller to do its job):
+
+```swift
+actor SessionStore {
+    static let shared = SessionStore()
+    private(set) var currentUserName: String = "Guest"
+
+    func signIn(as name: String) {
+        currentUserName = name
+    }
+}
+
+@MainActor
+final class ProfileViewController {
+    var displayName: String = ""
+
+    func render(name: String) {
+        displayName = name
+    }
+}
+
+// Runs off the main actor (a background sync task) -- has to hop onto both
+// SessionStore's actor and ProfileViewController's MainActor to do its job.
+func backgroundSync(controller: ProfileViewController) async {
+    let name = await SessionStore.shared.currentUserName
+    await controller.render(name: name)
+}
+```
+
+```
+swift-isolation-map ./Package.swift --scheme ReadmeExample --force-reindex
+```
+
+produces (real output, unedited):
+
+```mermaid
+flowchart LR
+    n0["SessionStore<br/>actor(SessionStore)"]
+    n1["currentUserName<br/>actor(SessionStore)"]
+    n2["shared<br/>nonisolated"]
+    n3["signIn<br/>actor(SessionStore)"]
+    n4["backgroundSync<br/>nonisolated"]
+    n5["ProfileViewController<br/>globalActor(MainActor)"]
+    n6["displayName<br/>globalActor(MainActor)"]
+    n7["render<br/>globalActor(MainActor)"]
+    n4 --> n7
+    n4 --> n1
+    linkStyle 0 stroke:#e53935,stroke-width:2px
+    linkStyle 1 stroke:#e53935,stroke-width:2px
+```
+
+**Reading it**: every node is a declaration, labeled with the isolation domain it actually
+belongs to (an `actor`, a `@MainActor`/custom global actor, or `nonisolated`) — this is the part a
+compiler error never shows you in one place: the *whole* project's isolation domains, not just
+the one symbol currently under your cursor. Every edge is a real call the index found from a
+project-local function into isolated state; its color is the risk classification. Here both edges
+are red (`high`) — `backgroundSync` is itself `nonisolated`, and it reaches into both
+`SessionStore`'s actor state and `ProfileViewController`'s `@MainActor` state.
+
+### The JSON contract (for CI, dashboards, anything that isn't a human)
+
+`--output json` gives the same facts machine-readably (trimmed here to the two interesting nodes
+and the two edges — the real output also lists every other analyzed declaration):
+
+```json
+{
+  "schemaVersion": "1.0",
+  "swiftVersion": "6.3",
+  "ruleSetUsed": "Swift63RuleSet",
+  "summary": {
+    "typesAnalyzed": 3,
+    "actors": 1,
+    "mainActorTypes": 1,
+    "crossActorBoundaries": 2,
+    "highRiskBoundaries": 2,
+    "unspecifiedIsolation": 0
+  },
+  "nodes": [
+    { "usr": "s:...SessionStoreC", "name": "SessionStore", "isolation": "actor(SessionStore)", "location": {"file": "Sources/.../Sync.swift", "line": 3} },
+    { "usr": "s:...ProfileViewControllerC", "name": "ProfileViewController", "isolation": "globalActor(MainActor)", "location": {"file": "Sources/.../Sync.swift", "line": 13} }
+  ],
+  "edges": [
+    {
+      "callerUSR": "s:...backgroundSync...", "calleeUSR": "s:...ProfileViewControllerC6render...",
+      "callerIsolation": "nonisolated", "calleeIsolation": "globalActor(MainActor)",
+      "risk": "high", "isUnknown": false,
+      "explanation": "nonisolated code reaches globalActor(MainActor)-isolated state -- no static isolation check protects this boundary",
+      "location": {"file": "Sources/.../Sync.swift", "line": 25}
+    }
+  ]
+}
+```
+
+- **`nodes`** — every analyzed declaration, keyed by USR (stable across runs/revisions — the
+  identifier a future `diff` subcommand or your own tooling should match on, never `name`, which
+  isn't unique under overloading).
+- **`edges`** — every cross-isolation call the index found, with **both sides'** isolation named
+  explicitly (not just a boolean), a `risk` level, and a plain-English `explanation` string —
+  the "why," not just the "where," which is the whole point (see [Compiler diagnostics: a
+  concrete look](#compiler-diagnostics-a-concrete-look) above).
+- **`isUnknown`** — set when one side's isolation genuinely couldn't be determined (a compiled
+  dependency the oracle failed to resolve). When `true`, `risk` is still present but **must not**
+  be read as a confirmed finding — it reflects `unspecified` isolation, not a proven-unsafe
+  boundary. The tool would rather tell you "I don't know" than guess.
+- **`summary`** — the numbers you'd put in a PR description or a migration-tracking spreadsheet
+  today, by hand (`highRiskBoundaries` is the CI-gate number — see exit codes above).
+
+### An honest caveat about `risk`
+
+Today's `risk` classification is structural, not syntactic: `high` means *"a `nonisolated`
+declaration has a call edge into `actor`/`globalActor`-isolated state,"* full stop — it does not
+currently check whether that call already has a correct `await` (or an `@unchecked
+Sendable`/`nonisolated(unsafe)` escape hatch) protecting it. A perfectly correct, properly-`await`ed
+hop like the example above and a genuine missing-`await` bug both show up as `high` right now. In
+practice this is rarely a problem for triage — by the time your project compiles under Swift 6,
+every one of these edges is already `await`-ed or explicitly unsafe *somehow*, so `high` findings
+are best read today as **"every place migration debt lives,"** not **"every place there's an
+active bug."** Distinguishing the two (and detecting the `@unchecked Sendable` escape hatch
+specifically) is a named, tracked gap — see `docs/task-compiled-dependency-isolation-integration.md`
+§5 — not a silent limitation.
+
+## Why this is useful
+
+The compiler already enforces every one of these boundaries correctly, one error at a time, as you
+touch each file. What it doesn't give you:
+
+- **The whole map, before you start.** Instead of discovering isolation debt one compile error at
+  a time during a migration, see every cross-actor boundary in the project at once, including ones
+  in code you haven't touched yet.
+- **Third-party isolation, resolved for you.** A huge fraction of real-world isolation facts live
+  in compiled dependencies you don't control — CocoaPods, XCFrameworks, SDK frameworks
+  (`UITableViewCell`, `NSView`, `SwiftUI.View`...). Figuring out by hand which of your own types
+  inherit `@MainActor` from a third-party superclass, across dozens of pods, is exactly the kind of
+  bookkeeping this tool exists to do once, automatically, correctly (see `docs/research/` for how
+  much real work went into making that resolution trustworthy).
+- **A CI gate, not just an editor squiggle.** Exit code `1` on any high-risk boundary means this
+  slots into a pipeline today; a `diff`-based gate (v0.2) will let it fail a PR only on *new* risk,
+  not the whole existing backlog.
+- **A trackable migration-debt number**, not a vague sense of "we should really finish this
+  someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
+  watch move.
+
 ## Building and running (development)
 
 ### 1. From the terminal
@@ -124,8 +269,6 @@ This tool reports actor isolation **as the code actually compiles today** — us
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
 - **v0.2** — `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map.
 - **v0.3** — revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
-
-A demo Mermaid graph generated against a real project will be added here.
 
 ## License
 
