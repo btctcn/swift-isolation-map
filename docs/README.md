@@ -73,7 +73,7 @@ is written up.
 |---|---|---|
 | `architecture.md` | The original, pre-implementation project specification | Foundational, kept as-written. Its own "What's changed since this was written" preface (added after a 2026-07-29 audit) lists six concrete gaps — most notably, the external-isolation oracle (arguably the project's largest subsystem) isn't in it at all |
 | `motivation.md` | Why this tool exists at all | Foundational, not a task — always current |
-| `isolation-rules.md` | Checklist of every isolation-inference rule `IsolationInferenceEngine` implements | Living document, updated as rules are added — always current |
+| `isolation-rules.md` | Checklist of every isolation-inference rule `IsolationInferenceEngine` implements, plus the runbook for reviewing and adding support for a new Swift version (triggered by `swift-version-watch.yml`) | Living document, updated as rules/versions are added — always current |
 | `reference-project-corpora.md` | The two real validation projects (Project Iris, private; SQLumen, public) | Reference doc, added this session |
 | `research/` | The real research/review paper trail behind the compiled-dependency oracle, Gap A/B, extension-of-external-type isolation, and oracle concurrency — 15 documents, chronological, see `research/README.md` | Historical record, kept close to as-written (redacted for the private project's name only) |
 | `priority-2-phase-0-spike.md` | IndexStoreDB dependency de-risking spike | **Closed** — shipped, part of Priority 2 |
