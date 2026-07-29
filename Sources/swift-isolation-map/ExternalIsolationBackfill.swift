@@ -30,6 +30,52 @@ struct ExternalIsolationResolution {
 /// (docs/task-compiled-dependency-isolation.md section 2.1, `NewsTableCell`/`UITableViewCell`):
 /// that bug is a pure inheritance-chain failure, not a call-graph-edge case at all, so an
 /// edge-only trigger would never have caught it.
+///
+/// **Hypothesis 0 (docs/task-oracle-query-concurrency.md): a real `~/ios` measurement showed 4780
+/// AST builds against 4825 live oracle queries (99%, only 44 cache hits) -- essentially no AST
+/// cache reuse, because neither trigger's own natural order (call-graph order; `Dictionary` hash
+/// order) guarantees consecutive queries share a file.** Both triggers are collected into
+/// `DeclarationInfo`/edge-USR work items first (single-threaded, preserving every existing dedup
+/// guarantee -- see inline comments), merged into **one** combined list, and executed in **one**
+/// pass sorted by (file, line, column) -- not two separately-sorted passes -- specifically so a
+/// file referenced by *both* trigger kinds pays at most one AST build for the whole run, not up to
+/// two. Outcomes are applied afterward in a separate, deterministic pass. This is safe (a real,
+/// non-"syntactic:"-prefixed USR is a globally-unique external symbol, so claiming/sharing one
+/// answer across every declaration referencing it, à la Gap B Phase I3's existing conformance-pair
+/// dedup, is correct) for real USRs and conformance pairs -- but **not** for `"syntactic:<Name>"`
+/// bare-name placeholders (`DeclarationLinker`'s own documented, pre-existing limitation: these can
+/// collide across genuinely different real entities that merely share a name), which are therefore
+/// deliberately excluded from the merged batch and resolved by a separate, sequential pass
+/// (`resolveSyntacticPlaceholderNeeds`) reproducing the original code's exact interleaved
+/// reuse-on-success/retry-on-failure semantics for just that narrow subset.
+///
+/// **Query-location selection is not "whoever claims first" for either trigger -- both are chosen
+/// by an intrinsic property of the target, not by traversal order** (a real investigation this
+/// project's decision record covers in full: `docs/task-oracle-query-concurrency.md`):
+/// - Edge-level: the *canonical* representative call site for a given external `calleeUSR` is the
+///   one with the lexicographically-smallest `(file, line, column)` among every edge referencing
+///   it, computed independently of `linked.callGraph`'s own (order-unstable, confirmed by direct
+///   repeated-run comparison against a real project) iteration order.
+/// - Declaration-level conformance pairs: the representative declaration for a `(nominal,
+///   protocol)` pair is the one whose own `ProtocolConformance.declaredInSameContextAsWitness` is
+///   `true` for that protocol -- a real member physically declared inside the same syntactic
+///   construct (the primary type body, or a specific `extension`) that introduces the conformance.
+///   Confirmed necessary, not assumed, by two real regressions on opposite sides of a false
+///   dichotomy: a type's own top-level declaration is a bad representative when the conformance is
+///   declared via a *different* same-file `extension` (hovering the primary line doesn't see it),
+///   but an arbitrary *member* is equally a bad representative when the conformance is declared on
+///   the primary type directly and the member's own location carries unrelated attributes a live
+///   query can misreport (see `SymbolGraphIsolationParser`'s doc comment). Neither "the type always
+///   wins" nor "a member always wins" is correct in general; `declaredInSameContextAsWitness` is
+///   the one signal, already computed by `SyntaxAnalysis.DeclarationExtractor`, that answers "is
+///   hovering *this* declaration guaranteed to reflect the conformance in question." A declaration
+///   lacking that signal for a pair defers it to a fallback pass that runs after every declaration
+///   has had a chance to claim it as a true witness; only if none ever does may a non-witness
+///   declaration (member or the type itself) claim it, matching this project's pre-hypothesis-0
+///   fallback behavior for that narrower ("no eligible member at all") case. A conformance declared
+///   via an empty marker extension (`extension Foo: P {}`, no members) has no witness-context
+///   declaration by construction -- this is a documented, known limitation of the fallback, not a
+///   bug: see `docs/task-oracle-query-concurrency.md`'s decision record.
 enum ExternalIsolationBackfill {
     /// `environmentProvider`/`bulkModuleNames` drive an eager, one-time bulk pre-resolution
     /// (`BulkSymbolGraphExtractor`) of well-known SDK modules (UIKit/AppKit/SwiftUI by default)
@@ -62,13 +108,97 @@ enum ExternalIsolationBackfill {
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
 
-        await resolveEdgeLevelTriggers(
-            linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
-            bulkCache: bulkCache, backfilled: &backfilled, unknown: &unknown
+        // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
+        // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
+
+        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: backfilled)
+
+        var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
+        var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
+        let (declarationPlans, placeholderNeeds) = collectDeclarationLevelWorkItems(
+            linked: linked, bulkCache: bulkCache,
+            backfilled: &backfilled, pairOutcomes: &pairOutcomes, pairIndicesByDeclaration: &pairIndicesByDeclaration
         )
-        await resolveDeclarationLevelTriggers(
-            linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
-            bulkCache: bulkCache, backfilled: &backfilled, updated: &updated, unknown: &unknown
+
+        // ---- Phase 2: execute, merged into one file-sorted pass across *both* trigger kinds.
+        // `targetUSR` values from the two collections are always disjoint (edge-level only ever
+        // targets USRs absent from `linked.declarations`; declaration-level always targets a real
+        // project-local declaration's own USR) -- one shared outcome map is safe. ----
+
+        struct MergedWorkItem {
+            let targetUSR: String
+            let location: SymbolLocation
+        }
+        var merged: [MergedWorkItem] = edgeWorkItems.map { MergedWorkItem(targetUSR: $0.targetUSR, location: $0.location) }
+        merged.append(contentsOf: declarationPlans.map { MergedWorkItem(targetUSR: $0.declarationUSR, location: $0.location) })
+        // `targetUSR` is a required final tie-breaker, not cosmetic: two genuinely distinct USRs
+        // legitimately share one exact (file, line, column) on real code (confirmed on `~/ios` --
+        // e.g. a synthesized property accessor and its setter counterpart at the same call-site
+        // token). Sorting by location alone leaves such ties' relative order dependent on
+        // `merged`'s own pre-sort order, which itself traces back to `Dictionary` iteration
+        // (`collectEdgeLevelWorkItems`'s `bestLocationByUSR`) -- not guaranteed stable across
+        // process launches, confirmed by a real two-run diff producing a handful of adjacent-pair
+        // swaps despite the canonical-location fix (§ collectEdgeLevelWorkItems). The merged plan
+        // is a pure function of file-sort only once every tie is broken by something itself
+        // independent of iteration order.
+        merged.sort { lhs, rhs in
+            if lhs.location.file != rhs.location.file { return lhs.location.file < rhs.location.file }
+            if lhs.location.line != rhs.location.line { return lhs.location.line < rhs.location.line }
+            if lhs.location.column != rhs.location.column { return lhs.location.column < rhs.location.column }
+            return lhs.targetUSR < rhs.targetUSR
+        }
+
+        // Permanent, opt-in acceptance instrument (docs/task-oracle-query-concurrency.md's
+        // decision record): a stronger, exact signal than "the build/query ratio improved" -- the
+        // number of *distinct files* among work items that actually reach `sourcekitd` (excluding
+        // whatever `bulkCache` already answers for free, matching `query()`'s own bulk-cache fast
+        // path) is known here, before execution, by construction. Under correct file-sorted
+        // adjacency, every one of those files should be built *exactly once* for the whole run --
+        // if a real `num-ast-builds` delta (see `SwiftIsolationMap.swift`'s own
+        // `requestStatistics()` instrument) ever comes back higher than this count, that's not
+        // "close enough," it's a concrete signal the ordering/merge is broken somewhere.
+        if ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_ORACLE_STATS"] != nil {
+            let liveFiles = Set(merged.filter { bulkCache[$0.targetUSR] == nil }.map { $0.location.file })
+            FileHandle.standardError.write(Data("distinct live-query file groups: \(liveFiles.count)\n".utf8))
+        }
+
+        // Diagnostic-only, opt-in: dump the fully-planned, deterministically-sorted merged work
+        // list (targetUSR + query location) and exit before any live query runs -- lets two
+        // invocations be diffed against each other to directly confirm the *plan itself* is
+        // byte-identical across runs, isolating whether a run-to-run discrepancy comes from
+        // planning (this list) or from live query execution/parsing (everything after it). See
+        // `docs/task-oracle-query-concurrency.md`'s decision record.
+        if ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_DUMP_MERGED_PLAN"] != nil {
+            for item in merged {
+                print("\(item.targetUSR)\t\(item.location.file):\(item.location.line):\(item.location.column)")
+            }
+            exit(0)
+        }
+
+        var outcomes: [String: QueryOutcome] = [:]
+        for item in merged {
+            outcomes[item.targetUSR] = await query(
+                targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+            )
+        }
+
+        // ---- Phase 3: apply, deterministically (dict/set content is independent of apply order). ----
+
+        applyEdgeLevelOutcomes(edgeWorkItems, outcomes: outcomes, backfilled: &backfilled, unknown: &unknown)
+        applyDeclarationLevelOutcomes(
+            declarationPlans, outcomes: outcomes, linked: linked,
+            backfilled: &backfilled, unknown: &unknown, pairOutcomes: &pairOutcomes
+        )
+        applyConformancePairOutcomes(pairIndicesByDeclaration, pairOutcomes: pairOutcomes, linked: linked, updated: &updated)
+
+        // Deliberately sequential, run last, after `backfilled` already reflects bulk cache +
+        // edge-level + real-USR declaration-level + conformance pairs -- see
+        // `resolveSyntacticPlaceholderNeeds`'s own doc comment for why placeholder-typed
+        // superclass/containingType needs cannot join the merged batch above.
+        await resolveSyntacticPlaceholderNeeds(
+            placeholderNeeds, linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+            bulkCache: bulkCache, backfilled: &backfilled, unknown: &unknown
         )
 
         return ExternalIsolationResolution(backfilledDeclarations: backfilled, updatedDeclarations: updated, unknownUSRs: unknown)
@@ -93,36 +223,65 @@ enum ExternalIsolationBackfill {
 
     // MARK: - Edge-level trigger (direct calls into external code, no subclassing involved)
 
-    /// A call-graph edge whose callee is absent from `declarations` -- query cursor-info at the
-    /// edge's own real location (already known, from `IndexStoreIntegration`) and select the
-    /// result by strict USR equality against `edge.calleeUSR`. No ambiguity about "does the caller
-    /// have its own override" the way the declaration-level trigger has, because this asks the
-    /// oracle about the exact callee, directly, at the exact call site.
-    private static func resolveEdgeLevelTriggers(
+    private struct EdgeWorkItem {
+        let targetUSR: String
+        let location: SymbolLocation
+    }
+
+    private static func isEarlier(_ lhs: SymbolLocation, than rhs: SymbolLocation) -> Bool {
+        if lhs.file != rhs.file { return lhs.file < rhs.file }
+        if lhs.line != rhs.line { return lhs.line < rhs.line }
+        return lhs.column < rhs.column
+    }
+
+    /// A call-graph edge whose callee is absent from `declarations` -- the query site for its
+    /// `calleeUSR` is the **canonical representative call site**: the lexicographically-smallest
+    /// `(file, line, column)` among every edge referencing that callee, computed independently of
+    /// `linked.callGraph`'s own iteration order.
+    ///
+    /// **Why not first-encountered-in-`callGraph`-order** (this function's own behavior before
+    /// this fix): confirmed by direct repeated-run comparison against a real ~2200-file project
+    /// that two runs of the *identical* binary, on the *identical* input, produced different
+    /// resolved isolation for the same handful of USRs -- traced to exactly this dedup picking a
+    /// different representative call site each run, because `linked.callGraph`'s own construction
+    /// order (ultimately, IndexStoreDB occurrence enumeration order) is not itself guaranteed
+    /// stable across runs. A deterministic tie-break computed purely from each edge's own location
+    /// data removes that dependency entirely: the plan is now a pure function of the *set* of
+    /// edges, never of the order they were visited in. See
+    /// `docs/task-oracle-query-concurrency.md`'s decision record.
+    private static func collectEdgeLevelWorkItems(
         linked: LinkedAnalysis,
-        compilerArguments: CompilerArgumentsProviding,
-        sourceKitD: SourceKitDQuerying,
-        fileSystem: FileSystemQuerying,
-        bulkCache: [String: IsolationKind],
-        backfilled: inout [String: DeclarationInfo],
-        unknown: inout Set<String>
-    ) async {
-        var queried: Set<String> = []
+        backfilled: [String: DeclarationInfo]
+    ) -> [EdgeWorkItem] {
+        var bestLocationByUSR: [String: SymbolLocation] = [:]
         for edge in linked.callGraph {
             let targetUSR = edge.calleeUSR
-            guard linked.declarations[targetUSR] == nil, backfilled[targetUSR] == nil, !queried.contains(targetUSR) else { continue }
-            queried.insert(targetUSR)
+            guard linked.declarations[targetUSR] == nil, backfilled[targetUSR] == nil else { continue }
+            if let existing = bestLocationByUSR[targetUSR] {
+                if isEarlier(edge.location, than: existing) {
+                    bestLocationByUSR[targetUSR] = edge.location
+                }
+            } else {
+                bestLocationByUSR[targetUSR] = edge.location
+            }
+        }
+        return bestLocationByUSR.map { EdgeWorkItem(targetUSR: $0.key, location: $0.value) }
+    }
 
-            switch await query(
-                targetUSR: targetUSR, file: edge.location.file, line: edge.location.line, utf8Column: edge.location.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
-            ) {
+    private static func applyEdgeLevelOutcomes(
+        _ items: [EdgeWorkItem],
+        outcomes: [String: QueryOutcome],
+        backfilled: inout [String: DeclarationInfo],
+        unknown: inout Set<String>
+    ) {
+        for item in items {
+            switch outcomes[item.targetUSR] {
             case .resolved(let isolation):
-                backfilled[targetUSR] = DeclarationInfo(
-                    usr: targetUSR, name: targetUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                backfilled[item.targetUSR] = DeclarationInfo(
+                    usr: item.targetUSR, name: item.targetUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
                 )
-            case .unknown:
-                unknown.insert(targetUSR)
+            case .unknown, .none:
+                unknown.insert(item.targetUSR)
             }
         }
     }
@@ -148,11 +307,6 @@ enum ExternalIsolationBackfill {
     /// external protocol would therefore have zero effect; the fix has to rewrite the conforming
     /// declaration's own `conformances` array instead, mirroring `DeclarationLinker.relink`'s
     /// existing precedent for the project-local case.
-    /// Gap B Phase I3's dedup outcome for one (nominal type, unresolved protocol) pair -- cached
-    /// so every member sharing the exact same still-unresolved conformance (after Phase I2's
-    /// `.baseOf`-based USR resolution, this is now genuinely rare: only same-bare-name collisions,
-    /// unresolved-nominal edge cases, or a real external protocol the bulk cache doesn't cover)
-    /// only ever pays for one live oracle round trip, not one per member.
     private enum ConformancePairOutcome {
         case globalActor(String)
         case notGlobalActor
@@ -173,27 +327,81 @@ enum ExternalIsolationBackfill {
         declaration.containingTypeUSR ?? declaration.usr
     }
 
-    private static func resolveDeclarationLevelTriggers(
+    /// One declaration whose own location becomes a live query, and what that query's outcome
+    /// should backfill/propagate once it resolves.
+    private struct DeclarationQueryPlan {
+        let declarationUSR: String
+        let location: SymbolLocation
+        var superclassUSR: String?
+        var containingTypeUSR: String?
+        var pairKeys: [ConformancePairKey]
+    }
+
+    /// Gap B Phase I3's per-pair dedup (every member sharing one still-unresolved (nominal,
+    /// protocol) pair only ever pays for one live oracle round trip, not one per member) already
+    /// had *permanent* claim-once semantics in the original sequential code -- once one
+    /// declaration's query answers a pair (resolved *or* unknown), every later declaration sharing
+    /// it reuses that answer without retrying, confirmed by reading the original cache-hit filter
+    /// (it removed the index from `unresolvedConformanceIndices` regardless of outcome kind). This
+    /// collection function reproduces that permanent-claim behavior exactly via `claimedPairs`.
+    ///
+    /// **Superclass/containingType claim-once unification (the one deliberate, flagged behavior
+    /// difference from pre-hypothesis-0 code):** the original sequential code did *not* have this
+    /// permanent-claim property for superclass/containingType -- it only checked
+    /// `backfilled[usr] == nil`, so if the first declaration sharing an external superclass got
+    /// `.unknown`, a *later* declaration sharing the same superclass would independently retry (and
+    /// could succeed where the first attempt failed). Collecting every distinct work item up front
+    /// (required for hypothesis 0's single merged, file-sorted execution pass) cannot preserve an
+    /// outcome-dependent retry without executing queries during collection itself, so this extends
+    /// the *already-permanent* conformance-pair claim model uniformly to superclass/containingType
+    /// too via `claimedSuperclass`/`claimedContainingType` -- one well-understood, narrow
+    /// difference, verified against the real `~/ios` correctness gate, not assumed.
+    ///
+    /// A declaration deferred as a conformance-pair claimant of last resort, because its own copy
+    /// of the conformance is not a `declaredInSameContextAsWitness` one -- see the claim loop's own
+    /// doc comment for why only a witness-context declaration is a safe first-choice
+    /// representative.
+    private struct DeferredConformanceCandidate {
+        let declarationUSR: String
+        let location: SymbolLocation
+        let nominal: String
+        let conformances: [ProtocolConformance]
+        let indices: [Int]
+    }
+
+    private static func collectDeclarationLevelWorkItems(
         linked: LinkedAnalysis,
-        compilerArguments: CompilerArgumentsProviding,
-        sourceKitD: SourceKitDQuerying,
-        fileSystem: FileSystemQuerying,
         bulkCache: [String: IsolationKind],
         backfilled: inout [String: DeclarationInfo],
-        updated: inout [String: DeclarationInfo],
-        unknown: inout Set<String>
-    ) async {
-        // Per-member conformance-need duplication dedup (Gap B Phase I3): `SyntaxAnalysis.
-        // DeclarationExtractor` attaches a copy of the enclosing type's conformances to every
-        // member's own `DeclarationInfo` -- confirmed against the real `~/ios` corpus (the same
-        // clause, `needs=...`, counted once per member of the conforming type/extension). A
-        // superclass need never has this duplication (`DeclarationExtractor.emitMember` always
-        // sets `superclassUSR: nil` on a member; only a type's own entry ever carries one, so it's
-        // already naturally deduped by the `backfilled[superclassUSR] == nil` check below) -- this
-        // cache exists only for conformances.
-        var conformancePairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
+        pairOutcomes: inout [ConformancePairKey: ConformancePairOutcome],
+        pairIndicesByDeclaration: inout [String: [(index: Int, key: ConformancePairKey)]]
+    ) -> (plans: [DeclarationQueryPlan], placeholderNeeds: [PlaceholderNeed]) {
+        var claimedSuperclass: Set<String> = []
+        var claimedContainingType: Set<String> = []
+        var claimedPairs: Set<ConformancePairKey> = []
+        var plans: [DeclarationQueryPlan] = []
+        var placeholderNeeds: [PlaceholderNeed] = []
+        var deferredConformanceCandidates: [DeferredConformanceCandidate] = []
 
-        for declaration in linked.declarations.values {
+        // Hypothesis 0: sorted, not `linked.declarations.values`' own (already unspecified/hash-
+        // randomized) order -- strictly more deterministic than before, not less, and groups
+        // same-file declarations so the merged execution pass (§ resolve) reuses a file's AST
+        // across both trigger kinds rather than rebuilding it once per kind.
+        // `usr` is a required final tie-breaker, not cosmetic -- see `resolve()`'s own merged-sort
+        // comment: two distinct declarations can legitimately share one exact (file, line, column)
+        // on real code, and `linked.declarations` is itself a `Dictionary` (iteration order not
+        // guaranteed stable across process launches), so a location-only sort leaves such ties'
+        // relative order non-deterministic.
+        let orderedDeclarations = linked.declarations.values.sorted { lhs, rhs in
+            guard let lhsLocation = lhs.location else { return false }
+            guard let rhsLocation = rhs.location else { return true }
+            if lhsLocation.file != rhsLocation.file { return lhsLocation.file < rhsLocation.file }
+            if lhsLocation.line != rhsLocation.line { return lhsLocation.line < rhsLocation.line }
+            if lhsLocation.column != rhsLocation.column { return lhsLocation.column < rhsLocation.column }
+            return lhs.usr < rhs.usr
+        }
+
+        for declaration in orderedDeclarations {
             guard declaration.explicitIsolation == nil, declaration.enclosingExtensionIsolation == nil else { continue }
 
             var unresolvedSuperclassUSR = declaration.superclassUSR.flatMap { superclassUSR in
@@ -223,9 +431,10 @@ enum ExternalIsolationBackfill {
             // live per-declaration query below only ever runs for what's genuinely left over.
             // Checking each protocol's *own* isolation directly here is actually more precise than
             // the live query's fallback (which infers a shared actor name from the conforming
-            // type's single effective isolation, not each individual protocol's own).
-            var conformances = declaration.conformances
-            var conformancesChanged = false
+            // type's single effective isolation, not each individual protocol's own). Per-
+            // declaration and order-independent (a fixed lookup table, not a claim), exactly as
+            // before hypothesis 0.
+            let nominal = nominalUSR(for: declaration)
             if let superclassUSR = unresolvedSuperclassUSR, let cachedIsolation = bulkCache[superclassUSR] {
                 backfilled[superclassUSR] = DeclarationInfo(
                     usr: superclassUSR, name: superclassUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
@@ -238,94 +447,275 @@ enum ExternalIsolationBackfill {
                 )
                 unresolvedContainingTypeUSR = nil
             }
+
+            // Every originally-unresolved conformance index is tracked here -- regardless of
+            // whether the bulk-cache pass below resolves it immediately or it's still outstanding
+            // for the live-query path -- because `applyConformancePairOutcomes` is the *only* place
+            // that ever rewrites a declaration's `conformances` array, for both paths uniformly.
+            // (A real bug this fixed during hypothesis 0's own correctness gate: registering only
+            // the post-bulk-cache-filter leftovers here silently dropped every bulk-cache-resolved
+            // conformance's actual application -- e.g. `extension SomeType: UITextFieldDelegate`
+            // resolving `@MainActor` via the bulk-extracted UIKit cache, correctly computed into
+            // `pairOutcomes`, but never applied to `SomeType`'s own `conformances`, since nothing
+            // told this final apply pass that `SomeType` had a pair to rewrite at all.)
+            if !unresolvedConformanceIndices.isEmpty {
+                let indices = unresolvedConformanceIndices.map { index in
+                    (index: index, key: ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR))
+                }
+                pairIndicesByDeclaration[declaration.usr, default: []].append(contentsOf: indices)
+            }
+
             unresolvedConformanceIndices = unresolvedConformanceIndices.filter { index in
-                guard case .globalActor(let actorName)? = bulkCache[conformances[index].protocolUSR] else { return true }
+                guard case .globalActor(let actorName)? = bulkCache[declaration.conformances[index].protocolUSR] else { return true }
+                pairOutcomes[ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR)] = .globalActor(actorName)
+                return false
+            }
+
+            // A real (not "syntactic:"-prefixed) USR genuinely identifies one external symbol --
+            // claiming it once and sharing the answer across every declaration referencing it is
+            // safe and correct (the whole point of Gap B/Phase I3's dedup). A `"syntactic:<Name>"`
+            // value is a bare-name placeholder instead (`DeclarationLinker`'s own documented,
+            // pre-existing limitation: "multiple such unresolved entries for the same name can
+            // [collide]") -- it does *not* uniquely identify one real entity, so two different
+            // declarations carrying the identical placeholder string can legitimately need two
+            // different real answers, and the one that should "win" a shared placeholder can only
+            // be decided by the same reuse-on-success/retry-on-failure logic the original
+            // sequential code applied, one at a time -- it cannot be precomputed as a claim up
+            // front the way a real USR safely can be. So placeholder-typed superclass/containingType
+            // needs are deliberately *excluded* from this batch entirely and deferred to
+            // `resolveSyntacticPlaceholderNeeds` below, which reproduces the original's exact
+            // sequential, interleaved semantics for just this narrow subset.
+            var claimsSomethingNew = false
+            if let superclassUSR = unresolvedSuperclassUSR, !superclassUSR.hasPrefix("syntactic:") {
+                if claimedSuperclass.contains(superclassUSR) {
+                    unresolvedSuperclassUSR = nil
+                } else {
+                    claimedSuperclass.insert(superclassUSR)
+                    claimsSomethingNew = true
+                }
+            }
+            if let containingTypeUSR = unresolvedContainingTypeUSR, !containingTypeUSR.hasPrefix("syntactic:") {
+                if claimedContainingType.contains(containingTypeUSR) {
+                    unresolvedContainingTypeUSR = nil
+                } else {
+                    claimedContainingType.insert(containingTypeUSR)
+                    claimsSomethingNew = true
+                }
+            }
+            // The representative for a conformance pair is chosen by an intrinsic property of the
+            // *specific conformance entry*, not by traversal order or by "is this the type itself":
+            // only a declaration whose own copy of this conformance has
+            // `declaredInSameContextAsWitness == true` -- a real member physically declared inside
+            // the same syntactic construct (primary body or a specific `extension`) that introduces
+            // the conformance -- is queried inline. Confirmed necessary by two real, opposite-shape
+            // regressions on `~/ios` (see this file's own top-level doc comment): a type's own
+            // top-level entry can be a bad representative (conformance declared via a *different*
+            // same-file extension) and an arbitrary member can equally be a bad representative
+            // (conformance declared on the primary type directly, member's own location carries an
+            // unrelated attribute a live query can misreport). Every other candidate -- the type's
+            // own entry, or a member without witness-context locality for this specific protocol --
+            // is deferred to the fallback pass below, which only lets a non-witness declaration
+            // claim a pair if no witness-context declaration ever does.
+            var ownedPairKeys: [ConformancePairKey] = []
+            var deferredIndices: [Int] = []
+            for index in unresolvedConformanceIndices {
+                let key = ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR)
+                guard !claimedPairs.contains(key) else { continue }
+                guard declaration.conformances[index].declaredInSameContextAsWitness else {
+                    deferredIndices.append(index)
+                    continue
+                }
+                claimedPairs.insert(key)
+                ownedPairKeys.append(key)
+                claimsSomethingNew = true
+            }
+            if !deferredIndices.isEmpty, let location = declaration.location {
+                deferredConformanceCandidates.append(DeferredConformanceCandidate(
+                    declarationUSR: declaration.usr, location: location, nominal: nominal,
+                    conformances: declaration.conformances, indices: deferredIndices
+                ))
+            }
+
+            let placeholderSuperclassUSR = unresolvedSuperclassUSR?.hasPrefix("syntactic:") == true ? unresolvedSuperclassUSR : nil
+            let placeholderContainingTypeUSR = unresolvedContainingTypeUSR?.hasPrefix("syntactic:") == true ? unresolvedContainingTypeUSR : nil
+            if let location = declaration.location, placeholderSuperclassUSR != nil || placeholderContainingTypeUSR != nil {
+                placeholderNeeds.append(PlaceholderNeed(
+                    declarationUSR: declaration.usr, location: location,
+                    superclassUSR: placeholderSuperclassUSR, containingTypeUSR: placeholderContainingTypeUSR
+                ))
+            }
+
+            guard claimsSomethingNew, let location = declaration.location else { continue }
+
+            plans.append(DeclarationQueryPlan(
+                declarationUSR: declaration.usr, location: location,
+                superclassUSR: unresolvedSuperclassUSR?.hasPrefix("syntactic:") == true ? nil : unresolvedSuperclassUSR,
+                containingTypeUSR: unresolvedContainingTypeUSR?.hasPrefix("syntactic:") == true ? nil : unresolvedContainingTypeUSR,
+                pairKeys: ownedPairKeys
+            ))
+        }
+
+        // Fallback pass: a non-witness-context declaration (the type's own entry, or a member
+        // without witness-context locality for this specific protocol) only claims a conformance
+        // pair here if *no* witness-context declaration ever claimed it during the main loop above
+        // (re-checked against the now-final `claimedPairs`, since a witness-context declaration
+        // appearing later in file order may have claimed it after this candidate deferred it) --
+        // see the claim loop's own doc comment for why a non-witness declaration is deliberately
+        // never a first-choice representative. These plans join the same merged, file-sorted
+        // execution pass as everything else (§ resolve) -- never a separately-ordered append.
+        for candidate in deferredConformanceCandidates {
+            var pairKeys: [ConformancePairKey] = []
+            for index in candidate.indices {
+                let key = ConformancePairKey(nominalUSR: candidate.nominal, protocolUSR: candidate.conformances[index].protocolUSR)
+                guard !claimedPairs.contains(key) else { continue }
+                claimedPairs.insert(key)
+                pairKeys.append(key)
+            }
+            guard !pairKeys.isEmpty else { continue }
+            plans.append(DeclarationQueryPlan(
+                declarationUSR: candidate.declarationUSR, location: candidate.location,
+                superclassUSR: nil, containingTypeUSR: nil, pairKeys: pairKeys
+            ))
+        }
+
+        return (plans, placeholderNeeds)
+    }
+
+    /// A declaration whose superclass and/or containing-type need is still an unresolved
+    /// `"syntactic:<Name>"` bare-name placeholder -- see `collectDeclarationLevelWorkItems`'s own
+    /// doc comment for why these can't safely join the claim-once batch.
+    private struct PlaceholderNeed {
+        let declarationUSR: String
+        let location: SymbolLocation
+        let superclassUSR: String?
+        let containingTypeUSR: String?
+    }
+
+    /// Reproduces the pre-hypothesis-0 sequential algorithm's exact semantics for placeholder-typed
+    /// superclass/containingType needs: walked one at a time (file-sorted here for whatever
+    /// locality benefit is safely available, though -- unlike the main batch -- this loop cannot
+    /// itself be reordered into a merged, pre-planned execution without losing that semantics), each
+    /// re-checking `backfilled[usr] == nil` *at the time it runs* (so an earlier item in *this same
+    /// loop* resolving the identical placeholder string is correctly reused, matching original's
+    /// "share on success"), and retrying independently on `.unknown` rather than caching it
+    /// permanently (matching original's "no negative cache for superclass/containingType" -- unlike
+    /// conformance pairs, which already had a permanent cache before hypothesis 0 and are
+    /// unaffected by any of this).
+    private static func resolveSyntacticPlaceholderNeeds(
+        _ needs: [PlaceholderNeed],
+        linked: LinkedAnalysis,
+        compilerArguments: CompilerArgumentsProviding,
+        sourceKitD: SourceKitDQuerying,
+        fileSystem: FileSystemQuerying,
+        bulkCache: [String: IsolationKind],
+        backfilled: inout [String: DeclarationInfo],
+        unknown: inout Set<String>
+    ) async {
+        for need in needs {
+            let stillUnresolvedSuperclassUSR = need.superclassUSR.flatMap { backfilled[$0] == nil ? $0 : nil }
+            let stillUnresolvedContainingTypeUSR = need.containingTypeUSR.flatMap { backfilled[$0] == nil ? $0 : nil }
+            guard stillUnresolvedSuperclassUSR != nil || stillUnresolvedContainingTypeUSR != nil else { continue }
+
+            let outcome = await query(
+                targetUSR: need.declarationUSR, file: need.location.file, line: need.location.line, utf8Column: need.location.column,
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+            )
+            switch outcome {
+            case .resolved(let isolation):
+                if let superclassUSR = stillUnresolvedSuperclassUSR {
+                    backfilled[superclassUSR] = DeclarationInfo(
+                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    )
+                }
+                if let containingTypeUSR = stillUnresolvedContainingTypeUSR {
+                    backfilled[containingTypeUSR] = DeclarationInfo(
+                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    )
+                }
+            case .unknown:
+                // Matches the batch path's own member-propagation exactly (see
+                // `applyDeclarationLevelOutcomes`) -- a declaration whose *only* need was a
+                // placeholder superclass/containingType must still mark its direct members unknown
+                // on failure, not just itself.
+                unknown.insert(need.declarationUSR)
+                for other in linked.declarations.values where other.containingTypeUSR == need.declarationUSR {
+                    unknown.insert(other.usr)
+                }
+            }
+        }
+    }
+
+    private static func applyDeclarationLevelOutcomes(
+        _ plans: [DeclarationQueryPlan],
+        outcomes: [String: QueryOutcome],
+        linked: LinkedAnalysis,
+        backfilled: inout [String: DeclarationInfo],
+        unknown: inout Set<String>,
+        pairOutcomes: inout [ConformancePairKey: ConformancePairOutcome]
+    ) {
+        for plan in plans {
+            switch outcomes[plan.declarationUSR] {
+            case .resolved(let isolation):
+                if let superclassUSR = plan.superclassUSR {
+                    backfilled[superclassUSR] = DeclarationInfo(
+                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    )
+                }
+                if let containingTypeUSR = plan.containingTypeUSR {
+                    backfilled[containingTypeUSR] = DeclarationInfo(
+                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    )
+                }
+                if !plan.pairKeys.isEmpty {
+                    let outcome: ConformancePairOutcome = {
+                        if case .globalActor(let actorName) = isolation { return .globalActor(actorName) }
+                        return .notGlobalActor
+                    }()
+                    for key in plan.pairKeys { pairOutcomes[key] = outcome }
+                }
+            case .unknown, .none:
+                for key in plan.pairKeys { pairOutcomes[key] = .unknown }
+                // Mark the declaration itself, plus its direct members (one level of containing-
+                // type propagation -- covers the common case, e.g. a method whose isolation
+                // recurses into its containing type's, per `resolveInheritedIsolation`'s own
+                // containingTypeUSR branch). Deeper nesting is a documented, known limitation, not
+                // silently assumed away -- see docs/priority-3-phase-c-oracle-triggers.md.
+                unknown.insert(plan.declarationUSR)
+                for other in linked.declarations.values where other.containingTypeUSR == plan.declarationUSR {
+                    unknown.insert(other.usr)
+                }
+            }
+        }
+    }
+
+    /// Rebuilds `conformances` for *every* declaration with a tracked pair index -- whether it was
+    /// the one whose own query resolved the pair or a "follower" sharing the same (nominal,
+    /// protocol) pair claimed by a different declaration -- from the final `pairOutcomes`, mirroring
+    /// the original code's own "only `.globalActor` outcomes actually rewrite `conformances`"
+    /// gating (a `.notGlobalActor`/`.unknown` outcome leaves that index's `protocolGlobalActorName`
+    /// as `nil`, exactly as before).
+    private static func applyConformancePairOutcomes(
+        _ pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]],
+        pairOutcomes: [ConformancePairKey: ConformancePairOutcome],
+        linked: LinkedAnalysis,
+        updated: inout [String: DeclarationInfo]
+    ) {
+        for (declarationUSR, indices) in pairIndicesByDeclaration {
+            guard let declaration = linked.declarations[declarationUSR] else { continue }
+            var conformances = declaration.conformances
+            var changed = false
+            for (index, key) in indices {
+                guard case .globalActor(let actorName)? = pairOutcomes[key] else { continue }
                 conformances[index] = ProtocolConformance(
                     protocolUSR: conformances[index].protocolUSR,
                     protocolGlobalActorName: actorName,
                     declaredInSameFileAsPrimaryDefinition: conformances[index].declaredInSameFileAsPrimaryDefinition,
                     declaredInSameContextAsWitness: conformances[index].declaredInSameContextAsWitness
                 )
-                conformancesChanged = true
-                return false
+                changed = true
             }
-
-            // Phase I3's own pair-cache fast path: apply an already-known (nominal, protocol)
-            // outcome from an earlier member of the same type, cache-and-apply rather than
-            // skip-and-leave (an earlier skip-only design would have left this copy `syntactic:`-
-            // resolved-but-unapplied, silently losing rule 8's input on this member).
-            let nominal = nominalUSR(for: declaration)
-            unresolvedConformanceIndices = unresolvedConformanceIndices.filter { index in
-                guard let outcome = conformancePairOutcomes[ConformancePairKey(nominalUSR: nominal, protocolUSR: conformances[index].protocolUSR)] else {
-                    return true
-                }
-                if case .globalActor(let actorName) = outcome {
-                    conformances[index] = ProtocolConformance(
-                        protocolUSR: conformances[index].protocolUSR,
-                        protocolGlobalActorName: actorName,
-                        declaredInSameFileAsPrimaryDefinition: conformances[index].declaredInSameFileAsPrimaryDefinition,
-                        declaredInSameContextAsWitness: conformances[index].declaredInSameContextAsWitness
-                    )
-                    conformancesChanged = true
-                }
-                return false
-            }
-            if conformancesChanged {
-                updated[declaration.usr] = rebuilt(declaration, conformances: conformances)
-            }
-
-            guard unresolvedSuperclassUSR != nil || unresolvedContainingTypeUSR != nil || !unresolvedConformanceIndices.isEmpty,
-                  let location = declaration.location else { continue }
-
-            switch await query(
-                targetUSR: declaration.usr, file: location.file, line: location.line, utf8Column: location.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
-            ) {
-            case .resolved(let isolation):
-                if let superclassUSR = unresolvedSuperclassUSR {
-                    backfilled[superclassUSR] = DeclarationInfo(
-                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
-                    )
-                }
-                if let containingTypeUSR = unresolvedContainingTypeUSR {
-                    backfilled[containingTypeUSR] = DeclarationInfo(
-                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
-                    )
-                }
-                if !unresolvedConformanceIndices.isEmpty {
-                    let outcome: ConformancePairOutcome = {
-                        if case .globalActor(let actorName) = isolation { return .globalActor(actorName) }
-                        return .notGlobalActor
-                    }()
-                    for index in unresolvedConformanceIndices {
-                        conformancePairOutcomes[ConformancePairKey(nominalUSR: nominal, protocolUSR: conformances[index].protocolUSR)] = outcome
-                    }
-                    if case .globalActor(let actorName) = isolation {
-                        var liveConformances = conformancesChanged ? conformances : declaration.conformances
-                        for index in unresolvedConformanceIndices {
-                            liveConformances[index] = ProtocolConformance(
-                                protocolUSR: liveConformances[index].protocolUSR,
-                                protocolGlobalActorName: actorName,
-                                declaredInSameFileAsPrimaryDefinition: liveConformances[index].declaredInSameFileAsPrimaryDefinition,
-                                declaredInSameContextAsWitness: liveConformances[index].declaredInSameContextAsWitness
-                            )
-                        }
-                        updated[declaration.usr] = rebuilt(declaration, conformances: liveConformances)
-                    }
-                }
-            case .unknown:
-                for index in unresolvedConformanceIndices {
-                    conformancePairOutcomes[ConformancePairKey(nominalUSR: nominal, protocolUSR: conformances[index].protocolUSR)] = .unknown
-                }
-                // Mark the declaration itself, plus its direct members (one level of containing-
-                // type propagation -- covers the common case, e.g. a method whose isolation
-                // recurses into its containing type's, per `resolveInheritedIsolation`'s own
-                // containingTypeUSR branch). Deeper nesting is a documented, known limitation, not
-                // silently assumed away -- see docs/priority-3-phase-c-oracle-triggers.md.
-                unknown.insert(declaration.usr)
-                for other in linked.declarations.values where other.containingTypeUSR == declaration.usr {
-                    unknown.insert(other.usr)
-                }
+            if changed {
+                updated[declarationUSR] = rebuilt(declaration, conformances: conformances)
             }
         }
     }

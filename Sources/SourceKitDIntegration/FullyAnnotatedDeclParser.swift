@@ -27,6 +27,7 @@ private final class IsolationXMLDelegate: NSObject, XMLParserDelegate {
     private(set) var result: IsolationKind?
     private var insideAttributeName = false
     private var pendingActorName: String?
+    private var pendingActorUSR: String?
 
     func parser(
         _ parser: XMLParser,
@@ -38,8 +39,9 @@ private final class IsolationXMLDelegate: NSObject, XMLParserDelegate {
         if elementName == "syntaxtype.attribute.name" {
             insideAttributeName = true
         }
-        if insideAttributeName, elementName.hasPrefix("ref."), attributeDict["usr"] != nil {
+        if insideAttributeName, elementName.hasPrefix("ref."), let usr = attributeDict["usr"] {
             pendingActorName = ""
+            pendingActorUSR = usr
         }
     }
 
@@ -55,11 +57,16 @@ private final class IsolationXMLDelegate: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
-        if elementName.hasPrefix("ref."), let name = pendingActorName, result == nil {
+        // See `GlobalActorNameValidation`'s own doc comment: a resolvable `usr` alone (any
+        // `ref.*` element) is not sufficient evidence this is a global actor -- e.g. a
+        // `@StateObject`-attributed property's `ref.struct` resolves just as cleanly.
+        if elementName.hasPrefix("ref."), let name = pendingActorName, result == nil,
+           GlobalActorNameValidation.isGlobalActorName(spelling: name, usr: pendingActorUSR) {
             result = .globalActor(name: name)
         }
         if elementName.hasPrefix("ref.") {
             pendingActorName = nil
+            pendingActorUSR = nil
         }
         if elementName == "syntaxtype.attribute.name" {
             insideAttributeName = false

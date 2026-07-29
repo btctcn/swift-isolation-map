@@ -2,6 +2,8 @@
 #include <dlfcn.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 #define SOURCEKITD_ARRAY_APPEND ((size_t)(-1))
 
@@ -24,9 +26,14 @@ typedef sourcekitd_variant_t (*response_get_value_fn)(sourcekitd_response_t);
 typedef int32_t (*variant_get_type_fn)(sourcekitd_variant_t);
 typedef sourcekitd_variant_t (*variant_dictionary_get_value_fn)(sourcekitd_variant_t, sourcekitd_uid_t);
 typedef const char *(*variant_dictionary_get_string_fn)(sourcekitd_variant_t, sourcekitd_uid_t);
+typedef int64_t (*variant_dictionary_get_int64_fn)(sourcekitd_variant_t, sourcekitd_uid_t);
 typedef size_t (*variant_array_get_count_fn)(sourcekitd_variant_t);
 typedef sourcekitd_variant_t (*variant_array_get_value_fn)(sourcekitd_variant_t, size_t);
 typedef const char *(*variant_string_get_ptr_fn)(sourcekitd_variant_t);
+typedef int64_t (*variant_int64_get_value_fn)(sourcekitd_variant_t);
+typedef sourcekitd_uid_t (*variant_uid_get_value_fn)(sourcekitd_variant_t);
+typedef bool (*variant_dictionary_applier_f_t)(sourcekitd_uid_t, sourcekitd_variant_t, void *);
+typedef bool (*variant_dictionary_apply_f_fn)(sourcekitd_variant_t, variant_dictionary_applier_f_t, void *);
 
 static void *sHandle = NULL;
 static const char *sLastError = NULL;
@@ -50,9 +57,13 @@ static response_get_value_fn sResponseGetValue;
 static variant_get_type_fn sVariantGetType;
 static variant_dictionary_get_value_fn sVariantDictionaryGetValue;
 static variant_dictionary_get_string_fn sVariantDictionaryGetString;
+static variant_dictionary_get_int64_fn sVariantDictionaryGetInt64;
 static variant_array_get_count_fn sVariantArrayGetCount;
 static variant_array_get_value_fn sVariantArrayGetValue;
 static variant_string_get_ptr_fn sVariantStringGetPtr;
+static variant_int64_get_value_fn sVariantInt64GetValue;
+static variant_uid_get_value_fn sVariantUidGetValue;
+static variant_dictionary_apply_f_fn sVariantDictionaryApplyF;
 
 static void *resolve(const char *name, int *failed) {
     void *symbol = dlsym(sHandle, name);
@@ -107,9 +118,13 @@ int sourcekitd_shim_load(const char *dylibPath) {
     sVariantGetType = (variant_get_type_fn)resolve("sourcekitd_variant_get_type", &failed);
     sVariantDictionaryGetValue = (variant_dictionary_get_value_fn)resolve("sourcekitd_variant_dictionary_get_value", &failed);
     sVariantDictionaryGetString = (variant_dictionary_get_string_fn)resolve("sourcekitd_variant_dictionary_get_string", &failed);
+    sVariantDictionaryGetInt64 = (variant_dictionary_get_int64_fn)resolve("sourcekitd_variant_dictionary_get_int64", &failed);
     sVariantArrayGetCount = (variant_array_get_count_fn)resolve("sourcekitd_variant_array_get_count", &failed);
     sVariantArrayGetValue = (variant_array_get_value_fn)resolve("sourcekitd_variant_array_get_value", &failed);
     sVariantStringGetPtr = (variant_string_get_ptr_fn)resolve("sourcekitd_variant_string_get_ptr", &failed);
+    sVariantInt64GetValue = (variant_int64_get_value_fn)resolve("sourcekitd_variant_int64_get_value", &failed);
+    sVariantUidGetValue = (variant_uid_get_value_fn)resolve("sourcekitd_variant_uid_get_value", &failed);
+    sVariantDictionaryApplyF = (variant_dictionary_apply_f_fn)resolve("sourcekitd_variant_dictionary_apply_f", &failed);
 
     if (failed) {
         sLastError = "one or more required sourcekitd symbols were not found";
@@ -204,6 +219,10 @@ const char *sourcekitd_shim_variant_dictionary_get_string(sourcekitd_variant_t d
     return sVariantDictionaryGetString(dict, key);
 }
 
+int64_t sourcekitd_shim_variant_dictionary_get_int64(sourcekitd_variant_t dict, sourcekitd_uid_t key) {
+    return sVariantDictionaryGetInt64(dict, key);
+}
+
 size_t sourcekitd_shim_variant_array_get_count(sourcekitd_variant_t array) {
     return sVariantArrayGetCount(array);
 }
@@ -214,4 +233,114 @@ sourcekitd_variant_t sourcekitd_shim_variant_array_get_value(sourcekitd_variant_
 
 const char *sourcekitd_shim_variant_string_get_ptr(sourcekitd_variant_t obj) {
     return sVariantStringGetPtr(obj);
+}
+
+sourcekitd_uid_t sourcekitd_shim_variant_uid_get_value(sourcekitd_variant_t obj) {
+    return sVariantUidGetValue(obj);
+}
+
+// `SOURCEKITD_VARIANT_TYPE_*` from sourcekitd.h, copied verbatim (not exposed via CSourceKitD.h --
+// diagnostic-only code, not part of the project's real production ABI surface).
+enum {
+    kVariantTypeNull = 0,
+    kVariantTypeDictionary = 1,
+    kVariantTypeArray = 2,
+    kVariantTypeInt64 = 3,
+    kVariantTypeString = 4,
+    kVariantTypeUID = 5,
+    kVariantTypeBool = 6,
+    kVariantTypeDouble = 7,
+    kVariantTypeData = 8
+};
+
+static char sDumpBuffer[65536];
+static size_t sDumpOffset;
+
+static void dumpAppend(const char *fmt, ...) {
+    if (sDumpOffset >= sizeof(sDumpBuffer) - 1) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(sDumpBuffer + sDumpOffset, sizeof(sDumpBuffer) - sDumpOffset, fmt, args);
+    va_end(args);
+    if (written > 0) {
+        sDumpOffset += (size_t)written;
+    }
+}
+
+static void dumpIndent(int depth) {
+    for (int i = 0; i < depth; i++) {
+        dumpAppend("  ");
+    }
+}
+
+static void dumpVariant(sourcekitd_variant_t value, int depth);
+
+static bool dumpDictionaryEntry(sourcekitd_uid_t key, sourcekitd_variant_t value, void *context) {
+    int depth = *(int *)context;
+    const char *keyName = sUidGetStringPtr(key);
+    dumpIndent(depth);
+    dumpAppend("%s: ", keyName ? keyName : "<unnamed key>");
+    dumpVariant(value, depth);
+    return true;
+}
+
+static void dumpVariant(sourcekitd_variant_t value, int depth) {
+    int32_t type = sVariantGetType(value);
+    switch (type) {
+        case kVariantTypeDictionary: {
+            dumpAppend("{\n");
+            int childDepth = depth + 1;
+            sVariantDictionaryApplyF(value, dumpDictionaryEntry, &childDepth);
+            dumpIndent(depth);
+            dumpAppend("}\n");
+            break;
+        }
+        case kVariantTypeArray: {
+            dumpAppend("[\n");
+            size_t count = sVariantArrayGetCount(value);
+            for (size_t i = 0; i < count; i++) {
+                dumpIndent(depth + 1);
+                dumpAppend("- ");
+                dumpVariant(sVariantArrayGetValue(value, i), depth + 1);
+            }
+            dumpIndent(depth);
+            dumpAppend("]\n");
+            break;
+        }
+        case kVariantTypeInt64:
+            dumpAppend("%lld (int64)\n", (long long)sVariantInt64GetValue(value));
+            break;
+        case kVariantTypeString: {
+            const char *string = sVariantStringGetPtr(value);
+            dumpAppend("\"%s\" (string)\n", string ? string : "");
+            break;
+        }
+        case kVariantTypeBool:
+            dumpAppend("<bool>\n");
+            break;
+        case kVariantTypeDouble:
+            dumpAppend("<double>\n");
+            break;
+        case kVariantTypeUID: {
+            sourcekitd_uid_t uid = sVariantUidGetValue(value);
+            const char *uidName = uid ? sUidGetStringPtr(uid) : NULL;
+            dumpAppend("%s (uid)\n", uidName ? uidName : "<unnamed uid>");
+            break;
+        }
+        case kVariantTypeNull:
+            dumpAppend("<null>\n");
+            break;
+        default:
+            dumpAppend("<unknown type %d>\n", type);
+            break;
+    }
+}
+
+const char *sourcekitd_shim_dump_variant(sourcekitd_variant_t variant) {
+    sDumpOffset = 0;
+    sDumpBuffer[0] = '\0';
+    dumpVariant(variant, 0);
+    return sDumpBuffer;
 }

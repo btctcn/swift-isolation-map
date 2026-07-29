@@ -304,6 +304,147 @@ func declarationLevelTriggerBackfillsExtendedExternalContainingType() async {
     #expect(resolution.backfilledDeclarations["c:objc(cs)ExternalType"]?.explicitIsolation == .globalActor(name: "MainActor"))
 }
 
+@Test("A conformance declared on the primary type itself is claimed via a declaredInSameContextAsWitness member declared in that same primary body, not the type's own non-witness entry (KFImageRenderer shape)")
+func declarationLevelTriggerPrefersWitnessMemberInPrimaryBody() async {
+    let typeLocation = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let memberLocation = SymbolLocation(file: "/f.swift", line: 2, column: 1)
+    let nonWitnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.View", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false
+    )
+    let witnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.View", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: true
+    )
+    let typeDeclaration = DeclarationInfo(usr: "s:Renderer", name: "Renderer", conformances: [nonWitnessConformance], location: typeLocation)
+    let member = DeclarationInfo(usr: "s:Renderer.binder", name: "binder", containingTypeUSR: "s:Renderer", conformances: [witnessConformance], location: memberLocation)
+    let linked = LinkedAnalysis(declarations: ["s:Renderer": typeDeclaration, "s:Renderer.binder": member], callGraph: [])
+    let fileSystem = makeFixture(contents: "first\nsecond\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Deliberately different answers at the two locations: if the type's own non-witness entry
+    // were queried instead of the witness member, this test would observe the WRONG answer below
+    // -- exactly the real `KFImageRenderer`/`@StateObject` failure mode this guards against.
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Renderer", fullyAnnotatedDeclXML: nil, symbolGraphJSON: noAttributeSymbolGraph(usr: "s:Renderer")),
+        secondary: []
+    ))
+    sourceKitD.responsesByOffset[6] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Renderer.binder", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Renderer.binder")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.updatedDeclarations["s:Renderer"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(resolution.updatedDeclarations["s:Renderer.binder"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(sourceKitD.callCount == 1)
+}
+
+@Test("A conformance declared via a separate same-file extension is claimed via a declaredInSameContextAsWitness member declared inside that extension, not the type's own non-witness entry (PhotoServiceImpl shape)")
+func declarationLevelTriggerPrefersWitnessMemberInExtension() async {
+    let typeLocation = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let memberLocation = SymbolLocation(file: "/f.swift", line: 2, column: 1)
+    let nonWitnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.Delegate", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false
+    )
+    let witnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.Delegate", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    let typeDeclaration = DeclarationInfo(usr: "s:Service", name: "Service", conformances: [nonWitnessConformance], location: typeLocation)
+    let member = DeclarationInfo(usr: "s:Service.picker", name: "picker", containingTypeUSR: "s:Service", conformances: [witnessConformance], location: memberLocation)
+    let linked = LinkedAnalysis(declarations: ["s:Service": typeDeclaration, "s:Service.picker": member], callGraph: [])
+    let fileSystem = makeFixture(contents: "first\nsecond\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // The type's own primary-declaration line resolves incompletely (as a real hover there does
+    // for a conformance introduced only by a later same-file extension -- confirmed on
+    // `PhotoServiceImpl` via real `swiftc`); the witness member's own location resolves correctly.
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Service", fullyAnnotatedDeclXML: nil, symbolGraphJSON: noAttributeSymbolGraph(usr: "s:Service")),
+        secondary: []
+    ))
+    sourceKitD.responsesByOffset[6] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Service.picker", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Service.picker")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.updatedDeclarations["s:Service"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(resolution.updatedDeclarations["s:Service.picker"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(sourceKitD.callCount == 1)
+}
+
+@Test("A conformance with no declaredInSameContextAsWitness declaration anywhere (an empty marker extension, or a type with no eligible members at all) falls back to the type's own non-witness entry -- a documented, known limitation, not a crash or an unknown")
+func declarationLevelTriggerFallsBackWhenNoWitnessDeclarationExists() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let nonWitnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.P", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false
+    )
+    let typeDeclaration = DeclarationInfo(usr: "s:Widget", name: "Widget", conformances: [nonWitnessConformance], location: location)
+    let linked = LinkedAnalysis(declarations: ["s:Widget": typeDeclaration], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Widget", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Widget")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.updatedDeclarations["s:Widget"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+}
+
+@Test("The canonical edge-level representative for a callee shared by multiple call-graph edges is the lexicographically-smallest (file, line, column), independent of edge order -- not first-encountered")
+func edgeLevelTriggerPicksCanonicalMinimumLocationRegardlessOfEdgeOrder() async {
+    let laterLocation = SymbolLocation(file: "/f.swift", line: 5, column: 1)
+    let earlierLocation = SymbolLocation(file: "/f.swift", line: 2, column: 1)
+    // The *later* edge appears FIRST in `callGraph` -- if the old first-encountered-wins behavior
+    // were still in place, the later location (offset for line 5) would be queried; the fix must
+    // pick the earlier one regardless of which edge this array visits first.
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [
+            CallGraphEdge(callerUSR: "s:callerLater", calleeUSR: "s:external.Callee", location: laterLocation),
+            CallGraphEdge(callerUSR: "s:callerEarlier", calleeUSR: "s:external.Callee", location: earlierLocation),
+        ]
+    )
+    let fileSystem = makeFixture(contents: "one\ntwo\nthree\nfour\nfive\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // "one\n" is 4 bytes -- byte offset of line 2, column 1.
+    sourceKitD.responsesByOffset[4] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:external.Callee", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:external.Callee")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["s:external.Callee"]?.explicitIsolation == .globalActor(name: "MainActor"))
+    #expect(sourceKitD.callCount == 1)
+}
+
 /// A real environment (real SDK path, real target), so `ExternalIsolationBackfill.resolve`'s own
 /// bulk-cache phase performs a real `AppKit` `symbolgraph-extract` -- the last unverified seam in
 /// the extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md):

@@ -60,8 +60,18 @@ sourcekitd_variant_t sourcekitd_shim_response_get_value(sourcekitd_response_t re
 int32_t sourcekitd_shim_variant_get_type(sourcekitd_variant_t obj);
 sourcekitd_variant_t sourcekitd_shim_variant_dictionary_get_value(sourcekitd_variant_t dict, sourcekitd_uid_t key);
 const char *sourcekitd_shim_variant_dictionary_get_string(sourcekitd_variant_t dict, sourcekitd_uid_t key);
+int64_t sourcekitd_shim_variant_dictionary_get_int64(sourcekitd_variant_t dict, sourcekitd_uid_t key);
 size_t sourcekitd_shim_variant_array_get_count(sourcekitd_variant_t array);
 sourcekitd_variant_t sourcekitd_shim_variant_array_get_value(sourcekitd_variant_t array, size_t index);
 const char *sourcekitd_shim_variant_string_get_ptr(sourcekitd_variant_t obj);
+sourcekitd_uid_t sourcekitd_shim_variant_uid_get_value(sourcekitd_variant_t obj);
+
+// Diagnostic-only: recursively dumps an arbitrary, not-yet-understood response variant (any
+// dictionary/array/scalar shape) as indented "key: value" text into a static, non-thread-safe
+// internal buffer, valid until the next call. Exists to pin down a real response's actual shape
+// (e.g. `source.request.statistics`) empirically, by literal enumeration via
+// `sourcekitd_variant_dictionary_apply_f`, rather than guessing key names from binary strings --
+// not meant for concurrent or production use.
+const char *sourcekitd_shim_dump_variant(sourcekitd_variant_t variant);
 
 #endif

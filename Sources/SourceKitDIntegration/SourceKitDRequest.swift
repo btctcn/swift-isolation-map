@@ -77,4 +77,17 @@ final class SourceKitDKeys {
     var secondarySymbols: SourceKitDUID { uid("key.secondary_symbols") }
     var fullyAnnotatedDecl: SourceKitDUID { uid("key.fully_annotated_decl") }
     var symbolGraph: SourceKitDUID { uid("key.symbol_graph") }
+
+    // Diagnostic spike only (docs/task-oracle-query-concurrency.md) -- confirmed to exist in the
+    // real installed sourcekitd binary via `strings -a` before use, not guessed.
+    var statisticsRequest: SourceKitDUID { uid("source.request.statistics") }
+    var results: SourceKitDUID { uid("key.results") }
+    var statisticDescription: SourceKitDUID { uid("key.description") }
+    var statisticValue: SourceKitDUID { uid("key.value") }
+    /// The stable, machine-readable identifier per result entry (e.g.
+    /// `source.statistic.num-ast-builds`) -- confirmed empirically (not assumed from `strings`
+    /// output alone) to be the real key carrying each entry's `source.statistic.*` UID, alongside
+    /// the human-readable `key.description`. Prefer this over `key.description` for programmatic
+    /// use since it can't be affected by wording/localization changes.
+    var statisticKind: SourceKitDUID { uid("key.kind") }
 }
