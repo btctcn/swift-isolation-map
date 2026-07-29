@@ -1,5 +1,38 @@
 # swift-isolation-map — Project Architecture Specification
 
+## What's changed since this was written
+
+This is the original, pre-implementation specification — kept as-written, as the record of
+original intent (see `docs/README.md`'s own note on this). Real implementation has since
+diverged from or gone beyond it in six places worth knowing before treating any single section
+below as current:
+
+1. **§2.4's `IsolationInferenceEngine` model is missing its largest subsystem.** The engine
+   itself still only ever sees `attributes` (SwiftSyntax) + `callGraph` (IndexStoreDB), exactly as
+   specified — but a call reaching into a *compiled* dependency (a CocoaPod, an XCFramework, an
+   SDK framework) needs a fact neither source has. An external-isolation oracle
+   (`ExternalIsolationBackfill`, `BulkSymbolGraphExtractor`, live `sourcekitd` queries via
+   `SourceKitDIntegration`) backfills that fact *before* the engine runs, so §2.4's own "engine
+   untouched" invariant holds — but the oracle itself, arguably the most heavily-researched part
+   of the whole project, isn't mentioned anywhere in this document. See `docs/README.md`'s oracle
+   diagram and `docs/research/` for the real design history.
+2. **§3.5.2's JSON schema is missing a field**: real output also carries `isUnknown` on every
+   edge (set when the oracle couldn't resolve one side — `risk` is still present but must not be
+   read as confirmed in that case). See the root `README.md`'s "Understanding the output" section
+   for a real, captured example.
+3. **§5 Distribution is entirely aspirational still** — no Homebrew formula, no SPM build-tool
+   plugin, no distribution automation exists yet. Treat this section as an unstarted plan, not a
+   settled decision.
+4. **§6 Roadmap predates Priority 3 entirely** — the compiled-dependency oracle (correctness,
+   performance, Gap A/B linker fixes) and the query-ordering optimization (~33% faster, zero
+   semantic change) aren't reflected here. See `docs/README.md`'s status table for what's actually
+   shipped.
+5. **§2.8's CI job is no longer a proposal** — `.github/workflows/swift-version-watch.yml` exists,
+   is active, and (after a real permission-scope bug found and fixed) has completed successfully.
+6. **§4's "regression baseline against real open-source code" isn't an automated nightly job** —
+   in practice this has been manual, ad-hoc validation against two real projects
+   (`docs/reference-project-corpora.md`) at the end of each work session, not a scheduled CI run.
+
 ## ⚠️ IMPORTANT: This is a reputation-sensitive tool
 
 This is an open-source CLI tool for the Swift developer community. One principle should govern **every** implementation decision: **a tool that gives an incorrect concurrency-safety result is worse than no tool at all.**

@@ -71,7 +71,7 @@ is written up.
 
 | Doc | What it is | Real current status |
 |---|---|---|
-| `architecture.md` | The original, pre-implementation project specification | Foundational, not a task — always current. Some detail has since been superseded by real decisions (e.g. the concurrency model, output schema specifics) — later decision records win on those points |
+| `architecture.md` | The original, pre-implementation project specification | Foundational, kept as-written. Its own "What's changed since this was written" preface (added after a 2026-07-29 audit) lists six concrete gaps — most notably, the external-isolation oracle (arguably the project's largest subsystem) isn't in it at all |
 | `motivation.md` | Why this tool exists at all | Foundational, not a task — always current |
 | `isolation-rules.md` | Checklist of every isolation-inference rule `IsolationInferenceEngine` implements | Living document, updated as rules are added — always current |
 | `reference-project-corpora.md` | The two real validation projects (Project Iris, private; SQLumen, public) | Reference doc, added this session |
