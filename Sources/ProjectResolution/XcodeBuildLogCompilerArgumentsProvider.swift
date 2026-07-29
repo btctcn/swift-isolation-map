@@ -77,11 +77,6 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         arguments += ["COMPILER_INDEX_STORE_ENABLE=YES"] + extraActions + ["build"]
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
-        guard result.exitCode == 0 else {
-            throw CompilerArgumentsError.buildLogParseFailed(
-                reason: "xcodebuild -verbose \((extraActions + ["build"]).joined(separator: " ")) exited \(result.exitCode): \(result.standardError)"
-            )
-        }
 
         var parsed: [String: [String]] = [:]
         for invocation in CompilerArgsLogParser.parseXcodeSwiftCompileInvocations(buildLog: result.standardOutput) {
@@ -90,6 +85,23 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             for file in files {
                 parsed[file] = fullArguments
             }
+        }
+
+        // A non-zero `xcodebuild` exit code alone does not invalidate compiler-invocation lines
+        // already captured for targets that DID compile successfully -- confirmed against a real
+        // `~/ios` build where the main app target compiles cleanly (and its invocations parse
+        // fine) while a *different*, unrelated target (e.g. a notification extension with an
+        // unresolved dependency) fails the overall exit code. Throwing unconditionally on a
+        // non-zero exit code discarded everything already parsed, and since `cachedArguments` is
+        // only ever set on a successful return from `loadArgumentsIfNeeded`, that forced *every
+        // single subsequent distinct file lookup* to repeat this whole (expensive, minutes-long)
+        // `xcodebuild -verbose` invocation from scratch -- observed as an apparent hang gating a
+        // real ~1400 distinct live-query file groups against `~/ios`. Only treat this as a hard,
+        // unrecoverable failure when nothing at all could be recovered from the log.
+        guard result.exitCode == 0 || !parsed.isEmpty else {
+            throw CompilerArgumentsError.buildLogParseFailed(
+                reason: "xcodebuild -verbose \((extraActions + ["build"]).joined(separator: " ")) exited \(result.exitCode) and produced no usable compiler invocations: \(result.standardError)"
+            )
         }
         return parsed
     }
