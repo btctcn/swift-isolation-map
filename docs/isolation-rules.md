@@ -97,6 +97,73 @@ confidently wrong answers here (claimed no proposals were tagged "6.3" at all) o
 For anything requiring an exact/complete answer against a large structured dataset, download it
 and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize tool's read of it.
 
+## Runbook: adding support for a new Swift version
+
+Trigger: `.github/workflows/swift-version-watch.yml` opens an issue titled "New Swift release
+detected: `swift-X.Y.Z-RELEASE`" when `swiftlang/swift`'s latest non-prerelease tag's major.minor
+no longer matches `SUPPORTED_SWIFT_VERSIONS.md`'s last line (weekly, or `workflow_dispatch` on
+demand). The same four steps apply whichever Swift version this is — this section is a checklist
+for a human doing the review the issue asks for, not something the workflow itself automates
+further; per the architecture spec's own principle, judgment calls like "did this proposal
+actually change inference" don't belong in unattended automation.
+
+### 1. Research — per the sourcing hierarchy in `docs/architecture.md` §1.5.1
+
+1. Pull the real evolution dataset and filter to the new version, cross-referencing for
+   isolation-relevant keywords — the exact command that worked for 6.0–6.3 above:
+   ```
+   curl -s https://download.swift.org/swift-evolution/v1/evolution.json -o /tmp/evolution.json
+   jq -r '.proposals[] | select(.status.version == "6.4") | "\(.id) \(.title)"' /tmp/evolution.json
+   ```
+   then eyeball each hit's title/summary against `(?i)actor|isolat|concurren|sendable`. **Do not**
+   hand this JSON to `WebFetch` for summarization instead — see the methodology note directly
+   above; this is the exact failure mode it documents, with a real, confirmed wrong answer as the
+   consequence.
+2. For anything a proposal's own text leaves ambiguous, the ground truth is the compiler's own
+   source (`swiftlang/swift`, notably `lib/Sema/TypeCheckConcurrency.cpp`) — same authority order
+   this whole rule set was built against.
+3. For anything still unclear, write a small, real reproduction and compile it with the new
+   version's real toolchain (`swiftc -swift-version X.Y ...`), observe the actual diagnostic —
+   the same "empirical testing against the real compiler, mandatory not optional" discipline
+   behind every row in the checklist below and every proposal-by-proposal verdict above.
+
+### 2. Decide: does anything change the 4-tier resolution model?
+
+The question is narrow and specific: does the new version change **explicit attribute →
+inheritance/conformance → module default → `nonisolated`** — the model
+`IsolationInferenceEngine`/`IsolationRuleSet.resolveDefaultIsolation` actually implements — not
+whether the version changes concurrency checking, syntax legality, or anything else in the
+language. This is exactly the question asked (and answered "no," each time, with a cited reason)
+for SE-0414/0420/0423/0430/0431/0434 (6.0), SE-0449 (6.1), and SE-0481 (6.3) above. "Nothing
+changed" is a fully valid, expected answer — it is not a reason to skip step 3.
+
+### 3. Implement — the same shape regardless of step 2's answer
+
+1. Add a new type to `Sources/IsolationCore/IsolationRuleSet.swift` — `Swift64RuleSet` for 6.4,
+   never edit `Swift63RuleSet`'s `upperBound` to cover it. A single-point `SwiftVersionRange`
+   (`lowerBound == upperBound`), body either copied from the previous version (if step 2 found no
+   change) or implementing the new behavior, with a doc comment stating the review verdict and
+   citing the proposal(s) checked — matching every existing rule set's own comment style.
+2. Register it in `IsolationRuleSetRegistry.ruleSet(forSwiftVersion:defaultIsolation:)`'s
+   `candidates` array (`Sources/IsolationCore/IsolationRuleSetRegistry.swift`).
+3. **Update `IsolationRuleSetRegistryTests.swift`'s `unsupportedFutureVersionThrows` test** — it
+   currently hardcodes `"6.4"` as *the* example of an unsupported future version; once 6.4 is
+   supported, that literal expectation is wrong and must move to whatever the next unreviewed
+   version is (or be dropped if none is known yet). Easy to miss since the test still compiles
+   and its *name* stays accurate — only its literal version string goes stale.
+4. Add a row to the "Rule set version boundaries" table above, and a bullet to the evidence list,
+   in the same style as 6.0–6.3.
+5. If step 2 found a real behavior change: add new row(s) to the "Rule checklist" table below,
+   each backed by a real compiled reproduction (per this file's own "Empirical validation"
+   discipline) and a new test in `IsolationRuleSetRegistryTests.swift` or
+   `IsolationInferenceEngineTests.swift`. Consider whether `Tests/Fixtures/` golden fixtures need
+   a new pinned-to-this-version case (`docs/architecture.md` §4's fixture-pinning requirement —
+   newer rule sets must never change what an older, pinned fixture asserts).
+6. Update `SUPPORTED_SWIFT_VERSIONS.md`'s last line to the new version — this is the actual gate
+   `swift-version-watch.yml` checks; the issue keeps existing (or reopens on the next scheduled
+   run) until this line moves.
+7. Close the triggering issue, referencing the PR. `swift test -c release` green throughout.
+
 ## Rule checklist
 
 | # | Rule | Source | Test(s) | Empirically verified |
