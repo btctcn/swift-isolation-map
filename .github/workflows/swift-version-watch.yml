@@ -7,6 +7,12 @@ on:
 jobs:
   check-swift-release:
     runs-on: ubuntu-latest
+    # Repo-wide default workflow token permissions are read-only (confirmed via
+    # `gh api repos/.../actions/permissions/workflow`), so `issues.create` below fails with
+    # "Resource not accessible by integration" without this explicit grant. Scoped to just this
+    # job rather than changing the repo-wide default, since no other workflow needs it.
+    permissions:
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Get latest Swift release
