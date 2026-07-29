@@ -51,6 +51,10 @@ final class RawSourceKitD: @unchecked Sendable {
         string.withCString { sourcekitd_shim_uid_get_from_cstr($0) }
     }
 
+    func uidGetStringPtr(_ uid: SourceKitDUID?) -> String? {
+        sourcekitd_shim_uid_get_string_ptr(uid).map { String(cString: $0) }
+    }
+
     func requestRelease(_ object: SourceKitDObject?) {
         sourcekitd_shim_request_release(object)
     }
@@ -117,11 +121,26 @@ final class RawSourceKitD: @unchecked Sendable {
         sourcekitd_shim_variant_dictionary_get_string(variant, key).map { String(cString: $0) }
     }
 
+    func variantDictionaryGetInt64(_ variant: SourceKitDVariant, _ key: SourceKitDUID?) -> Int64 {
+        sourcekitd_shim_variant_dictionary_get_int64(variant, key)
+    }
+
+    func variantUidGetValue(_ variant: SourceKitDVariant) -> SourceKitDUID? {
+        sourcekitd_shim_variant_uid_get_value(variant)
+    }
+
     func variantArrayGetCount(_ variant: SourceKitDVariant) -> Int {
         sourcekitd_shim_variant_array_get_count(variant)
     }
 
     func variantArrayGetValue(_ variant: SourceKitDVariant, _ index: Int) -> SourceKitDVariant {
         sourcekitd_shim_variant_array_get_value(variant, index)
+    }
+
+    /// Diagnostic-only: a full, literal recursive dump of a response variant's shape (every key,
+    /// nesting, and value type) via `sourcekitd_variant_dictionary_apply_f` -- for pinning down a
+    /// not-yet-understood response shape empirically, not for production parsing.
+    func dumpVariant(_ variant: SourceKitDVariant) -> String {
+        String(cString: sourcekitd_shim_dump_variant(variant))
     }
 }

@@ -68,6 +68,10 @@ Xcode indexes the package and creates a scheme per target automatically. Pick th
 
 A tool that gives an incorrect concurrency-safety result is worse than no tool at all. Every isolation-inference rule is expected to ship with an explicit test referencing the exact compiler behavior it verifies, and the tool will refuse to run rather than silently produce a result it isn't confident in (stale index store, unrecognized Swift version).
 
+## Language-mode contract
+
+This tool reports actor isolation **as the code actually compiles today** — using each module's own real `-swift-version` from its real build arguments, never a hardcoded or assumed language mode. This matters because isolation semantics genuinely differ between language modes for some constructs (e.g. whether a class's synthesized zero-argument `init()` inherits its type's global-actor isolation depends on the language mode in effect — see SE-0411 — confirmed empirically, not assumed, against a real project's own build). Analysis results describe the project as it is built right now; they are **not** a prediction of what a future migration to a newer Swift language mode would report. If your build mixes modules on different `-swift-version` settings, each module's isolation is computed in its own mode, matching how the real build itself behaves.
+
 ## Roadmap
 
 - **v0.1** — project/scheme resolution, index store discovery and staleness detection, the hybrid inference engine, `mermaid`/`dot`/`json` output.

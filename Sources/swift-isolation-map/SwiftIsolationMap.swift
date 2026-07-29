@@ -425,10 +425,46 @@ struct SwiftIsolationMap: ParsableCommand {
             return empty
         }
 
-        return await ExternalIsolationBackfill.resolve(
+        // Permanent, opt-in diagnostic (docs/task-oracle-query-concurrency.md's decision record) --
+        // originally added for one measurement (deciding whether hypothesis 0's file-sorted
+        // ordering was worth implementing at all; it was), but kept: before/after
+        // `source.request.statistics` snapshots around the oracle phase remain the cheapest way to
+        // directly verify hypothesis 0's own AST-cache-locality acceptance criterion (`num-ast-
+        // builds` should track the merged plan's distinct live-query file-group count, not the
+        // query count) on any future run, e.g. after a further change to query ordering or
+        // dedup. Hooked here, not inside `ExternalIsolationBackfill`, specifically to avoid adding
+        // `requestStatistics()` to the `SourceKitDQuerying` protocol (which every fake/test double
+        // would then need to implement) for what stays a diagnostic, never load-bearing for a
+        // normal run's own output.
+        let statsEnabled = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_ORACLE_STATS"] != nil
+        let before = statsEnabled ? try? await sourceKitD.requestStatistics() : nil
+        if let before {
+            eprint("=== oracle-phase statistics: BEFORE ===")
+            for (kind, value) in before.byKind.sorted(by: { $0.key < $1.key }) {
+                eprint("\(kind): \(value)")
+            }
+        }
+
+        let result = await ExternalIsolationBackfill.resolve(
             linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
             processRunning: processRunning, environmentProvider: environmentProvider
         )
+
+        if statsEnabled, let before {
+            if let after = try? await sourceKitD.requestStatistics() {
+                eprint("=== oracle-phase statistics: AFTER ===")
+                for (kind, value) in after.byKind.sorted(by: { $0.key < $1.key }) {
+                    eprint("\(kind): \(value)")
+                }
+                eprint("=== oracle-phase statistics: DELTA (after - before) ===")
+                for kind in Set(before.byKind.keys).union(after.byKind.keys).sorted() {
+                    let delta = (after.byKind[kind] ?? 0) - (before.byKind[kind] ?? 0)
+                    eprint("\(kind): \(delta)")
+                }
+            }
+        }
+
+        return result
     }
 
     // MARK: - Output

@@ -29,9 +29,12 @@ public enum SymbolGraphIsolationParser {
                 return .nonisolated
             }
             // The bare "@" punctuation fragment has no `preciseIdentifier`; the actor-name
-            // fragment that follows it does (e.g. `s:ScM` for `MainActor`) -- that's the
-            // definitive signal this fragment names a real global actor, not just prefix text.
-            if fragment.preciseIdentifier != nil {
+            // fragment that follows it does (e.g. `s:ScM` for `MainActor`) -- necessary, but not
+            // sufficient, evidence this fragment names a real global actor: a resolvable USR only
+            // means the fragment references *some* real type, not that the type is a global actor
+            // (see `GlobalActorNameValidation`'s own doc comment -- `@StateObject` resolves just as
+            // cleanly and is not an actor at all).
+            if let usr = fragment.preciseIdentifier, GlobalActorNameValidation.isGlobalActorName(spelling: fragment.spelling, usr: usr) {
                 return .globalActor(name: fragment.spelling)
             }
         }
