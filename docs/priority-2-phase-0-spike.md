@@ -124,7 +124,7 @@ Verified against the local toolchain (Apple Swift 6.3, swiftlang-6.3.0.123.5) an
   **Second amendment (Phase 2, same day, found testing against real external projects):** the
   amendment above was itself incomplete, not wrong exactly but drawing the wrong conclusion from a
   real observation. The user asked for `IndexStoreLocator` to be tried against real projects
-  (`/Users/ab/SQLumen`, `/Users/ab/ios`, and a real external SPM package at
+  (`/Users/ab/SQLumen`, `Project Iris`, and a real external SPM package at
   `/Users/ab/temp/importformatter`) — the `importformatter` package genuinely had a populated
   `.build/index-build/<triple>/<config>/index/store`, and so, on inspection, did this very
   project's own `.build`. Both had a `.swiftpm/xcode/package.xcworkspace` present — i.e. both had

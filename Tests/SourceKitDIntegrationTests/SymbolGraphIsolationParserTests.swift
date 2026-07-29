@@ -18,7 +18,7 @@ private let realNoAttributeSymbolGraph = """
 {"metadata":{"formatVersion":{"major":0,"minor":6,"patch":0},"generator":"Apple Swift version 6.3"},"module":{"name":"LSPSpike","platform":{"architecture":"arm64","vendor":"apple","operatingSystem":{"name":"macosx","minimumVersion":{"major":13,"minor":0}}}},"symbols":[{"kind":{"identifier":"swift.class","displayName":"Class"},"identifier":{"precise":"s:8LSPSpike16PlainNonisolatedC","interfaceLanguage":"swift"},"pathComponents":["PlainNonisolated"],"names":{"title":"PlainNonisolated"},"declarationFragments":[{"kind":"keyword","spelling":"class"},{"kind":"text","spelling":" "},{"kind":"identifier","spelling":"PlainNonisolated"}],"accessLevel":"internal"}],"relationships":[]}
 """
 
-/// Real shape confirmed against `~/ios`'s `Kingfisher.KFImageRenderer.binder` (docs/task-oracle-
+/// Real shape confirmed against `Project Iris`'s `Kingfisher.KFImageRenderer.binder` (docs/task-oracle-
 /// query-concurrency.md's decision record): a `@StateObject`-attributed property's own attribute
 /// fragment resolves to a real USR (SwiftUI's `StateObject` struct) just as cleanly as a genuine
 /// actor attribute would -- the bug this fixture guards against is treating that resolvability

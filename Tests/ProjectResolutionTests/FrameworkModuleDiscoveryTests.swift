@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ProjectResolution
 
-/// Real `module.modulemap` text captured this session from a real, built `~/ios` dependency
+/// Real `module.modulemap` text captured this session from a real, built `Project Iris` dependency
 /// (`ActionSheetPicker-3.0`'s framework, Xcode 26.4.0) -- this framework has no
 /// `Modules/*.swiftmodule` directory at all, only a modulemap, and its real module name
 /// (`ActionSheetPicker_3_0`, underscores) differs from its search-path directory name

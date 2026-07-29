@@ -4,12 +4,12 @@
 bearing for the whole task: no reduction in analysis quality/accuracy is acceptable — a speedup
 that resolves fewer USRs, changes any `.resolved`/`.unknown` outcome, or silently skips work is not
 a valid solution, however fast.** Written immediately after Gap B closed and a real,
-non-diagnostic-shortcut `~/ios` run was measured end to end (`docs/priority-3-compiled-dependency-
+non-diagnostic-shortcut `Project Iris` run was measured end to end (`docs/priority-3-compiled-dependency-
 isolation.md`'s Gap B section) — this task starts from that real, current baseline, not a guess.
 
 ## 1. The real, current baseline
 
-A full `~/ios` run (2209 files, 46007 declarations, 137657 call-graph edges) finishes in **29
+A full `Project Iris` run (2209 files, 46007 declarations, 137657 call-graph edges) finishes in **29
 minutes 41 seconds** wall-clock (`86% cpu`) post-Gap-B — down from an estimated 35-40 hours before
 it, and a genuinely usable number today. The remaining cost is now overwhelmingly the **live
 `sourcekitd` oracle queries**: `External oracle: 2434 resolved, 10898 conformance(s) updated, 3208
@@ -39,7 +39,7 @@ many facts get resolved.
    is itself revisited — which requires exactly the kind of empirical verification this project has
    done for every other real change this session (Gap A's `.accessorOf` direction, Gap B's
    `.baseOf`/`.extendedBy` direction and shape), not assumed from first principles.
-3. **A real, live `sample` profile taken this session** (during the actual 29:41 `~/ios` run, not a
+3. **A real, live `sample` profile taken this session** (during the actual 29:41 `Project Iris` run, not a
    synthetic test) showed the actual parsing/type-checking work
    (`swift::CompilerInstance::performSema()`, `swift::Parser::parseDecl`, etc., all running as
    library code inside `sourcekitdInProc`, dlopen'd into our own process — confirmed no separate
@@ -57,7 +57,7 @@ many facts get resolved.
    not guessed.
 5. **Third-party CocoaPods/XCFramework bulk-cache coverage already exists**
    (`Sources/ProjectResolution/FrameworkModuleDiscovery.swift`, confirmed empirically against
-   `~/ios` per its own doc comment: "each CocoaPods/XCFramework dependency gets its own directory"
+   `Project Iris` per its own doc comment: "each CocoaPods/XCFramework dependency gets its own directory"
    under `FRAMEWORK_SEARCH_PATHS`) — narrows, but doesn't rule out, "bulk-cache coverage is
    incomplete" as an explanation for the residual live-query volume; worth a real measurement (see
    hypothesis 3 below), not an assumption either way.
@@ -134,7 +134,7 @@ to them):
    priority (still gated on the micro-spike showing concurrency helps at all).
 4. **The `source.request.statistics` instrument is adopted as a required, trivial first step**
    ("instrument first") — before implementing anything else, capture `num-ast-builds` /
-   `num-ast-cache-hits` before/after the oracle phase on a real `~/ios` run. If builds already track
+   `num-ast-cache-hits` before/after the oracle phase on a real `Project Iris` run. If builds already track
    distinct files touched, lever 0 (ordering) won't help and effort should shift straight to the
    concurrency spike; if builds trend toward the query count, ordering is very likely the dominant,
    cheapest fix and should be measured standalone before concurrency is attempted at all.
@@ -173,7 +173,7 @@ exact smoke test it proposed (not by evaluating its reasoning alone).
    adopted as written**; the real response dump (below) confirms this counter exists and is
    populated (`source.statistic.max-asts-in-memory`, alongside `num-asts-in-memory` and
    `num-open-documents`/`max-open-documents`), so it costs nothing extra to include in the same
-   before/after pair the real `~/ios` diagnostic run will capture.
+   before/after pair the real `Project Iris` diagnostic run will capture.
 3. **"A smoke test should pin the response shape before the diagnostic run depends on it" — done,
    and the real shape turned out richer than either document assumed.** Neither the response nor
    the amendments predicted the exact nesting; the real, confirmed shape is:
@@ -189,7 +189,7 @@ exact smoke test it proposed (not by evaluating its reasoning alone).
    `source.statistic.num-ast-cache-hits`, etc. — exactly the UID strings the §2.5 `strings -a` pass
    found, now confirmed to be the literal per-entry identifiers, not merely present somewhere in
    the binary). This is exactly the kind of surprise the amendment predicted a smoke test would
-   catch cheaply, before the real 30-minute `~/ios` diagnostic run depended on a wrong assumption.
+   catch cheaply, before the real 30-minute `Project Iris` diagnostic run depended on a wrong assumption.
 4. **Closing note (the spike already falsifies the control-flow claim, no swift-repo checkout
    needed) — endorsed, no action required beyond what DoD 3 already mandates.** Restated here only
    to record agreement: the still-outstanding concurrent-issuance micro-spike's own `sample`
@@ -222,12 +222,12 @@ exact smoke test it proposed (not by evaluating its reasoning alone).
 
 **Net effect on the plan**: none of this changes hypothesis ranking or the hard constraint — it
 makes the already-adopted "instrument first" step (§2.5 point 4) concretely implemented and tested,
-not just designed. The real `~/ios` diagnostic run (still pending) can now be built directly on
+not just designed. The real `Project Iris` diagnostic run (still pending) can now be built directly on
 `SourceKitDClient.requestStatistics()` as-is.
 
 **Two follow-up notes on this instrument, both adopted:**
 
-- **Persist the full `byKind` result, not just the two headline counters, in the real `~/ios`
+- **Persist the full `byKind` result, not just the two headline counters, in the real `Project Iris`
   diagnostic run.** `requestStatistics()` already parses every `key.results` entry generically (not
   a hardcoded subset), so this costs nothing extra — the diagnostic run's own logging/output should
   write out the complete before/after `byKind` dictionaries (or the raw `dump` string), not just
@@ -248,11 +248,11 @@ not just designed. The real `~/ios` diagnostic run (still pending) can now be bu
   file/args pair — that tests a real caching-correctness invariant this project actually depends
   on, not an incidental magic number, so it should keep failing loudly if it ever regresses.
 
-## 2.7. Real `~/ios` diagnostic instrument run — decisive result, hypothesis 0 confirmed worth building
+## 2.7. Real `Project Iris` diagnostic instrument run — decisive result, hypothesis 0 confirmed worth building
 
 The "instrument first" step (§2.5 point 4, §2.6) was run for real: the CLI took a temporary,
 env-gated (`SWIFT_ISOLATION_MAP_ORACLE_STATS=1`) `requestStatistics()` snapshot immediately before
-and after `ExternalIsolationBackfill.resolve`'s oracle phase, on the real `~/ios` corpus (2209
+and after `ExternalIsolationBackfill.resolve`'s oracle phase, on the real `Project Iris` corpus (2209
 Swift files), hooked at the CLI call site in `SwiftIsolationMap.swift` rather than inside
 `ExternalIsolationBackfill` itself (avoids adding `requestStatistics()` to the `SourceKitDQuerying`
 protocol for a diagnostic that isn't staying in the codebase). Real delta:
@@ -286,7 +286,7 @@ this large) — reinforcing, not just permitting, hypothesis 0's core mechanism 
 queries contiguously so they land before that file's own AST gets evicted by unrelated files'
 activity in between).
 
-Real run otherwise came back clean and consistent with the last confirmed `~/ios` run (`
+Real run otherwise came back clean and consistent with the last confirmed `Project Iris` run (`
 highRiskBoundaries: 329`, `typesAnalyzed: 34825` — matching the cross-file-collision fix's own
 closing numbers, no regression from the diagnostic instrumentation itself).
 
@@ -313,7 +313,7 @@ ratio actually improved) is captured for the decision record.
    it carries **zero new correctness risk** (same queries, same session, same serial issuance,
    provably order-independent outcome application) — so unlike every hypothesis below it, it does
    not need to wait on any empirical safety spike. Ship it first; measure its own standalone
-   before/after on `~/ios`; only then decide whether hypothesis 1 is still worth pursuing (guided by
+   before/after on `Project Iris`; only then decide whether hypothesis 1 is still worth pursuing (guided by
    the `source.request.statistics` `num-ast-builds` vs. distinct-file-count instrument from §2.5 —
    if builds already track distinct files, hypothesis 1's expected payoff shrinks a lot).
 1. **(Conditional on hypothesis 0's measured result, no longer assumed to be the primary lever)
@@ -430,10 +430,10 @@ ratio actually improved) is captured for the decision record.
    restructuring is implemented for both trigger loops, Phase I3's per-pair dedup guarantee
    preserved (already true by construction: phase 1 still collects the fully-deduplicated set
    single-threaded, exactly as today). This alone gets a full correctness-gate diff (item 3 below)
-   and a real `~/ios` before/after measurement, and does not wait on item 2.
+   and a real `Project Iris` before/after measurement, and does not wait on item 2.
 2. **A diagnostic instrument run** (per §2.5's adopted "instrument first" step) captures
    `source.statistic.num-ast-builds` / `num-ast-cache-hits` before and after the oracle phase, once
-   before hypothesis 0 ships and once after, against the real `~/ios` corpus — reported honestly
+   before hypothesis 0 ships and once after, against the real `Project Iris` corpus — reported honestly
    even if it shows ordering already made builds track distinct-file-count closely (meaning further
    concurrency work per hypothesis 1 has little left to gain).
 3. The sourcekitd concurrency-safety question (hypothesis 1's crux) is answered empirically, with
@@ -458,7 +458,7 @@ ratio actually improved) is captured for the decision record.
    If a future non-determinism is discovered (e.g., a race that occasionally resolves a collision
    differently), that is a blocking correctness bug in this task's own work, not an acceptable
    "usually fine" tradeoff.
-6. A real, honest, measured before/after wall-clock number on `~/ios` for each shipped phase
+6. A real, honest, measured before/after wall-clock number on `Project Iris` for each shipped phase
    separately (ordering alone; then, if applicable, concurrency on top), the same way every other
    change this session has been measured (not extrapolated from a partial or diagnostic run).
 7. Full `swift test -c release` green throughout.
@@ -507,7 +507,7 @@ ratio actually improved) is captured for the decision record.
 ## 7. Decision record: hypothesis 0 shipped, three real bugs it exposed, and the language-mode contract
 
 Hypothesis 0 (file-sorted, single merged execution pass across both trigger kinds) shipped. Getting
-it to a state that passes the hard correctness gate against real `~/ios` took four real, non-
+it to a state that passes the hard correctness gate against real `Project Iris` took four real, non-
 hypothetical problems, each found by the gate itself and each requiring its own empirical
 arbitration (a real `swiftc` compile, never reasoning alone) to resolve — not a smooth, one-shot
 implementation. Recorded here in full because the investigation's own false starts are as
@@ -517,7 +517,7 @@ instructive as its conclusions (see also the retrospective note planned for `doc
 
 The file-sorted merge made claim-once dedup for conformance pairs (`ConformancePairKey`) pick a
 *consistent* representative declaration to query, where the old, unordered-`Dictionary`-iteration
-code picked one at random per run. Two real, opposite-shape regressions on `~/ios` proved neither
+code picked one at random per run. Two real, opposite-shape regressions on `Project Iris` proved neither
 "the type's own entry always wins" nor "a member always wins" is correct:
 
 - **`PhotoServiceImpl`** (project source): conforms to `PHPickerViewControllerDelegate` via a
@@ -568,7 +568,7 @@ failure mode this closes; no such collision is known in this project's real corp
 ### 7.3 Edge-level query-order non-determinism: a real, confirmed instability, not a hypothesis
 
 Independently of §7.1/§7.2, three back-to-back runs of the *identical* binary against the identical
-`~/ios` corpus produced three different resolved/`unspecified` combinations for a small family of
+`Project Iris` corpus produced three different resolved/`unspecified` combinations for a small family of
 synthesized (implicit, no explicit `init` in source) `.init()` declarations
 (`MindboxSDKInitializer`, `YandexPaySDKInitializer`, `ProductNotificationSchedulerInitializer`,
 `URLNormalizer`, `SupportedLinksValidator`). Traced to the **edge-level trigger**
@@ -586,7 +586,7 @@ input array must not win).
 **A second, narrower non-determinism was found by the same discipline (a cheap, no-live-query
 plan-dump diff — see §7.5) before it ever reached a real gate run**: two genuinely distinct USRs can
 legitimately share one exact `(file, line, column)` on real code (e.g. a synthesized property
-getter and its setter counterpart at the same call-site token, confirmed on `~/ios`). Sorting only
+getter and its setter counterpart at the same call-site token, confirmed on `Project Iris`). Sorting only
 by location left such ties' relative order dependent on `merged`'s own pre-sort array order, which
 itself traces back to `Dictionary` iteration (both `bestLocationByUSR` and `linked.declarations`) —
 not guaranteed stable across process launches. **Fix**: `targetUSR`/`usr` added as the final
@@ -659,7 +659,7 @@ specific declaration under `-swift-version 5`, record the result here.
   (witness-context claim priority in both primary-body and extension shapes, the no-witness
   fallback, the canonical edge-representative, and both parsers' property-wrapper/custom-actor
   cases).
-- **Real `~/ios` full-corpus gate: closed.** Per-node diff against baseline
+- **Real `Project Iris` full-corpus gate: closed.** Per-node diff against baseline
   (`oracle-stats-diagnostic-run.json`, `8cdb474`): 64 node differences, every one attributed —
   57 `MBPersistenceStorage` (problem 4a, baseline bug, already closed), 6 synthesized-`.init()`
   singleton improvements (`unspecified → resolved`, matching real `swiftc` arbitration at the
@@ -679,7 +679,7 @@ specific declaration under `-swift-version 5`, record the result here.
 ### 7.6 Hypothesis 0 acceptance numbers (DoD items 2 and 6)
 
 Measured on a **release** build (matching the original baseline measurement's own methodology),
-real full `~/ios` run, `SWIFT_ISOLATION_MAP_ORACLE_STATS=1` before/after snapshots plus manual
+real full `Project Iris` run, `SWIFT_ISOLATION_MAP_ORACLE_STATS=1` before/after snapshots plus manual
 wall-clock:
 
 | Metric | Before hypothesis 0 (§2.7) | After hypothesis 0 |
@@ -713,3 +713,60 @@ accounting): `num-ast-builds + num-ast-cache-hits = 1764 + 3029 = 4793 ≈ num-r
 
 Release vs. an equivalent debug build: 0 node diffs, identical summary — the optimizer does not
 change behavior.
+
+### 7.7 Hypothesis 1 closed: concurrent issuance rejected, on an architectural ceiling, not measurement
+
+**Attribution first, because it matters for how much to trust this closure**: the decisive fact
+below — `sourcekitd` serializes all real AST building through one process-wide serial queue,
+regardless of client-side concurrency — was **not** discovered during this closure's own spike. It
+was already established, from the same source citations, in
+`docs/research/12-oracle-concurrency-research-response.md`, written *before* any spike code existed
+(§1.1 there). This closure's own source-reading (independently, against the same
+`swiftlang/swift` `SwiftASTManager.cpp`) reproduced that document's citations exactly — a second,
+independent confirmation of an already-known fact, not a new finding. The research response's own
+predictions (P1: modest, non-multiplicative single-session speedup; P3: ordering dominates
+concurrency) are exactly what this closure measured.
+
+A real, opt-in spike (`Tests/SourceKitDIntegrationTests/ConcurrentIssuanceSpike.swift`,
+`SWIFT_ISOLATION_MAP_RUN_CONCURRENCY_SPIKE=1`) issued concurrent `cursorInfo` requests directly
+against a raw `sourcekitd` session, bypassing `SourceKitDClient`'s actor:
+
+- **Correctness**: 0 mismatches against a sequential baseline, across small-fixture and real
+  cold-cache (`Project Iris`) runs. No crash, no hang.
+- **Speed**: an early, small-fixture measurement showed 17-19x — later shown to be a cache-warmth
+  confound (sequential and concurrent phases shared one un-cleared AST cache). A corrected,
+  genuinely cold-cache measurement (two disjoint, never-before-queried real file/offset groups, one
+  run purely sequentially, one purely concurrently) gave **~1.3-2x** across two independent runs —
+  real, but capped, exactly matching the research response's own pre-registered P1.
+- **Why not chase it further**: `sourcekitd`'s `ASTBuildQueue` (`SwiftASTManager.cpp:613-616`,
+  `WorkQueue::Dequeuing::Serial`) guarantees only one AST builds at a time, process-wide, no matter
+  how many concurrent requests a client issues. The ~1.3-2x observed is not parallel compilation
+  (architecturally impossible inside `sourcekitd`) — it is some overlap of non-AST-build work
+  (request marshaling, response serialization) with the one AST build still in flight. This ceiling
+  cannot be raised by any client-side redesign (shared queue vs. file-sharded work distribution,
+  worker count, etc.) — a synthetic dataset built specifically to test that question (`Phase E`,
+  same test file) was written and verified compiling, then **not run**: the question it would
+  answer no longer has a practical answer that changes the decision.
+- **The real reason not to chase even the capped 1.3-2x**: concurrent issuance changes the actual
+  order ASTs are built/evicted in, which is exactly the mechanism hypothesis 0's own byte-identical
+  gate depends on (§7.1/§7.3 — this project's own recent, hard-won determinism). The price of a
+  ≤2x win, on top of hypothesis 0's already-shipped 33%, is real risk to a gate this project just
+  finished earning. Rejected on that basis, not because the measured gain was zero.
+
+**`key.cancel_on_subsequent_request: 0` reverted from `SourceKitDClient.cursorInfo`.** It was
+originally added unconditionally (§3.5, §7's own earlier framing) as a binding safeguard for
+concurrent issuance. With concurrent issuance rejected, the only code path that still needs it is
+the spike's own raw requests (`ConcurrentIssuanceSpike.swift`, which sets it directly) — in
+`SourceKitDClient`'s actual, permanently-sequential issuance, the actor already guarantees no two
+requests are ever in flight at once, so the flag is a strict no-op there by construction, not by
+coincidence. Kept as a documented key definition in `SourceKitDKeys` for the spike's own use;
+removed from `SourceKitDClient.cursorInfo` itself. `git diff` on that file is empty relative to
+before this investigation began.
+
+**Separately, found and fixed while gating this closure** (unrelated to the flag decision, a real,
+independent bug in pre-existing code): `LiveXcodeCompilerArgumentsProvider`'s `runVerboseBuild`
+threw on any non-zero `xcodebuild` exit code, even when the log still contained valid, parseable
+compiler invocations for targets that compiled successfully — one unrelated broken target (a
+notification extension with an unresolved dependency, in `Project Iris`) poisoned the in-memory
+compiler-args cache forever, forcing every subsequent distinct file lookup to repeat the whole
+build from scratch. Fixed: only a hard failure when nothing at all could be parsed from the log.

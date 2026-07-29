@@ -51,7 +51,7 @@ public struct LinkedAnalysis: Equatable, Sendable {
 /// plain dictionary overwrite (`byUSR[linked.usr] = linked`) -- whichever file's entry was
 /// processed last won, discarding the other's facts entirely, non-deterministically (file
 /// processing order is not a meaningful tiebreaker). Fixed by merging on collision instead of
-/// overwriting (see `merged(_:_:)` below) -- confirmed real on `~/ios`
+/// overwriting (see `merged(_:_:)` below) -- confirmed real on `Project Iris`
 /// (`AppDelegate: MindboxAppDelegate`'s own superclass link was being silently destroyed by an
 /// unrelated test target's own `extension AppDelegate { ... }`).
 public struct DeclarationLinker {
@@ -157,7 +157,7 @@ public struct DeclarationLinker {
         // -- a property read/write is recorded as a call to that property's *synthesized accessor*
         // (a USR distinct from the property's own), which would otherwise make every property
         // access anywhere in the codebase look like an unresolvable external reference, even for
-        // completely ordinary project-local properties (confirmed empirically against `~/ios`: 60%
+        // completely ordinary project-local properties (confirmed empirically against `Project Iris`: 60%
         // of edge-level "external" misses carried the project's own module USR prefix -- see
         // docs/task-compiled-dependency-isolation-usr-granularity.md). Both `callerUSR` and
         // `calleeUSR` are rewritten, not just the callee: a call originating inside a property

@@ -27,7 +27,7 @@ closed. See "Gap B" below for the real, measured before/after result.
   never a build. `FrameworkModuleDiscovery` resolves each framework's *real* module name (preferring
   a `Modules/<Name>.swiftmodule` directory, falling back to parsing `module.modulemap`) since a
   search-path directory's basename isn't reliable (confirmed: `ActionSheetPicker-3.0`'s real module
-  is `ActionSheetPicker_3_0`). Confirmed live against `~/ios`: discovers all 45 real CocoaPods
+  is `ActionSheetPicker_3_0`). Confirmed live against `Project Iris`: discovers all 45 real CocoaPods
   dependencies (Kingfisher, Alamofire, Moya, Firebase*, ...) in ~8.5 seconds.
 - **G3** — Wired into `ExternalIsolationBackfill.bulkSymbolGraphCache`, which now gets its
   environment from the new provider instead of from `compilerArguments.compilerArguments(forFile:)`
@@ -75,16 +75,16 @@ audited finding-by-finding against real `swiftc` ground truth this session — f
 honestly as real, plausible, but not yet manually spot-checked at the individual-finding level the
 way the golden-fixture matrix is.
 
-### `~/ios` — architecturally correct, but did not complete in a reasonable time
+### `Project Iris` — architecturally correct, but did not complete in a reasonable time
 
-`~/ios/lsboutique.xcworkspace`, scheme `ls.net.ru` (2209 files, 46010 declarations, 137657
+`Project Iris's workspace`, Project Iris's scheme (2209 files, 46010 declarations, 137657
 call-graph edges). Multiple full-run attempts this session took 15-30+ minutes and were killed
 before completion — not the original task's 70+-minute unfinished baseline, but nowhere near the
 "low single-digit minutes" target either.
 
 **A temporary diagnostic** (added to `ExternalIsolationBackfill`'s two trigger loops, logging every
 bulk-cache hit/miss and short-circuiting misses to `unknown` without a live query — reverted after
-use, not present in the committed code) ran a full pass over `~/ios` in seconds instead of tens of
+use, not present in the committed code) ran a full pass over `Project Iris` in seconds instead of tens of
 minutes and revealed the *real* root cause, which is not what this phase's own fixes targeted:
 
 - **Edge-level**: 850 bulk-cache hits, 18957 misses. 11400 of those misses (60%) carry the
@@ -112,9 +112,9 @@ pre-existing structural gaps, both real, both scoped for a dedicated follow-up:
 
 **This phase's own fixes (G1-G5) are not wrong or wasted** — they're necessary, verified-correct
 infrastructure (module discovery, laziness, timeouts, parallelism), and they are what took a
-`~/ios` run from "70+ minutes, unfinished, and secretly always failing everything (before the
+`Project Iris` run from "70+ minutes, unfinished, and secretly always failing everything (before the
 clean-build fallback fix)" to "a real, working oracle that successfully resolves hundreds of real
-externals on `~/SQLumen`." They're just not *sufficient alone* on a project the size of `~/ios`,
+externals on `~/SQLumen`." They're just not *sufficient alone* on a project the size of `Project Iris`,
 because the dominant cost there turned out to be two things this task never targeted.
 
 ## Gap A (accessor/property USR-granularity) — closed this session
@@ -150,7 +150,7 @@ is," not assumed cheap just because every other module was) — real diagnostic 
 (`Array`'s literal initializer, `Bool`'s `!` operator, `CGFloat` literal inits) were bare stdlib
 symbols uncovered by any prior module.
 
-**Real, measured result on `~/ios`** (same short-circuit diagnostic technique as before —
+**Real, measured result on `Project Iris`** (same short-circuit diagnostic technique as before —
 temporarily re-added, reverted after use): edge-level bulk-cache hit rate went from **850/19807 ≈
 4.3%** to **1481/3782 ≈ 39.2%**. More importantly, the *total* edge-level oracle-candidate volume
 dropped from 19807 to 3782 (an 80.9% reduction) — most of the previous 11400 project-local
@@ -170,18 +170,18 @@ Gap B (the `DeclarationLinker` real-scale linking gap — 28134 declaration-leve
 
 ## Whitespace-path-escaping bug — found and fixed this session
 
-While attempting a real, complete (non-diagnostic-shortcut) timed run against `~/ios` to get an
+While attempting a real, complete (non-diagnostic-shortcut) timed run against `Project Iris` to get an
 honest current wall-clock number, the previously-dismissed-as-"cosmetic" stderr noise
-(`sourcekit: ... failed to stat file: .../News/News/ List/...`, present in every real `~/ios` run
+(`sourcekit: ... failed to stat file: .../News/News/ List/...`, present in every real `Project Iris` run
 this whole session, mentioned in earlier drafts of this doc as "never root-caused") turned out to
 be a **real, serious performance bug**, not cosmetic at all: **238 live `cursorinfo` queries
 produced 30932 total `failed to stat file` occurrences — an average of ~130 failed file loads on
 every single query.**
 
-Root cause, found by inspecting a real `SwiftFileList` byte-for-byte: `~/ios` has genuine,
+Root cause, found by inspecting a real `SwiftFileList` byte-for-byte: `Project Iris` has genuine,
 legitimate directory names containing spaces (`UI/News/News List`, `UI/Side/Side Menu`). Xcode's
 real `SwiftFileList` response files backslash-escape such paths
-(`/Users/ab/ios/lsboutique/UI/News/News\ List/NewsController.swift`), but
+(`Project Iris/UI/News/News\ List/NewsController.swift`), but
 `XcodeBuildLogCompilerArgumentsProvider.expandFileList` did a naive per-line split with no
 unescaping at all, leaving a literal backslash character in the resulting path string — which then
 never matches the real filesystem entry, for *every* file in the entire compile unit's sibling-file
@@ -190,17 +190,17 @@ list, on *every single query* that compile unit's compiler arguments get attache
 Fixed: `XcodeBuildLogCompilerArgumentsProvider.unescaped(_:)`, mirroring
 `CompilerArgsLogParser.tokenize`'s own existing backslash-handling (drop the escape character,
 keep whatever it precedes literally), applied to each file-list line before returning it.
-**Measured, real result**: a fresh real run against `~/ios` with the fix produced **zero**
+**Measured, real result**: a fresh real run against `Project Iris` with the fix produced **zero**
 `failed to stat file` occurrences (previously 30932). Full unit + live-integration test coverage
 added (`XcodeCompilerArgsTests.swift`).
 
 **This resolved a real performance drag, but it fully unmasked Gap B as the sole remaining
-blocker**: with both Gap A and the path-escaping bug fixed, live-query throughput on a real `~/ios`
+blocker**: with both Gap A and the path-escaping bug fixed, live-query throughput on a real `Project Iris`
 run measured at **~13 queries/minute**. The declaration-level trigger alone has 28134 USRs needing
 this same query, **100% of which are Gap B (`syntactic:`-prefixed, destined to fail no matter
 what)** — at the observed rate, running all of them to completion would take on the order of
 **35-40 hours**. This is the full, quantified, now-unambiguous case for why Gap B, not anything
-this document's own work touched, is the entire remaining reason a full `~/ios` run cannot complete
+this document's own work touched, is the entire remaining reason a full `Project Iris` run cannot complete
 in a reasonable time. Full detail, real captured examples, and a concrete follow-up task
 specification: `docs/task-gap-b-declaration-linker-real-scale.md`.
 
@@ -231,7 +231,7 @@ Phases I1-I5, each with its own verification). Summary:
   conforming type/extension) deduped in `ExternalIsolationBackfill.resolveDeclarationLevelTriggers`
   by (nominal-type USR, unresolved-protocol) pair, cache-and-apply (not skip-and-leave) so every
   member sharing a pair gets the resolved outcome, not just the first one queried.
-- **I4** — end-to-end trace of the specific `NotificationsListViewInput` case (real `~/ios` file,
+- **I4** — end-to-end trace of the specific `NotificationsListViewInput` case (real `Project Iris` file,
   real index store) found a *third*, deeper failure mode than any hypothesis in the prior research:
   `DeclarationExtractor` never emits a `DeclarationInfo` for a `protocol` declaration at all (only
   classes/structs/enums/actors get one — confirmed by direct reading, no `ProtocolDeclSyntax`
@@ -243,13 +243,13 @@ Phases I1-I5, each with its own verification). Summary:
   I2 correctly resolves its real USR. Documented as a real, narrower residual limitation per this
   phase's own explicit escape hatch, not further patched (a larger, separate architecture change,
   out of Gap B's own scope).
-- **I5 — real, measured result on `~/ios`** (same env-gated short-circuit diagnostic technique used
+- **I5 — real, measured result on `Project Iris`** (same env-gated short-circuit diagnostic technique used
   throughout this effort, reverted after use): declaration-level oracle triggers dropped from
   **28134 (100% `syntactic:`-prefixed) to 3388 raw triggers / 3262 distinct (nominal, protocol)
   pairs** — an **88% reduction** in trigger volume, with the `syntactic:`-prefixed-miss fraction
   falling from 100% to **802/3388 ≈ 23.7%** (the residue Phase I4 explains: protocol conformances
   whose own `DeclarationInfo` was never extracted). **A real, complete, non-diagnostic-shortcut run
-  against `~/ios` finished in 29 minutes 41 seconds** (`29:41.44` wall-clock, `86% cpu`) — down from
+  against `Project Iris` finished in 29 minutes 41 seconds** (`29:41.44` wall-clock, `86% cpu`) — down from
   the pre-Gap-B estimate of 35-40 hours, per this document's own "honest wall-clock" discipline
   established by the whitespace-path-escaping fix above. `External oracle: 2434 resolved, 10898
   conformance(s) updated, 3208 unknown`. The resulting real analysis: 34730 types analyzed, 4
@@ -292,7 +292,7 @@ independently re-verified before being trusted, per this project's standing disc
   would have silently reintroduced the exact collision-blindness the fix exists to close) before
   any code was written; the shipped design resolves per-member (`.childOf`, free, in-memory) with
   hop 2 memoized per distinct extension USR, giving correct per-extension identity for free.
-- **Real, measured result on `~/ios`, and it is larger than originally scoped — reported
+- **Real, measured result on `Project Iris`, and it is larger than originally scoped — reported
   honestly, not just the number that was predicted.** The pre-registered baseline (before any
   fix, from the already-captured real run) was 20 of 129 confirmed high-risk boundaries matching
   the false-positive shape on the *caller* side. The real before/after diff of confirmed
@@ -339,8 +339,8 @@ independently re-verified before being trusted, per this project's standing disc
 
 ## Cross-file type-entry collision fix — closed this session
 
-Found while spot-checking the extension-of-external-type fix's own real `~/ios` output:
-`AppDelegate` (`lsboutique/AppDelegate.swift`) appeared with an empty location despite having a
+Found while spot-checking the extension-of-external-type fix's own real `Project Iris` output:
+`AppDelegate` (`Project Iris/AppDelegate.swift`) appeared with an empty location despite having a
 real, visible superclass (`MindboxAppDelegate`). Root cause, confirmed by direct code reading:
 `SyntaxAnalysis.DeclarationExtractor` runs per-file with no cross-file awareness. When a type has
 its primary declaration in one file and an extension stating a *different* conformance in a
@@ -362,7 +362,7 @@ dependent, non-deterministic) silently destroyed the other's facts.
   (`MultiFileType.swift`/`MultiFileTypeExtension.swift` in `cross-file-witness`, mirroring the real
   `AppDelegate`/`MindboxAppDelegate` shape exactly) with a live test asserting the merged result is
   identical regardless of which file is extracted first.
-- **Real, measured result on `~/ios`.** Pre-registered baseline (a precise heuristic: project-local
+- **Real, measured result on `Project Iris`.** Pre-registered baseline (a precise heuristic: project-local
   USR prefix, empty location, real name ≠ USR, to exclude `ExternalIsolationBackfill`'s own
   synthetic entries) found **13 real collision-victim types** before the fix. After the fix: **0
   remaining** — all 13, including `AppDelegate` and `NotificationsListViewController`, confirmed
@@ -387,7 +387,7 @@ dependent, non-deterministic) silently destroyed the other's facts.
 
 ## What's still open
 
-- The `~/ios` `highRiskBoundaries` before/after diff, now that Gap B is closed and a full run can
+- The `Project Iris` `highRiskBoundaries` before/after diff, now that Gap B is closed and a full run can
   actually complete — see the Gap B section's own real-run result above.
 - `~/SQLumen`'s `highRiskBoundaries` 38→93 change is real output but not yet individually audited
   against `swiftc` ground truth the way the golden-fixture matrix's cases are.
@@ -405,7 +405,7 @@ dependent, non-deterministic) silently destroyed the other's facts.
   updated, not just re-passed unchanged, to reflect Gap A's genuinely improved fixture output (see
   above).
 - `~/SQLumen`: a real, complete, successful end-to-end run, `External oracle: 528 resolved`.
-- `~/ios`: architecture validated (discovery, extraction, laziness all independently confirmed
+- `Project Iris`: architecture validated (discovery, extraction, laziness all independently confirmed
   correct via live tests and the diagnostic pass); Gap A's edge-level hit-rate improvement measured
   directly (4.3%→39.2%, 87.9% fewer live-query misses); full-run completion still blocked on Gap B
   (declaration-level misses, untouched by this phase).

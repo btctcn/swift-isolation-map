@@ -47,7 +47,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         // pipeline that just built the app before invoking this tool) makes Xcode's incremental
         // build system skip re-emitting `builtin-Swift-Compilation --` lines entirely -- `-verbose`
         // only echoes commands the build system actually decides to run, and "nothing needs
-        // rebuilding" means zero such lines, confirmed empirically against `~/ios` (`docs/
+        // rebuilding" means zero such lines, confirmed empirically against `Project Iris` (`docs/
         // priority-3-compiled-dependency-isolation.md`: a real `xcodebuild -verbose build` against
         // an up-to-date project produced zero compile invocations, silently starving every
         // external-isolation query downstream). The only reliable fix is forcing every file to be
@@ -89,14 +89,14 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
 
         // A non-zero `xcodebuild` exit code alone does not invalidate compiler-invocation lines
         // already captured for targets that DID compile successfully -- confirmed against a real
-        // `~/ios` build where the main app target compiles cleanly (and its invocations parse
+        // `Project Iris` build where the main app target compiles cleanly (and its invocations parse
         // fine) while a *different*, unrelated target (e.g. a notification extension with an
         // unresolved dependency) fails the overall exit code. Throwing unconditionally on a
         // non-zero exit code discarded everything already parsed, and since `cachedArguments` is
         // only ever set on a successful return from `loadArgumentsIfNeeded`, that forced *every
         // single subsequent distinct file lookup* to repeat this whole (expensive, minutes-long)
         // `xcodebuild -verbose` invocation from scratch -- observed as an apparent hang gating a
-        // real ~1400 distinct live-query file groups against `~/ios`. Only treat this as a hard,
+        // real ~1400 distinct live-query file groups against `Project Iris`. Only treat this as a hard,
         // unrecoverable failure when nothing at all could be recovered from the log.
         guard result.exitCode == 0 || !parsed.isEmpty else {
             throw CompilerArgumentsError.buildLogParseFailed(
@@ -109,10 +109,10 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     /// The `@`-referenced response file is one absolute source path per line -- confirmed against
     /// a real `SwiftFileList` produced by a real Xcode build. **A path containing a space is
     /// backslash-escaped** (`News\ List/NewsController.swift`, confirmed against a real file list
-    /// for a real project with space-containing directory names, `~/ios`'s own `UI/News/News List`)
+    /// for a real project with space-containing directory names, `Project Iris`'s own `UI/News/News List`)
     /// -- a plain per-line split alone leaves the literal backslash in the resulting path string,
     /// which then never matches the real filesystem entry. Root-caused after real-world validation
-    /// showed every single live `cursorinfo` query against `~/ios` separately failing to `stat`
+    /// showed every single live `cursorinfo` query against `Project Iris` separately failing to `stat`
     /// ~130 sibling files each time (confirmed via the same real project) -- every file under a
     /// space-containing directory in the *entire compile unit's* sibling-file list, on *every*
     /// query, not merely cosmetic stderr noise as first assumed.

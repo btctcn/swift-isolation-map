@@ -1,7 +1,7 @@
 # Research task: extensions of an *external* MainActor type falsely report high-risk boundaries
 
 **Status: CLOSED this session.** Implemented, tested (230/230 `swift test -c release`), and
-measured against the real `~/ios` corpus -- see section 4's Definition of Done for the real
+measured against the real `Project Iris` corpus -- see section 4's Definition of Done for the real
 before/after numbers, and `docs/priority-3-compiled-dependency-isolation.md`'s own decision-record
 section for the full write-up. The real impact turned out **larger** than this task's own
 pre-registered baseline: the fix resolves the false positives it was written for *and* un-masks a
@@ -9,7 +9,7 @@ large number of genuine, previously-invisible false negatives on the callee side
 cause -- reported honestly below, not just the number that was predicted.
 
 Found as a side observation while
-spot-checking Gap B's real `~/ios` result (`docs/priority-3-compiled-dependency-isolation.md`'s
+spot-checking Gap B's real `Project Iris` result (`docs/priority-3-compiled-dependency-isolation.md`'s
 Gap B section), not something Gap B itself set out to fix -- Gap B is about resolving
 *inheritance-clause references* (a declaration's own `superclassUSR`/`conformances[].protocolUSR`).
 This is a different, adjacent gap: **a project-local `extension` of an *external* type never learns
@@ -22,7 +22,7 @@ tool just has no way to know that today.
 
 ## 1. The real, motivating example
 
-`~/ios/lsboutique/Extensions/UIViewController+Navigation.swift`:
+`Project Iris/Extensions/UIViewController+Navigation.swift`:
 
 ```swift
 import UIKit
@@ -42,7 +42,7 @@ extension UIViewController {
 }
 ```
 
-A real, complete `~/ios` analysis run (post-Gap-B, `docs/priority-3-compiled-dependency-isolation.md`)
+A real, complete `Project Iris` analysis run (post-Gap-B, `docs/priority-3-compiled-dependency-isolation.md`)
 flags 5 confirmed high-risk edges in this one file, all the same shape, e.g.:
 
 ```json
@@ -153,7 +153,7 @@ stores, not trusted from the response alone:**
   -- `SyncCoordinator`'s own real, direct USR. Confirms V1 and V2 exactly as the response predicted
   (the reverse query, `occurrences(ofUSR: extensionUSR, roles: .extendedBy)`, returned nothing --
   `relatedToUSR` is the correct direction, matching Gap B's own established `.extendedBy` usage).
-- **On the real, motivating `~/ios` case itself**: `setCartCount(count:)`'s own `.definition`
+- **On the real, motivating `Project Iris` case itself**: `setCartCount(count:)`'s own `.definition`
   occurrence's `.childOf` relation points to
   `s:e:s:So16UIViewControllerC9Ls_net_ruE19addCustomBackButton4nameySS_tF` (the extension's own
   synthetic USR, built from the extension's *first* member, `addCustomBackButton` -- not
@@ -222,7 +222,7 @@ recorded so a future session doesn't re-raise the same, already-answered questio
 
 1. **Done.** Variant 1a's two-hop chain (`.childOf` -> extension USR -> `.extendedBy` ->
    extended-type USR) confirmed empirically against two real index stores (`cross-file-witness`,
-   the real `~/ios` case) *before* any production code was written (section 3 above). A committed
+   the real `Project Iris` case) *before* any production code was written (section 3 above). A committed
    fixture addition (`Tests/Fixtures/cross-file-witness/Sources/CrossFileWitness/
    ExtensionOfExternalType.swift`) covers all of V1-V4 for real, including the two new shapes this
    task's own review demanded: a real `AppKit` `NSView` extension (external, `@MainActor`), a
@@ -240,7 +240,7 @@ recorded so a future session doesn't re-raise the same, already-answered questio
    `Sources/swift-isolation-map/ExternalIsolationBackfill.swift` -- nothing under `SyntaxAnalysis/`
    touched). `IsolationInferenceEngine` itself needed zero changes, confirmed by tracing it
    directly, not assumed.
-3. **Done, exceeded.** The real `~/ios` `UIViewController+Navigation.swift` case (5 findings)
+3. **Done, exceeded.** The real `Project Iris` `UIViewController+Navigation.swift` case (5 findings)
    re-resolved to `globalActor(MainActor)` for the caller side and dropped out of
    `highRiskBoundaries` -- confirmed by name, in the real before/after diff, not just in the
    abstract (see item 4).

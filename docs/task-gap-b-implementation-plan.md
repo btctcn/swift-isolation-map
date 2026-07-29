@@ -6,7 +6,7 @@
 
 Gap A (accessor/property USR mismatch) and a whitespace-path-escaping bug were both found and
 fixed earlier this session (`docs/priority-3-compiled-dependency-isolation.md`). Real-world
-validation against `~/ios` (2209 files, 46010 declarations) then showed Gap B is the *sole*
+validation against `Project Iris` (2209 files, 46010 declarations) then showed Gap B is the *sole*
 remaining blocker to a full run completing in reasonable time: **100% of 28134 declaration-level
 oracle triggers carry a `syntactic:`-prefixed placeholder need** — `DeclarationLinker` never
 resolved these superclass/protocol references to real USRs at all, so every one of them pays a
@@ -179,7 +179,7 @@ Phase I2 should fix this specific case's *symptom* (assuming
 `NotificationsListViewController`'s own USR resolved, which its real, visible `c:@M@Ls_net_ru@objc
 (cs)NotificationsListViewController(im)...` USRs in the corpus strongly suggest), trace *why*
 `buildUSRRewriteMap`'s own direct resolution failed for `NotificationsListViewInput`'s own
-declaration — confirmed via `grep -rn "protocol NotificationsListViewInput" ~/ios` to be a
+declaration — confirmed via `grep -rn "protocol NotificationsListViewInput" Project Iris` to be a
 **top-level** declaration (not nested, so Phase I2's nesting-fallback doesn't apply here) — to
 understand whether there's a *third*, still-undiscovered failure mode. Add a temporary debug print
 at `buildUSRRewriteMap`'s lookup point (`candidatesByLocation[LocationKey(location: location)]`)
@@ -193,7 +193,7 @@ nothing and should come first regardless of what the location diff would otherwi
 whatever it reveals, or document it as a real, narrower residual limitation if Phase I2 already
 covers it in practice and no further linker bug is found.
 
-**Traced against the real `~/ios` corpus (2026-07-27). Result: a third, deeper failure mode, not
+**Traced against the real `Project Iris` corpus (2026-07-27). Result: a third, deeper failure mode, not
 any of the previously hypothesized ones.** A temporary scratch test (extracted the real file,
 queried the real DerivedData index store directly, then deleted per this project's standing
 "revert every temporary diagnostic" discipline) showed:
@@ -244,8 +244,8 @@ own case is otherwise fully explained.
 - Re-add the same env-gated diagnostic shape used to find Gap A and Gap B (short-circuit +
   hit/miss logging in `ExternalIsolationBackfill`'s two trigger loops), measure the new
   `syntactic:`-prefixed miss fraction and the *distinct-pair* residue (per Phase I3's reframed
-  metric) against `~/ios`, revert after use.
-- If the improvement is dramatic, attempt one real, complete (non-diagnostic-shortcut) `~/ios` run
+  metric) against `Project Iris`, revert after use.
+- If the improvement is dramatic, attempt one real, complete (non-diagnostic-shortcut) `Project Iris` run
   and report the actual wall-clock time and `External oracle: N resolved` count honestly.
 - Full `swift test -c release` suite green throughout (207 tests currently).
 - Update `docs/priority-3-compiled-dependency-isolation.md` and
@@ -284,6 +284,6 @@ second, divergent way.
   **asserting both halves** (per external review Correction 3): the second copy is not re-queried,
   *and* the second copy is rewritten from the first attempt's cached outcome, not left `syntactic:`.
 - Full `swift test -c release` green throughout.
-- The `~/ios` diagnostic re-measurement (I5) is the decisive real-world check, written up per this
+- The `Project Iris` diagnostic re-measurement (I5) is the decisive real-world check, written up per this
   project's standing convention. I5's measurement, metrics, and honest-wall-clock reporting stand
   exactly as originally written.

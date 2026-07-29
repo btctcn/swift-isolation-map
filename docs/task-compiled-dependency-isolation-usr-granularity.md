@@ -7,7 +7,7 @@ separate whitespace-path-escaping bug found and fixed while measuring Gap B's re
 there, not here, for Gap B work.** Originally written immediately after
 `docs/task-compiled-dependency-isolation-performance.md` was fully implemented (module discovery,
 lazy compiler-args, subprocess timeouts, parallel bulk extraction — all landed, tested, 202/202
-`swift test -c release`) and real-world-validated against `~/ios`, where a **new, deeper root
+`swift test -c release`) and real-world-validated against `Project Iris`, where a **new, deeper root
 cause** was found: the performance problem was never primarily about missing bulk-module coverage.
 It's two separate, pre-existing structural gaps that only manifest at real-project scale.
 
@@ -17,14 +17,14 @@ not rewritten, since the fix matched the diagnosis closely): `IndexStoreQuerying
 .owningPropertyUSR(forUSR:)` (`Sources/IndexStoreIntegration/IndexStoreClient.swift`), using
 `IndexStoreDB`'s real `.accessorOf` relation (verified directly against the checked-out
 `swiftlang/indexstore-db` source, not assumed), applied inside `DeclarationLinker.link(_:)` to
-canonicalize both `callerUSR` and `calleeUSR` of every call-graph edge. Measured on `~/ios`:
+canonicalize both `callerUSR` and `calleeUSR` of every call-graph edge. Measured on `Project Iris`:
 edge-level bulk-cache hit rate 4.3%→39.2%, live-query-miss volume down 87.9%. `Swift`/
 `CoreFoundation` were also added to `BulkSymbolGraphExtractor.defaultModules` (measured cheap: ~1.2s/
 ~0.5s respectively) alongside this fix. Gap B, below, is unaffected and still needs its own session.
 
 ## 1. How this was found
 
-After the performance task's fixes landed, a full `~/ios` run still took 15-30+ minutes (target:
+After the performance task's fixes landed, a full `Project Iris` run still took 15-30+ minutes (target:
 low single-digit minutes) despite bulk-cache discovery correctly finding and extracting 52 modules
 (7 well-known SDK modules + 45 real CocoaPods/XCFrameworks, confirmed via a live diagnostic run —
 discovery itself completes in ~8.5 seconds). Rather than run another 20+ minute cycle blindly, a
@@ -36,7 +36,7 @@ tens of minutes. This produced exact counts and samples of every residual USR, w
 through the expensive live-query loop at all. (The diagnostic itself was temporary and has been
 reverted — not present in the codebase; re-add the same shape if useful for verifying a fix.)
 
-Real numbers from that diagnostic run against `~/ios` (2209 files, 46010 declarations, 137657
+Real numbers from that diagnostic run against `Project Iris` (2209 files, 46010 declarations, 137657
 call-graph edges):
 - **Edge-level trigger**: 850 bulk-cache hits, **18957 misses**.
 - **Declaration-level trigger**: **28134 misses**, and — this is the striking part —
@@ -96,7 +96,7 @@ an `unknown` edge that might, if resolved, turn out to be a real cross-isolation
 
 ### Gap B — `DeclarationLinker` real-scale linking coverage (a pre-existing, unrelated bug)
 
-Every declaration-level miss on `~/ios` traces to an unresolved `syntactic:`-prefixed placeholder
+Every declaration-level miss on `Project Iris` traces to an unresolved `syntactic:`-prefixed placeholder
 USR — meaning `IndexStoreIntegration/DeclarationLinker.swift`'s own linking pass (Priority 1/2 era
 code, predates the entire compiled-dependency-isolation feature) is failing to resolve a large
 number of project-local protocol/superclass references on a real, ~46000-declaration project, even
@@ -128,23 +128,23 @@ the first place.
 3. Add `Swift` (the standard library) itself to `BulkSymbolGraphExtractor.defaultModules` (or a
    verified-equivalent bulk source) — confirmed cheap and fast to extract this session, just never
    added. `CoreFoundation` may be worth the same treatment; verify.
-4. A real before/after count of edge-level bulk-cache hit rate against `~/ios` (850/19807 ≈ 4.3%
+4. A real before/after count of edge-level bulk-cache hit rate against `Project Iris` (850/19807 ≈ 4.3%
    today) — the fix should move this dramatically, and that number itself is the acceptance
    criterion, not a vibe.
 
 ### Gap B (DeclarationLinker real-scale coverage)
-1. Root-cause why the linker's disambiguation fails at scale on `~/ios` specifically — reproduce
+1. Root-cause why the linker's disambiguation fails at scale on `Project Iris` specifically — reproduce
    with a *minimal* real extracted case (one of the captured `syntactic:NotificationsListViewInput`
    / `syntactic:ManagerAssembly` examples is a concrete, real starting point — find the actual
    source declaration and trace why `DeclarationLinker` never resolves it), not by guessing.
 2. Fix it, or if there's a structural reason real-scale linking can't reach 100% (e.g. a genuine
    IndexStoreDB query-volume/ordering issue), document the real, evidenced ceiling.
 3. Re-run the same diagnostic-style pass (temporarily re-instrument `ExternalIsolationBackfill` the
-   same way, or build a small standalone linking-coverage report) against `~/ios` and confirm the
+   same way, or build a small standalone linking-coverage report) against `Project Iris` and confirm the
    `syntactic:`-prefixed miss count drops to near zero.
 
 ### Combined acceptance
-- Full `~/ios` run (real, complete, not diagnostic-short-circuited) lands in low single-digit
+- Full `Project Iris` run (real, complete, not diagnostic-short-circuited) lands in low single-digit
   minutes, per the original performance task's target — this task's fixes are very likely what
   actually gets there, since the performance-task's own module-discovery work (correct, tested, and
   landed) turned out not to be the dominant cost.
@@ -152,7 +152,7 @@ the first place.
   than today's.
 - Full `swift test -c release` suite green, no regression.
 - A decision record in this project's `docs/priority-3-*.md` convention, with real before/after
-  numbers from both `~/ios` and `~/SQLumen`.
+  numbers from both `Project Iris` and `~/SQLumen`.
 
 ## 3. Relevant existing architecture
 
