@@ -119,8 +119,8 @@ auto-detects and drives with zero extra configuration (it invisibly ran `swift b
 `window/logMessage` notifications observed during the spike). **Both of this project's actual
 real-world validation targets are not SwiftPM packages**:
 ```
-~/SQLumen/SQLumen.xcodeproj   (no Package.swift)
-~/ios/lsboutique.xcodeproj + lsboutique.xcworkspace   (no Package.swift)
+~/SQLumen/SQLumen.xcodeproj          (no Package.swift)
+Project Iris (docs/reference-project-corpora.md)   (no Package.swift)
 ```
 `sourcekit-lsp --help` confirms three workspace-type discovery modes
 (`--default-workspace-type [swiftPM|compilationDatabase|buildServer]`) — Xcode-project builds need
@@ -130,7 +130,7 @@ tool, generated from an `xcodebuild -project/-workspace -scheme` invocation). **
 for either real-world project, and `xcode-build-server` is not installed on this machine** (absent
 from `PATH`, present in `brew search` but not installed). This was not exercised or confirmed by
 this spike — it's a real, concrete prerequisite for Definition-of-done item 4 (re-running against
-`~/ios`/`~/SQLumen` and diffing findings), not a hypothetical risk. **Next concrete step: spike
+`Project Iris`/`~/SQLumen` and diffing findings), not a hypothetical risk. **Next concrete step: spike
 `xcode-build-server` (or an equivalent `compile_commands.json` generation path) against one of the
 two real Xcode projects, confirm `sourcekit-lsp` picks up the resulting build settings, and only
 then re-run the same hover check against a real `UITableViewCell`/`SwiftUI.View` symbol from that

@@ -221,14 +221,14 @@ func concurrentCursorInfoIssuanceSpike() async throws {
 
     #expect(mismatches.isEmpty, "concurrent issuance produced \(mismatches.count) mismatch(es) against the sequential baseline -- see stderr for detail")
 
-    // ---- Phase C: cold-cache timing, on a real ~2200-file project (~/ios), not the tiny
+    // ---- Phase C: cold-cache timing, on a real ~2200-file project (Project Iris), not the tiny
     // fixtures above. Phases A/B reuse one shared session with no cache clear between them, so
     // their own speedup number conflates "concurrency is faster" with "the second pass just hits
     // an already-warm AST cache" -- this phase separates the two questions by using two entirely
     // *disjoint* sets of real files, neither ever queried before in this process, one run purely
     // sequentially and the other purely concurrently, so both start equally cold. Real-corpus data
     // (compiler arguments + two disjoint (file, offset, expected-symbol) groups) is precomputed
-    // out-of-band (this machine's own real `~/ios` checkout, not portable/CI-safe) and read from a
+    // out-of-band (this machine's own real `Project Iris` checkout, not portable/CI-safe) and read from a
     // local JSON file -- skipped entirely if that file isn't present, so this phase never affects
     // CI or another machine.
     let coldDataPath = "/tmp/concurrency_spike_cold_data.json"

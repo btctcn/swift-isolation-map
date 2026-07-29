@@ -11,7 +11,7 @@ import ProjectResolution
 /// correctly carrying `@MainActor` in its `declarationFragments`) takes a few seconds on the real
 /// toolchain -- versus the hundreds of individual live `cursorinfo` queries a large real project
 /// needed before this existed (see docs/priority-3-compiled-dependency-isolation.md for the
-/// `~/ios` before/after timing).
+/// `Project Iris` before/after timing).
 ///
 /// This is a *performance* cache, not a new source of truth: every value still comes from the real
 /// compiler, keyed by real USR (`identifier.precise`, module-qualified and unambiguous by
@@ -27,7 +27,7 @@ public enum BulkSymbolGraphExtractor {
     /// live-query path this list exists to avoid for the common case.
     ///
     /// `Foundation`/`ObjectiveC`/`CoreGraphics`/`Dispatch` were added after real-world validation
-    /// against `~/ios` showed the original three-module list (`UIKit`/`AppKit`/`SwiftUI`) alone left
+    /// against `Project Iris` showed the original three-module list (`UIKit`/`AppKit`/`SwiftUI`) alone left
     /// a large residual live-query volume -- these SDK modules aren't discoverable the way
     /// third-party CocoaPods/XCFrameworks are (`FrameworkModuleDiscovery`, not separate
     /// `-F`-searchable directories, implicitly available via `-sdk` alone the same way UIKit is),

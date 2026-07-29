@@ -15,7 +15,7 @@ public struct DiscoveredModule: Equatable, Sendable {
 }
 
 /// Discovers real, extractable third-party modules from a project's own `FRAMEWORK_SEARCH_PATHS`
-/// -- confirmed empirically against `~/ios` that each CocoaPods/XCFramework dependency gets its own
+/// -- confirmed empirically against `Project Iris` that each CocoaPods/XCFramework dependency gets its own
 /// directory there. This is *additive* to Apple's own SDK frameworks (UIKit/AppKit/SwiftUI): those
 /// aren't separate directories here at all (implicitly available via `-sdk` alone), so they're
 /// still extracted via the existing hardcoded well-known-module list, unaffected by this type.

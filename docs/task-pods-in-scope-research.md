@@ -13,7 +13,7 @@ recursively walks the project root looking for `.swift` files, skipping only
 deliberate "safe-by-default (over-inclusive)" design choice (see the function's own doc comment),
 not an oversight, and it predates the Gap B work entirely.
 
-Confirmed, real consequence on `~/ios` (2209 Swift files, 46007 linked declarations): the corpus
+Confirmed, real consequence on `Project Iris` (2209 Swift files, 46007 linked declarations): the corpus
 visibly includes CocoaPods source checkouts as project files — e.g. declaration USRs with
 `s:10Kingfisher…`/`s:9Alamofire…` prefixes appear directly in the extracted/linked declaration set,
 alongside the app's own `Ls_net_ru`-prefixed module. This inflates:
@@ -37,7 +37,7 @@ explicitly deferred, not bundled into Gap B's Definition of Done.
 
 1. **Re-run the same diagnostic instrumentation this project already uses** (env-gated
    short-circuit + hit/miss counters in `ExternalIsolationBackfill`'s two trigger loops) against
-   `~/ios` twice: once as-is (Pods in scope, today's default) and once with a temporary
+   `Project Iris` twice: once as-is (Pods in scope, today's default) and once with a temporary
    `Pods`/`Carthage` exclusion added to `skippedDirectoryNames`, to put a real, measured number on:
    - How much of the 46007 declaration count Pods/Carthage sources contribute.
    - How much of the declaration-level oracle-trigger volume (currently ~3388 triggers / ~3262

@@ -14,7 +14,7 @@ private let realNonisolatedXML =
 private let realNoAttributeXML =
     "<decl.class><syntaxtype.keyword>class</syntaxtype.keyword> <decl.name>PlainNonisolated</decl.name></decl.class>"
 
-/// Real shape confirmed against `~/ios`'s `Kingfisher.KFImageRenderer.binder` (docs/task-oracle-
+/// Real shape confirmed against `Project Iris`'s `Kingfisher.KFImageRenderer.binder` (docs/task-oracle-
 /// query-concurrency.md's decision record) -- same bug class as the symbol-graph fixture: a
 /// `@StateObject`-attributed property's `ref.struct` resolves just as cleanly as `@MainActor`'s
 /// `ref.class`, but names a SwiftUI property wrapper, never an actor.

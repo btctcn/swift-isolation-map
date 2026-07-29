@@ -1,0 +1,97 @@
+# Docs index
+
+This directory accumulated a long, real research history (spikes, decision records, closed and
+still-open tasks) with no single place tying it together. This file is that place: what the tool
+actually does, how its pieces fit, and an accurate status for every other doc here — several of
+those docs' own `**Status:**` headers are stale (written mid-task, never updated after the work
+that closed them landed elsewhere), so treat the table below, not each doc's own header, as
+current.
+
+## What this tool does
+
+`swift-isolation-map` statically analyzes a Swift project (Xcode project/workspace or SPM
+package) for actor-isolation correctness: which types/functions are isolated to which actor, and
+which cross-actor call sites are a real data-race risk under Swift's strict concurrency checking.
+See `motivation.md` for why this can't just be "read the compiler's own diagnostics," and
+`architecture.md` for the full original project specification (concept, differentiation from
+Xcode Instruments, the rule-system-is-the-product principle, distribution, governance) — written
+before implementation began and still the reference for "why this shape" on anything not covered
+by a later decision record.
+
+Every non-trivial claim in these docs was checked against real code, not synthetic fixtures —
+mainly two real projects, described once in `reference-project-corpora.md` rather than repeated
+(or leaked, in the private one's case) inline.
+
+## The pipeline, end to end
+
+```mermaid
+flowchart TD
+    A["CLI entry (SwiftIsolationMap.swift)<br/>resolve container: .xcodeproj / .xcworkspace / Package.swift"] --> B
+    B["StalenessOrchestration<br/>find every Swift source file, check content-hash manifest"] --> C
+    C["FileAnalyzer + SyntaxAnalysis<br/>per file: extract declarations, conformances,<br/>protocolGlobalActorNames, content hash"] --> E
+    B --> D["IndexStoreLocator<br/>discover/build the real index store<br/>(xcodebuild / swift build under the hood)"]
+    D --> DB["IndexStoreClient<br/>wraps libIndexStore over the built index"]
+    DB --> E["DeclarationLinker (IndexStoreIntegration)<br/>links syntax facts to real USRs + builds the call graph"]
+    E --> F["ExternalIsolationBackfill — 'the oracle'<br/>(see diagram below)"]
+    F --> G["Merge: oracle results folded into the linked declarations"]
+    G --> H["IsolationInferenceEngine<br/>(unmodified — a binding project constraint)<br/>rule-based isolation inference over declarations + call graph"]
+    H --> I["AnalysisReportBuilder → OutputFormat<br/>mermaid / dot / json"]
+```
+
+`IsolationInferenceEngine` is deliberately never modified by any of the work in these docs — every
+fix here works by giving it *better input facts* (via `DeclarationLinker` or the oracle), never by
+changing its rules. See `isolation-rules.md` for the rule checklist itself.
+
+## The oracle (`ExternalIsolationBackfill.resolve`)
+
+`DeclarationLinker` can only resolve what the index store + syntax analysis already know. Two
+real gaps remain after linking: a call into a type from a *compiled, external* dependency (a
+CocoaPod, an XCFramework, an SPM binary target — no source, no index entry with useful isolation
+info), and a project-local type's own superclass/protocol conformance pointing at such an external
+type. The oracle backfills both, real query at a time, only when the fast paths can't already
+answer:
+
+```mermaid
+flowchart TD
+    T1["Edge-level trigger:<br/>a call site whose callee resolves into external code"] --> M
+    T2["Declaration-level trigger:<br/>an unresolved syntactic: superclass/conformance placeholder"] --> M
+    M["Merge + deterministically sort<br/>(file-adjacent order — hypothesis 0;<br/>USR tie-break for same-location edges)"] --> BC
+    BC{"Bulk symbol-graph cache hit?<br/>(BulkSymbolGraphExtractor,<br/>one swift symbolgraph-extract<br/>per external module, cached)"}
+    BC -- yes --> AP["Apply outcome directly, no live query"]
+    BC -- no --> LQ["Live query: SourceKitDClient.cursorInfo<br/>against sourcekitdInProc, one real AST build<br/>(sequential — see hypothesis 1 below)"]
+    LQ --> AP
+    AP --> R["Backfilled/updated declarations + conformance pairs,<br/>fed back into the merge step in the pipeline diagram above"]
+```
+
+The file-adjacent sort order (hypothesis 0) and the sequential-only issuance decision (hypothesis
+1) are both real, measured findings — not assumptions — see the status table below for where each
+is written up.
+
+## Status of every other doc here
+
+| Doc | What it is | Real current status |
+|---|---|---|
+| `architecture.md` | The original, pre-implementation project specification | Foundational, not a task — always current. Some detail has since been superseded by real decisions (e.g. the concurrency model, output schema specifics) — later decision records win on those points |
+| `motivation.md` | Why this tool exists at all | Foundational, not a task — always current |
+| `isolation-rules.md` | Checklist of every isolation-inference rule `IsolationInferenceEngine` implements | Living document, updated as rules are added — always current |
+| `reference-project-corpora.md` | The two real validation projects (Project Iris, private; SQLumen, public) | Reference doc, added this session |
+| `research/` | The real research/review paper trail behind the compiled-dependency oracle, Gap A/B, extension-of-external-type isolation, and oracle concurrency — 15 documents, chronological, see `research/README.md` | Historical record, kept close to as-written (redacted for the private project's name only) |
+| `priority-2-phase-0-spike.md` | IndexStoreDB dependency de-risking spike | **Closed** — shipped, part of Priority 2 |
+| `priority-2-phase-3-linking.md` | USR/location linking decision record | **Closed** — shipped, part of Priority 2 |
+| `priority-2-phase-4-cli-wiring.md` | End-to-end CLI wiring, closing Priority 2 | **Closed** — Priority 2 fully shipped |
+| `task-compiled-dependency-isolation.md` | Original correctness task (Phases A-F) | **Closed** — own header says "not started," stale; superseded by `priority-3-compiled-dependency-isolation.md` |
+| `priority-3-phase-a-compiler-args.md` | Real per-file compiler args, decision record | **Closed** — folded into Priority 3 |
+| `priority-3-phase-b-sourcekitd-client.md` | `sourcekitdInProc` client concurrency-model decision | **Closed** — folded into Priority 3 (superseded/re-litigated by hypothesis 1, `task-oracle-query-concurrency.md`) |
+| `priority-3-phase-c-oracle-triggers.md` | Oracle trigger sources, decision record | **Closed** — folded into Priority 3 |
+| `priority-3-phase-e-fixtures.md` | Golden fixture matrix, decision record | **Closed** — folded into Priority 3 |
+| `compiled-dependency-isolation-sourcekit-lsp-spike.md` | `sourcekit-lsp`-as-alternative de-risking spike | **Closed** — de-risking done, informed Phase B's decision |
+| `task-compiled-dependency-isolation-performance.md` | Performance task spec (Phases G1-G6) | **Closed** — own header says "not started," stale; superseded by `priority-3-compiled-dependency-isolation.md` |
+| `task-compiled-dependency-isolation-usr-granularity.md` | Gap A (accessor USR mismatch) fix + Gap B scoping | **Closed** — Gap A shipped; Gap B superseded by the two docs below, then closed |
+| `task-gap-b-implementation-plan.md` | Gap B implementation plan | **Closed** — own header says "plan for review," stale; implemented, result in `priority-3-compiled-dependency-isolation.md`'s Gap B section |
+| `task-gap-b-declaration-linker-real-scale.md` | Gap B problem statement | **Closed** — same as above |
+| `priority-3-compiled-dependency-isolation.md` | Master closing doc for all of Priority 3 (correctness, performance, Gap A, Gap B) | **Closed** — the authoritative final status for everything it references |
+| `task-pods-in-scope-research.md` | Should `Pods`/`Carthage` sources stay in scope? | **Open** — genuinely deferred, a product decision, not yet made |
+| `task-external-type-extension-isolation.md` | Extensions of external `@MainActor` types falsely flagged | **Closed** — shipped this session, own header accurate |
+| `task-cross-file-type-entry-collision.md` | Cross-file type-entry collision bug | **Closed** — shipped this session, own header accurate |
+| `task-oracle-query-concurrency.md` | Hypothesis 0 (query ordering) + hypothesis 1 (concurrent issuance) | **Closed** — own header says "not yet designed," stale. Hypothesis 0 shipped (PR #15, ~33% faster). Hypothesis 1 closed (§7.7) as "don't build": `sourcekitd`'s own `ASTBuildQueue` serializes all AST building process-wide regardless of client concurrency — originally established in `research/12-oracle-concurrency-research-response.md` *before* any spike code, independently reconfirmed against source during closure. `cancel_on_subsequent_request:0` reverted out of production code (only ever needed for the rejected concurrent path) |
+| `retrospective-oracle-query-location.md` | Retrospective on hypothesis 0's own query-location bugs | Closed narrative — always current as a record of what happened |

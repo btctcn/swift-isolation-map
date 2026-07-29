@@ -3,20 +3,22 @@ import Testing
 @testable import ProjectResolution
 
 /// Real lines captured this session from `xcodebuild -showBuildSettings -workspace
-/// ~/ios/lsboutique.xcworkspace -scheme ls.net.ru` (Xcode 26.4.0) -- confirmed to be fast and
-/// read-only (no build triggered), unlike `-verbose build`. Kept as real excerpted lines, not a
-/// hand-assembled fixture, per this project's standing "verify real output, don't guess format"
-/// discipline; the real four-space indent + ` = ` separator shape is exactly what's tested.
-private let realIOSBuildSettingsExcerpt = """
-Build settings for action build and target Ls.net.ru:
+/// <Project Iris's .xcworkspace> -scheme <Project Iris's scheme>` (Xcode 26.4.0) -- confirmed to
+/// be fast and read-only (no build triggered), unlike `-verbose build`. Kept as real excerpted
+/// lines, not a hand-assembled fixture, per this project's standing "verify real output, don't
+/// guess format" discipline; the real four-space indent + ` = ` separator shape is exactly what's
+/// tested. Project Iris is a private real-world validation corpus -- see
+/// docs/reference-project-corpora.md -- so its own project/scheme/pod names are not used here.
+private let realProjectIrisBuildSettingsExcerpt = """
+Build settings for action build and target SomeScheme:
     ARCHS = arm64
     DEPLOYMENT_TARGET_SETTING_NAME = IPHONEOS_DEPLOYMENT_TARGET
     EFFECTIVE_PLATFORM_NAME = -iphoneos
-    FRAMEWORK_SEARCH_PATHS = /Users/ab/Library/Developer/Xcode/DerivedData/lsboutique-frhndxbzytxjwahilecqaixiieah/Build/Products/Debug-iphoneos  "/Users/ab/Library/Developer/Xcode/DerivedData/lsboutique-frhndxbzytxjwahilecqaixiieah/Build/Products/Debug-iphoneos/Kingfisher" /Users/ab/ios/lsboutique/Vendors
+    FRAMEWORK_SEARCH_PATHS = /Users/ab/Library/Developer/Xcode/DerivedData/ProjectIris-frhndxbzytxjwahilecqaixiieah/Build/Products/Debug-iphoneos  "/Users/ab/Library/Developer/Xcode/DerivedData/ProjectIris-frhndxbzytxjwahilecqaixiieah/Build/Products/Debug-iphoneos/Kingfisher" /Users/ab/ProjectIris/Vendors
     IPHONEOS_DEPLOYMENT_TARGET = 15.6
     MACOSX_DEPLOYMENT_TARGET = 26.4
     PLATFORM_NAME = iphoneos
-    PODS_ROOT = /Users/ab/ios/Pods
+    PODS_ROOT = /Users/ab/ProjectIris/Pods
     SDKROOT = /Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.4.sdk
     SWIFT_VERSION = 5.0
 """
@@ -25,12 +27,12 @@ Build settings for action build and target Ls.net.ru:
 struct XcodeBuildSettingsParserTests {
     @Test("parse() reads real 'KEY = VALUE' lines, ignoring the non-setting header line")
     func parsesRealCapturedSettings() {
-        let settings = XcodeBuildSettingsParser.parse(output: realIOSBuildSettingsExcerpt)
+        let settings = XcodeBuildSettingsParser.parse(output: realProjectIrisBuildSettingsExcerpt)
         #expect(settings["ARCHS"] == "arm64")
         #expect(settings["PLATFORM_NAME"] == "iphoneos")
         #expect(settings["DEPLOYMENT_TARGET_SETTING_NAME"] == "IPHONEOS_DEPLOYMENT_TARGET")
         #expect(settings["IPHONEOS_DEPLOYMENT_TARGET"] == "15.6")
-        #expect(settings["PODS_ROOT"] == "/Users/ab/ios/Pods")
+        #expect(settings["PODS_ROOT"] == "/Users/ab/ProjectIris/Pods")
         #expect(settings["SDKROOT"]?.hasSuffix("iPhoneOS26.4.sdk") == true)
         // The real, unmodified multi-value line (mixed quoted/unquoted entries) -- callers tokenize
         // this themselves with the existing `CompilerArgsLogParser.tokenize`.

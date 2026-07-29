@@ -136,7 +136,7 @@ func liveXcodeProviderFallsBackToCleanBuildWhenTheFirstAttemptYieldsNoInvocation
     let fileListURL = URL(fileURLWithPath: "/DerivedData/SQLumen.SwiftFileList")
     fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
 
-    // Confirmed empirically against a real, already-fully-built `~/ios` (docs/priority-3-compiled-
+    // Confirmed empirically against a real, already-fully-built `Project Iris` (docs/priority-3-compiled-
     // dependency-isolation.md): Xcode's incremental build system prints zero
     // `builtin-Swift-Compilation --` lines when nothing needs rebuilding -- `exitCode == 0`, just an
     // empty/irrelevant log, not a failure.
@@ -179,7 +179,7 @@ func liveXcodeProviderUsesPartialResultsWhenBuildFailsButSomeInvocationsWerePars
 
     // Real shape: the main target's own compile line appears in the verbose log (and parses
     // fine), but the overall `xcodebuild` invocation still exits non-zero because a completely
-    // unrelated target failed later in the build (confirmed against a real `~/ios` build with two
+    // unrelated target failed later in the build (confirmed against a real `Project Iris` build with two
     // broken notification-extension targets sharing no dependency with the main app).
     runner.stub(
         executable: "xcodebuild",

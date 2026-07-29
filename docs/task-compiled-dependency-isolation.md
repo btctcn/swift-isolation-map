@@ -3,7 +3,7 @@
 **Status: not started. This is a task specification for a dedicated future session, not a
 record of completed work** (unlike every other file in `docs/`, which documents what was
 already built and verified). Written after a real-world validation run against two independent
-production codebases (`~/ios`, `~/SQLumen`) surfaced this as a fundamental, not cosmetic, gap.
+production codebases (`Project Iris`, `~/SQLumen`) surfaced this as a fundamental, not cosmetic, gap.
 The user's own framing, verbatim, because it's the clearest statement of the problem: *"Это же
 относится к любому базовому классу, который приходит из скомпилированного фреймворка. Есть
 базовый класс, он скомпилирован, в проекте используется он сам или создаётся наследник. Бац, и у
@@ -41,7 +41,7 @@ reality, not a cross-isolation boundary at all.
 
 This is not a rare edge case for real Apple-platform codebases. Every `UIView`/`UIViewController`/
 `UITableViewCell`/`NSView`/`NSViewController`/... subclass, and every `SwiftUI.View`/
-`ObservableObject`/... conformance, hits it. In the `~/ios` real-world run (section 2), this is
+`ObservableObject`/... conformance, hits it. In the `Project Iris` real-world run (section 2), this is
 very likely responsible for a meaningful fraction of the 164 reported `high`-risk findings — the
 true number of *real* cross-isolation risks in that codebase is currently unknown, because the
 tool cannot yet tell the two apart.
@@ -50,7 +50,7 @@ tool cannot yet tell the two apart.
 
 ### 2.1 The triggering false positive, root-caused
 
-`~/ios/lsboutique/UI/News/Cells/NewsTableCell.swift:146` — `captionImageView.kf.indicatorType =
+`Project Iris/UI/News/Cells/NewsTableCell.swift:146` — `captionImageView.kf.indicatorType =
 .activity`, called from `configure(withNews:)`, which the tool reports as `nonisolated`. Reported
 by the tool as a `high`-risk edge (`nonisolated` → `globalActor(MainActor)`).
 
@@ -208,7 +208,7 @@ this task can be declared complete or a documented permanent limitation.
    this actually compile / does it actually error" check, not just an assertion against the tool's
    own output).
 4. Re-running the exact two real-world commands this session used
-   (`~/ios` with scheme `ls.net.ru`, `~/SQLumen` with scheme `SQLumen`, both `--output json`)
+   (`Project Iris` with Project Iris's scheme, `~/SQLumen` with scheme `SQLumen`, both `--output json`)
    and diffing the `high`-risk finding count/contents before and after — confirming the fix
    demonstrably changes real output on real, previously-tested projects, not just fixture output.
 5. If case 4 (truly no textual/binary-introspectable interface at all — should be rare to

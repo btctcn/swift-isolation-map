@@ -1,4 +1,4 @@
-# Task: fix `DeclarationLinker`'s real-scale linking gap (Gap B) — the last blocker for fast `~/ios` runs
+# Task: fix `DeclarationLinker`'s real-scale linking gap (Gap B) — the last blocker for fast `Project Iris` runs
 
 **Status: not started. This is a task specification for a dedicated future session, not a
 record of completed work.** Gap A (accessor/property USR-granularity mismatch) and a separate,
@@ -6,20 +6,20 @@ serious whitespace-path-escaping bug were both found and fixed in the session th
 document — see `docs/priority-3-compiled-dependency-isolation.md`'s "Gap A" section and the
 `XcodeBuildLogCompilerArgumentsProvider.unescaped(_:)` fix for that history. **Gap B is the one
 remaining, now-dominant blocker** to a full `swift-isolation-map` run against a real, large project
-(`~/ios`, 2209 files, 46010 declarations) completing in a reasonable time. This document exists to
+(`Project Iris`, 2209 files, 46010 declarations) completing in a reasonable time. This document exists to
 hand Gap B to a researcher with maximum concrete detail — real numbers, real code, real captured
 examples — so it can be root-caused and fixed without re-deriving what's already known.
 
 ## 1. The problem, quantified, with the confounds already removed
 
-Two *other* problems that used to make `~/ios` runs slow were fixed this session, specifically so
+Two *other* problems that used to make `Project Iris` runs slow were fixed this session, specifically so
 Gap B's own cost could be measured in isolation, not blamed for someone else's slowness:
 
 1. **Gap A (accessor/property USR mismatch)** — fixed. `IndexStoreQuerying.owningPropertyUSR(forUSR:)`
    now canonicalizes both sides of every call-graph edge in `DeclarationLinker.link(_:)`. Measured
    result: edge-level bulk-cache hit rate went from 4.3% to 39.2%; edge-level live-query-miss volume
    dropped from 18957 to 2301 (an 87.9% reduction).
-2. **A whitespace-path-escaping bug** — fixed. `~/ios` has real, legitimate directory names
+2. **A whitespace-path-escaping bug** — fixed. `Project Iris` has real, legitimate directory names
    containing spaces (`UI/News/News List`, `UI/Side/Side Menu`). Xcode's real `SwiftFileList`
    response files backslash-escape such paths (`News\ List/NewsController.swift`), but
    `XcodeBuildLogCompilerArgumentsProvider.expandFileList` was doing a naive per-line split with no
@@ -32,13 +32,13 @@ Gap B's own cost could be measured in isolation, not blamed for someone else's s
    **zero** `failed to stat file` occurrences.
 
 **With both of those fixed, the remaining cost is now cleanly attributable to Gap B alone.**
-Observed live-query throughput on the fixed binary, real `~/ios` run: **~13 queries/minute**
+Observed live-query throughput on the fixed binary, real `Project Iris` run: **~13 queries/minute**
 (192 queries observed over ~15 minutes of wall-clock time, holding roughly steady). The
 declaration-level trigger alone (100% Gap B, see below) has **28134** USRs needing this same live
 query, each one *destined to fail* (return `.unknown`) no matter what, since none of them are real
 external-dependency references at all. At the observed rate, **running all 28134 of them to
 completion would take on the order of 35-40 hours** — this is not a "slow but tolerable" cost, it
-is the entire reason a full `~/ios` run cannot complete in any reasonable time today, full stop.
+is the entire reason a full `Project Iris` run cannot complete in any reasonable time today, full stop.
 Every other piece of this feature (bulk-cache discovery, Gap A's accessor mapping, the path-escaping
 fix) is independently verified correct and fast; **Gap B alone is what's left standing between this
 tool and being usable on a real, large codebase.**
@@ -55,7 +55,7 @@ USR IndexStoreDB knows about — via `buildUSRRewriteMap`, which matches a decla
 
 **A `syntactic:`-prefixed USR that survives this process is a proven, unambiguous "the linker never
 resolved this" signal** — it can never accidentally look resolved, since real USRs never contain a
-literal colon-prefixed word like this. On a real `~/ios` run this session, **100% of the 28134
+literal colon-prefixed word like this. On a real `Project Iris` run this session, **100% of the 28134
 declaration-level oracle misses had a `syntactic:`-prefixed unresolved need** — every single one of
 them, no exceptions. Real, verbatim captured examples from this session's own diagnostic run
 (`declaration.usr` → `needs=` its unresolved superclass/conformance list):
@@ -148,7 +148,7 @@ presumably *is* declared somewhere in the analyzed file set as `protocol Notific
 list `buildUSRRewriteMap` iterates over) with its own `.usr == "syntactic:NotificationsListViewInput"`
 and a real `.location`. If so, `usrRewriteMap["syntactic:NotificationsListViewInput"]` *should* get
 populated when the loop reaches that declaration's own entry. **The fact that it doesn't, for a
-real, checkable fraction of real project-local protocols on `~/ios`, is the actual open bug.**
+real, checkable fraction of real project-local protocols on `Project Iris`, is the actual open bug.**
 
 Two structurally distinct failure points are possible, and this task's first job is figuring out
 which (or both):
@@ -178,7 +178,7 @@ existing fixtures (`Tests/Fixtures/cross-file-witness/`, `Tests/Fixtures/simple-
 far smaller, all passing):
 
 - **Path-form mismatches in the `LocationKey` comparison** (`file`/`line`/`column` equality) —
-  `~/ios` sits at `/Users/ab/ios`, itself behind no symlink as far as confirmed, but *any* symlink,
+  `Project Iris` sits at `Project Iris`, itself behind no symlink as far as confirmed, but *any* symlink,
   `realpath` normalization difference, or even case-sensitivity quirk between what
   `SyntaxAnalysis.DeclarationExtractor` records as a file's path (from wherever
   `StalenessOrchestration.swiftFiles` enumerated it) versus what `IndexStoreDB.symbolOccurrences
@@ -202,7 +202,7 @@ far smaller, all passing):
   `DeclarationLinkerTests.swift` — there may be a *third*, real-scale-only shape not yet seen).
 
 **Trace exactly one real case end-to-end before guessing further** — pick
-`NotificationsListViewInput` (a real, findable protocol somewhere in `~/ios`'s own source) and walk
+`NotificationsListViewInput` (a real, findable protocol somewhere in `Project Iris`'s own source) and walk
 it through `buildUSRRewriteMap` step by step (a temporary debug print of
 `candidatesByLocation[LocationKey(location: theProtocolDeclaration.location!)]` right where the
 lookup happens would show immediately whether the map has *zero* candidates at that location, or
@@ -244,8 +244,8 @@ while a same-module reference using the short name (`: Foo`) produces the bare, 
 placeholder (`"syntactic:Foo"`) — two different dictionary keys for the same real declaration, a
 confirmed, reproducible bug class for *nested* project-local supertypes/protocols. **However**:
 checked the real source for the specific traced example (`grep -rn "protocol
-NotificationsListViewInput" ~/ios`) — it is declared at the **top level**
-(`lsboutique/Redesign/Account/Modules/NotificationsList/View/NotificationsListViewController.swift`),
+NotificationsListViewInput" Project Iris`) — it is declared at the **top level**
+(`Project Iris/Redesign/Account/Modules/NotificationsList/View/NotificationsListViewController.swift`),
 not nested, so for *this specific* protocol `qualifiedName` and the bare name are identical strings
 and this mismatch cannot be what's failing for it. The nesting bug is real and worth fixing
 regardless (it will affect *some* real project-local protocols, just not this particular traced
@@ -285,7 +285,7 @@ distinct pairs, not raw trigger counts, once this is understood.
 (`Sources/swift-isolation-map/StalenessOrchestration.swift`'s own doc comment, predating this
 session) that `Pods`/`Carthage` directories are **deliberately not excluded** from file enumeration
 — "third-party dependency source genuinely can affect real compiled behavior and this is a
-safe-by-default (over-inclusive) design." This means `~/ios`'s 46010 declarations and some fraction
+safe-by-default (over-inclusive) design." This means `Project Iris`'s 46010 declarations and some fraction
 of the unresolved-need corpus (`s:10Kingfisher...`, `s:9Alamofire...` declaration USRs are visibly
 present in the real captured examples above) come from analyzing **CocoaPods' own source checkouts
 as if they were this project's code** — a real, user-facing scope question (analyze vendored
@@ -332,10 +332,10 @@ finalizing Gap B's fix.
 6. **Real, measured result**: re-run the same diagnostic-instrumentation technique used to find Gap
    A and this document's own numbers (temporarily re-add hit/miss logging + short-circuit at
    `ExternalIsolationBackfill`'s two trigger loops, gated by `SWIFT_ISOLATION_MAP_DEBUG_ORACLE`,
-   revert after use) against `~/ios` — the `syntactic:`-prefixed miss fraction of declaration-level
+   revert after use) against `Project Iris` — the `syntactic:`-prefixed miss fraction of declaration-level
    misses should drop from 100% to near zero, and (per item 4) report the *distinct-pair* residue,
    not the raw trigger count, as the primary metric.
-7. **A real, complete, non-diagnostic-shortcut `~/ios` run finishes in a reasonable time** — this is
+7. **A real, complete, non-diagnostic-shortcut `Project Iris` run finishes in a reasonable time** — this is
    the actual, final acceptance bar the whole compiled-dependency-isolation effort has been chasing
    across three sequential task documents now. Report the real wall-clock number, honestly, whatever
    it turns out to be.

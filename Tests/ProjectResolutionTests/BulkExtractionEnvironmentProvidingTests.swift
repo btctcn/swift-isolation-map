@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import ProjectResolution
 
-private let realIOSBuildSettingsForEnvironment = """
-Build settings for action build and target Ls.net.ru:
+private let realProjectIrisBuildSettingsForEnvironment = """
+Build settings for action build and target SomeScheme:
     ARCHS = arm64
     DEPLOYMENT_TARGET_SETTING_NAME = IPHONEOS_DEPLOYMENT_TARGET
     FRAMEWORK_SEARCH_PATHS = "/DerivedData/Debug-iphoneos"
@@ -19,15 +19,15 @@ struct BulkExtractionEnvironmentProvidingTests {
         let runner = FakeProcessRunner()
         runner.stub(
             executable: "xcodebuild",
-            arguments: ["-showBuildSettings", "-scheme", "ls.net.ru", "-workspace", "/ios/lsboutique.xcworkspace"],
-            result: ProcessResult(exitCode: 0, standardOutput: realIOSBuildSettingsForEnvironment, standardError: "")
+            arguments: ["-showBuildSettings", "-scheme", "SomeScheme", "-workspace", "/ProjectIris.xcworkspace"],
+            result: ProcessResult(exitCode: 0, standardOutput: realProjectIrisBuildSettingsForEnvironment, standardError: "")
         )
         let fileSystem = FakeFileSystem()
         fileSystem.addDirectory(at: URL(fileURLWithPath: "/DerivedData/Debug-iphoneos/Kingfisher.framework/Modules/Kingfisher.swiftmodule"))
 
         let provider = LiveXcodeBulkExtractionEnvironmentProvider(
-            container: .xcworkspace(URL(fileURLWithPath: "/ios/lsboutique.xcworkspace")),
-            scheme: "ls.net.ru", processRunning: runner, fileSystem: fileSystem
+            container: .xcworkspace(URL(fileURLWithPath: "/ProjectIris.xcworkspace")),
+            scheme: "SomeScheme", processRunning: runner, fileSystem: fileSystem
         )
 
         let environment = try provider.environment()
@@ -44,12 +44,12 @@ struct BulkExtractionEnvironmentProvidingTests {
         let runner = FakeProcessRunner()
         runner.stub(
             executable: "xcodebuild",
-            arguments: ["-showBuildSettings", "-scheme", "ls.net.ru", "-workspace", "/ios/lsboutique.xcworkspace"],
-            result: ProcessResult(exitCode: 0, standardOutput: realIOSBuildSettingsForEnvironment, standardError: "")
+            arguments: ["-showBuildSettings", "-scheme", "SomeScheme", "-workspace", "/ProjectIris.xcworkspace"],
+            result: ProcessResult(exitCode: 0, standardOutput: realProjectIrisBuildSettingsForEnvironment, standardError: "")
         )
         let provider = LiveXcodeBulkExtractionEnvironmentProvider(
-            container: .xcworkspace(URL(fileURLWithPath: "/ios/lsboutique.xcworkspace")),
-            scheme: "ls.net.ru", processRunning: runner, fileSystem: FakeFileSystem()
+            container: .xcworkspace(URL(fileURLWithPath: "/ProjectIris.xcworkspace")),
+            scheme: "SomeScheme", processRunning: runner, fileSystem: FakeFileSystem()
         )
         _ = try provider.environment()
         _ = try provider.environment()

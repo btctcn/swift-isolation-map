@@ -31,7 +31,7 @@ pair, "the type's own declaration always claims it, never a member." This looked
 type's own declaration is one canonical place to ask "what's this type's isolation." It fixed
 nothing yet because it hadn't been run against real data.
 
-**A real `~/ios` gate run found `PhotoServiceImpl` regressed** — baseline said `@MainActor`
+**A real `Project Iris` gate run found `PhotoServiceImpl` regressed** — baseline said `@MainActor`
 (correctly: its conformance to `PHPickerViewControllerDelegate` is declared in a separate
 extension), the new code said `nonisolated`. The type's own primary-declaration line, hovered
 directly, doesn't reflect a conformance added later via a different `extension` block. Confirmed
@@ -43,7 +43,7 @@ member does. This fixed `PhotoServiceImpl` — the extension's own member became
 that member's location does reflect the whole type's resolved isolation, because typechecking a
 member's body always needs the type's fully-resolved isolation anyway.
 
-**A second real `~/ios` run found `KFImageRenderer` newly regressed** — the *opposite* shape.
+**A second real `Project Iris` run found `KFImageRenderer` newly regressed** — the *opposite* shape.
 `KFImageRenderer` conforms to `View` directly on its primary declaration, no extension involved. Fix
 attempt 2's rule handed the claim to a member (`binder`, a `@StateObject`-attributed property)
 instead of the type's own line — and that member's own hover answer came back
@@ -97,7 +97,7 @@ this mistake.
 tool: dumping the fully-planned, sorted query list and diffing it against itself across two runs,
 with zero live queries involved. Two distinct USRs sharing one exact `(file, line, column)` (a
 synthesized property getter and its setter counterpart at the same call-site token, a real shape on
-`~/ios`) had their relative order decided by `Dictionary` iteration order, unstable across process
+`Project Iris`) had their relative order decided by `Dictionary` iteration order, unstable across process
 launches, because the sort key was location alone. A `targetUSR`/`usr` tie-breaker closed it. This
 is the fix that most directly validates keeping the plan-dump tool around permanently: it caught a
 real bug in minutes, without a single `sourcekitd` round trip, before it could ever reach an

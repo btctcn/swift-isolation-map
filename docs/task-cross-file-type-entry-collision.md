@@ -1,8 +1,8 @@
 # Cross-file type-entry collision: a type's own extension in a *different* file can silently overwrite its primary declaration's own facts
 
 **Status: CLOSED this session.** Implemented, tested (235/235 `swift test -c release`), and
-measured against the real `~/ios` corpus -- see section 4 for the real before/after numbers. Found
-while manually explaining one specific `~/ios` high-risk finding to the user
+measured against the real `Project Iris` corpus -- see section 4 for the real before/after numbers. Found
+while manually explaining one specific `Project Iris` high-risk finding to the user
 (`AppDelegate.swift:69`, `docs/task-external-type-extension-isolation.md`'s PR), not something
 either that fix or Gap B set out to find. Confirmed **pre-existing** (the exact mechanism has been
 in `DeclarationLinker.link(_:)` since Priority 2 Phase 3, unrelated to this session's Gap B or
@@ -11,7 +11,7 @@ case, not hypothesized).
 
 ## 1. The real, motivating example
 
-`~/ios/lsboutique/AppDelegate.swift`:
+`Project Iris/AppDelegate.swift`:
 
 ```swift
 @UIApplicationMain
@@ -27,7 +27,7 @@ class AppDelegate: MindboxAppDelegate, InAppMessagesDelegate {
 }
 ```
 
-A real `~/ios` analysis run (post extension-of-external-type fix) reports `AppDelegate.swift:69`
+A real `Project Iris` analysis run (post extension-of-external-type fix) reports `AppDelegate.swift:69`
 (the `super.application(...)` call) as a confirmed high-risk edge: `AppDelegate`'s own method
 resolves `.nonisolated`, calling into `MindboxAppDelegate`'s (a real, Pods-source, `@MainActor`-
 resolving) same method. But `AppDelegate: MindboxAppDelegate` is a **direct superclass
@@ -47,12 +47,12 @@ linking, before the isolation engine ever saw it.
 
 ## 2. The confirmed mechanism (traced directly, not guessed)
 
-`grep -rn "extension AppDelegate" ~/ios` finds **two** extensions of `AppDelegate`, in two
+`grep -rn "extension AppDelegate" Project Iris` finds **two** extensions of `AppDelegate`, in two
 different files:
 
 ```
-/Users/ab/ios/lsboutique/AppDelegate.swift:364:extension AppDelegate: ProductNotificationSchedulerDelegate {
-/Users/ab/ios/lsboutiqueTests/AppDelegateGiftCertificateEdgeCasesTests.swift:258:extension AppDelegate {
+Project Iris/AppDelegate.swift:364:extension AppDelegate: ProductNotificationSchedulerDelegate {
+Project Iris's test target/AppDelegateGiftCertificateEdgeCasesTests.swift:258:extension AppDelegate {
 ```
 
 The second one is in a **different file** from `AppDelegate`'s own primary declaration. This is
@@ -122,7 +122,7 @@ not being perfectly stable run to run, rather than a real difference in behavior
 declaration **and** at least one extension in a **different file** is a candidate -- a common,
 ordinary Swift pattern (splitting a type's protocol-conformance implementations into separate
 files by concern, exactly what `AppDelegate.swift`/`ProductNotificationSchedulerDelegate` and the
-test target's own extension both do). A precise query against the already-captured real `~/ios`
+test target's own extension both do). A precise query against the already-captured real `Project Iris`
 report (project-local USR prefix, empty `location`, and `name != usr` -- the last condition rules
 out `ExternalIsolationBackfill`'s own, unrelated synthetic entries, which always set `name` equal
 to the USR string itself) found **13 real project-local types** losing their own rich entry to an
@@ -184,7 +184,7 @@ also directly fixes the run-to-run instability noted in section 2.
    `linkMergesRealCrossFileTypeAndExtensionRegardlessOfOrder`) confirming `DeclarationLinker.link(_:)`
    produces one merged entry carrying *both* files' facts (superclass, both conformances, and the
    real location) against a real index store, regardless of extraction order.
-2. **Done, confirmed by name.** A real `~/ios` run shows `AppDelegate`'s own node with a real
+2. **Done, confirmed by name.** A real `Project Iris` run shows `AppDelegate`'s own node with a real
    (non-empty) location (`AppDelegate.swift:8`), and its own isolation correctly resolves to
    `globalActor(MainActor)` (inherited from `MindboxAppDelegate`). The specific edges at
    `AppDelegate.swift:69,77,100,104` (calls into `MindboxAppDelegate`'s own same-named methods)

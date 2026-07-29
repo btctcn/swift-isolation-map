@@ -56,6 +56,6 @@ semantics as the real build, not an approximation.
 (the `--auto-build` path) currently discards `result.standardOutput` for the Xcode branch — it
 must add `-verbose` to the invocation and capture/return the log so
 `XcodeBuildLogCompilerArgumentsProvider` has something to parse. Validated so far only against
-`~/SQLumen`; must also be validated against `~/ios` (a CocoaPods-based workspace, a structurally
+`~/SQLumen`; must also be validated against `Project Iris` (a CocoaPods-based workspace, a structurally
 different case) before Phase F's real-world re-run, per this project's established
 "verify against more than one real project" discipline.

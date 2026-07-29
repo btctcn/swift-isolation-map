@@ -8,7 +8,7 @@ import Foundation
 /// for bulk `symbolgraph-extract` calls without ever running a real build.
 enum XcodeBuildSettingsParser {
     /// Each real line has the shape `    KEY = VALUE` (four-space indent, space-equals-space
-    /// separator, confirmed against real captured `~/ios` output). A key can appear once per
+    /// separator, confirmed against real captured `Project Iris` output). A key can appear once per
     /// "Build settings for action build and target X:" block; a scheme can resolve to more than
     /// one target in principle, but the primary target's block was empirically the *only* one
     /// printed for a real app scheme this session -- the *first* occurrence of a key is kept
@@ -36,7 +36,7 @@ enum XcodeBuildSettingsParser {
     /// SDK correctly extracted `Swift`'s own real symbol graph -- "ios", not "iphoneos", is the only
     /// spelling confirmed to actually work. The simulator/tvOS/watchOS entries follow the same
     /// documented Apple platform-triple convention but were not independently re-verified this
-    /// session (this project's two real validation targets, `~/ios`/`~/SQLumen`, are device/macOS
+    /// session (this project's two real validation targets, `Project Iris`/`~/SQLumen`, are device/macOS
     /// only) -- spot-check before trusting if a simulator/tvOS/watchOS project is ever exercised.
     private static let platformTripleComponents: [String: (os: String, isSimulator: Bool)] = [
         "macosx": ("macos", false),

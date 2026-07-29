@@ -141,7 +141,7 @@ func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
 /// Deliberately reuses `cross-file-witness`'s existing `extension SyncCoordinator: Refreshable`
 /// (`SyncCoordinatorRefreshable.swift`) rather than a fresh `class C: P` fixture: an
 /// extension-declared conformance is the corpus's *dominant* real-world shape (confirmed against
-/// `~/ios`), and a fixture with only a direct `class C: P` conformance would validate the relation
+/// `Project Iris`), and a fixture with only a direct `class C: P` conformance would validate the relation
 /// without validating the shape that actually produced the 28134-trigger real-world problem.
 @Test("baseTypeUSRs(forUSR:) resolves a real supertype/conformance, including one declared via an extension")
 func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
@@ -320,7 +320,7 @@ func linkRewritesExtensionMemberContainingTypeUSR() throws {
 /// `MultiFileFirstProtocol`) and its extension in a *different* file (`MultiFileTypeExtension.swift`:
 /// conformance to `MultiFileSecondProtocol`, no location of its own) must merge into one entry
 /// carrying *both* files' facts, regardless of which file is extracted/linked first -- mirrors the
-/// real `~/ios` case (`AppDelegate: MindboxAppDelegate` in `AppDelegate.swift`, a second,
+/// real `Project Iris` case (`AppDelegate: MindboxAppDelegate` in `AppDelegate.swift`, a second,
 /// unrelated `extension AppDelegate { ... }` in a separate test file) that exposed this bug: the
 /// old plain-overwrite `byUSR[linked.usr] = linked` let whichever file's entry was processed last
 /// silently destroy the other's superclass/conformance/location facts.

@@ -164,7 +164,7 @@ public final class IndexStoreClient: IndexStoreQuerying, @unchecked Sendable {
     /// *immediately enclosing* symbol -- the extension's own synthetic USR for a member declared
     /// inside an `extension`, or the nominal type directly for a member declared in a primary
     /// body. Direction and shape confirmed empirically this session, on two real index stores (the
-    /// `cross-file-witness` fixture and the real motivating `~/ios` `UIViewController+Navigation
+    /// `cross-file-witness` fixture and the real motivating `Project Iris` `UIViewController+Navigation
     /// .swift` case): `refresh()`'s `.childOf` pointed at `SyncCoordinatorRefreshable.swift`'s own
     /// extension USR (not at `SyncCoordinator` directly), and `setCartCount`'s `.childOf` pointed
     /// at the real `UIViewController` extension's own synthetic USR (built from that extension's

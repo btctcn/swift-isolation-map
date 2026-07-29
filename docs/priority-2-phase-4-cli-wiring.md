@@ -89,7 +89,7 @@ machine-readable, human-inspectable contract).
 
 Per [[feedback_verify_against_independent_real_world_cases]]'s lesson (re-testing the same
 environment can produce a second wrong "correction" rather than a real fix), this phase's own
-merged validation had only exercised the Xcode rebuild path indirectly — `~/ios` already had a
+merged validation had only exercised the Xcode rebuild path indirectly — `Project Iris` already had a
 populated `DerivedData` index store, so `resolveIndexStoreURL`'s `.promptUser` → "use it anyway"
 branch was taken, never the real `build()` invocation for an `.xcodeproj`/`.xcworkspace` container.
 Running against `SQLumen` (no existing `DerivedData/.../Index.noindex/DataStore`, so `--auto-build`
@@ -115,7 +115,7 @@ completed in ~23s and produced the same coherent result afterward.
 
 Ran against two independent, unrelated real projects afterward, both under Swift 5 language mode
 (so `Swift5RuleSet` applied regardless of the Swift 6.3 toolchain compiling them):
-- **`~/ios`** (`lsboutique.xcworkspace`, scheme `ls.net.ru`, CocoaPods-based, 2209 `.swift` files
+- **Project Iris** (`docs/reference-project-corpora.md`; CocoaPods-based, 2209 `.swift` files
   including dependency sources): 46438 nodes, 1021 cross-isolation edges, **164 high-risk**
   (overwhelmingly `nonisolated` code reaching `@MainActor` state), 4 real actors, 133 `@MainActor`
   types, using the project's existing `DerivedData` index store (accepted via the `.promptUser`

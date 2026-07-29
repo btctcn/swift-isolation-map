@@ -5,7 +5,7 @@ record of completed work** (unlike every other file in `docs/`, which documents 
 built and verified). Written immediately after Phases A-F of
 `docs/task-compiled-dependency-isolation.md` (the original 100%-correctness task) were fully
 implemented, tested (187/187, `swift test -c release`), and then real-world-validated against
-`~/ios` — where the *correctness* is not in question (the oracle resolves what it queries
+`Project Iris` — where the *correctness* is not in question (the oracle resolves what it queries
 correctly, per the golden-fixture matrix and every live test) but the **wall-clock time makes the
 tool unusable for its own stated purpose**. The user's own words, verbatim, stated after watching
 a real run run for over an hour without finishing: *"Не пойдет. Очень долго. Наш
@@ -30,7 +30,7 @@ scale of a real production codebase.
 
 ### 1.1 Concrete numbers from this session's real-world runs
 
-Project: `~/ios`, scheme `ls.net.ru` (Xcode 26.4.0, Swift 6.3, CocoaPods-based, iOS SDK).
+Project: `Project Iris`, Project Iris's scheme (Xcode 26.4.0, Swift 6.3, CocoaPods-based, iOS SDK).
 2209 `.swift` files, 46010 linked declarations, 137657 call-graph edges (post-Phase-C `callSites`
 folding).
 
@@ -133,9 +133,9 @@ benefit of one of the options below, not a requirement).
 
 ## 2. Why the current fix doesn't cover the real bottleneck
 
-`defaultModules = ["UIKit", "AppKit", "SwiftUI"]` is a **hardcoded, closed list**. `~/ios` is a
+`defaultModules = ["UIKit", "AppKit", "SwiftUI"]` is a **hardcoded, closed list**. `Project Iris` is a
 real, large, CocoaPods-based app. Confirmed this session via
-`xcodebuild -showBuildSettings -workspace ~/ios/lsboutique.xcworkspace -scheme ls.net.ru` (fast,
+`xcodebuild -showBuildSettings -workspace <Project Iris's .xcworkspace> -scheme <Project Iris's scheme>` (fast,
 read-only, no build triggered) — its `FRAMEWORK_SEARCH_PATHS` build setting lists **35+ distinct
 third-party framework/module directories**, each named after a real Pod/module, e.g.:
 ```
@@ -148,12 +148,12 @@ PromisesSwift, SVGKit, SVProgressHUD, Signals, SkyFloatingLabelTextField, SwiftR
 TagListView, UIColor_Hex_Swift, libPhoneNumber-iOS, nanopb, ... (plus several
 XCFrameworkIntermediates/Google*/Firebase* entries)
 ```
-(`PODS_ROOT = /Users/ab/ios/Pods` is also directly available as a build setting.)
+(`PODS_ROOT = Project Iris/Pods` is also directly available as a build setting.)
 
 **The original motivating bug this whole feature exists to fix
 (`docs/task-compiled-dependency-isolation.md` §2.1) is itself a Kingfisher call** —
 `captionImageView.kf.indicatorType`. Kingfisher is not in `defaultModules`. Neither is any of the
-other 34+ third-party frameworks. So for a real project like `~/ios`, the bulk cache — while
+other 34+ third-party frameworks. So for a real project like `Project Iris`, the bulk cache — while
 correctly implemented — resolves only a minority of what actually needs resolving, and the
 overwhelming majority of external USRs still fall through to the slow, one-at-a-time live
 `cursorinfo` path this whole bulk-cache mechanism was built to avoid.
@@ -169,27 +169,27 @@ substitute for the real, compiler-derived answer).
 
 Not formally benchmarked/agreed with the user yet (worth confirming explicitly at the start of
 whatever session picks this up), but as a concrete starting target: **a full analysis run against
-`~/ios` (2209 files, 35+ third-party dependencies) should complete in low single-digit minutes**,
+`Project Iris` (2209 files, 35+ third-party dependencies) should complete in low single-digit minutes**,
 not tens of minutes — ideally comparable to or not wildly worse than the pre-compiled-dependency
 baseline's own runtime (which this session did not precisely measure end-to-end, but which
 involved no external oracle at all and should be used as a reference point — measure it fresh if
 not already known). Whatever number is ultimately agreed, it must be **validated by an actual
-timed run against both `~/ios` and `~/SQLumen`**, not estimated from a partial/killed run the way
+timed run against both `Project Iris` and `~/SQLumen`**, not estimated from a partial/killed run the way
 this document's own numbers had to be.
 
 ### Definition of done (concrete, checkable)
 
 1. A design decision, made only after empirically investigating the options in section 4 below
-   (or any better option the researcher identifies) against real data from **both** `~/ios`
+   (or any better option the researcher identifies) against real data from **both** `Project Iris`
    (CocoaPods, iOS SDK, large) and `~/SQLumen` (SwiftPM-style dependencies via a
    `.xcodeproj`/CocoaPods mix if any — re-confirm its actual dependency shape first, don't assume
-   it mirrors `~/ios`).
+   it mirrors `Project Iris`).
 2. `BulkSymbolGraphExtractor`/`ExternalIsolationBackfill` extended (or a new mechanism added
    alongside them) so that the *set of modules eligible for bulk resolution* is derived from the
    project's own real, discovered dependencies — not a hardcoded array — while the actual
    *isolation facts* still come 100% from the real compiler (`swift symbolgraph-extract` or
    whatever mechanism is chosen), never from any kind of name-based table.
-3. A full real-world timed run against `~/ios` (scheme `ls.net.ru`) and `~/SQLumen` (scheme
+3. A full real-world timed run against `Project Iris` (Project Iris's scheme) and `~/SQLumen` (scheme
    `SQLumen`), `--output json --verbose`, with the `External oracle:` log line's `resolved` count
    checked to be meaningfully nonzero (not just "the run finished fast" — section 1.1's trap) and
    the wall-clock time reported and compared against the target in section 3's opening paragraph.
@@ -216,7 +216,7 @@ passing through the same `-F`/`-I`/`-sdk`/`-target` flags already available. Ope
 approach must answer empirically, not assume:
    - Does `symbolgraph-extract` work identically for a CocoaPods-built `.framework` (often
      containing a `.swiftmodule` inside) as it does for an SDK framework? Verify against a real Pod
-     from `~/ios` (Kingfisher is the obvious, motivating choice) before designing further.
+     from `Project Iris` (Kingfisher is the obvious, motivating choice) before designing further.
    - What is the real cost of bulk-extracting 35+ modules, one process invocation each? Even at a
      conservative ~10-15s/module (this session's AppKit measurement), 35 modules is ~6-9 minutes —
      acceptable, but must be measured for real, not assumed, and ideally done fully in parallel

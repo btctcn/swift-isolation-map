@@ -31,7 +31,7 @@ struct ExternalIsolationResolution {
 /// that bug is a pure inheritance-chain failure, not a call-graph-edge case at all, so an
 /// edge-only trigger would never have caught it.
 ///
-/// **Hypothesis 0 (docs/task-oracle-query-concurrency.md): a real `~/ios` measurement showed 4780
+/// **Hypothesis 0 (docs/task-oracle-query-concurrency.md): a real `Project Iris` measurement showed 4780
 /// AST builds against 4825 live oracle queries (99%, only 44 cache hits) -- essentially no AST
 /// cache reuse, because neither trigger's own natural order (call-graph order; `Dictionary` hash
 /// order) guarantees consecutive queries share a file.** Both triggers are collected into
@@ -132,7 +132,7 @@ enum ExternalIsolationBackfill {
         var merged: [MergedWorkItem] = edgeWorkItems.map { MergedWorkItem(targetUSR: $0.targetUSR, location: $0.location) }
         merged.append(contentsOf: declarationPlans.map { MergedWorkItem(targetUSR: $0.declarationUSR, location: $0.location) })
         // `targetUSR` is a required final tie-breaker, not cosmetic: two genuinely distinct USRs
-        // legitimately share one exact (file, line, column) on real code (confirmed on `~/ios` --
+        // legitimately share one exact (file, line, column) on real code (confirmed on `Project Iris` --
         // e.g. a synthesized property accessor and its setter counterpart at the same call-site
         // token). Sorting by location alone leaves such ties' relative order dependent on
         // `merged`'s own pre-sort order, which itself traces back to `Dictionary` iteration
@@ -355,7 +355,7 @@ enum ExternalIsolationBackfill {
     /// outcome-dependent retry without executing queries during collection itself, so this extends
     /// the *already-permanent* conformance-pair claim model uniformly to superclass/containingType
     /// too via `claimedSuperclass`/`claimedContainingType` -- one well-understood, narrow
-    /// difference, verified against the real `~/ios` correctness gate, not assumed.
+    /// difference, verified against the real `Project Iris` correctness gate, not assumed.
     ///
     /// A declaration deferred as a conformance-pair claimant of last resort, because its own copy
     /// of the conformance is not a `declaredInSameContextAsWitness` one -- see the claim loop's own
@@ -508,7 +508,7 @@ enum ExternalIsolationBackfill {
             // `declaredInSameContextAsWitness == true` -- a real member physically declared inside
             // the same syntactic construct (primary body or a specific `extension`) that introduces
             // the conformance -- is queried inline. Confirmed necessary by two real, opposite-shape
-            // regressions on `~/ios` (see this file's own top-level doc comment): a type's own
+            // regressions on `Project Iris` (see this file's own top-level doc comment): a type's own
             // top-level entry can be a bad representative (conformance declared via a *different*
             // same-file extension) and an arbitrary member can equally be a bad representative
             // (conformance declared on the primary type directly, member's own location carries an

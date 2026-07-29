@@ -34,7 +34,7 @@ public protocol BulkExtractionEnvironmentProviding: Sendable {
 }
 
 /// Real, fast, read-only `xcodebuild -showBuildSettings` -- confirmed empirically to complete in
-/// seconds against a real, large project (`~/ios`) regardless of build freshness, unlike
+/// seconds against a real, large project (`Project Iris`) regardless of build freshness, unlike
 /// `-verbose build`. Single-invocation-then-cache shape, mirroring
 /// `LiveXcodeCompilerArgumentsProvider`'s existing pattern.
 public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnvironmentProviding, @unchecked Sendable {

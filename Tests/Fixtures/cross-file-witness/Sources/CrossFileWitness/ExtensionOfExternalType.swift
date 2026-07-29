@@ -5,7 +5,7 @@ import AppKit
 // `BulkSymbolGraphExtractorTests.swift`'s "Live toolchain: bulk-extracting real AppKit... resolves
 // NSView to @MainActor"). `realExtensionMethod` has no isolation of its own; its only source of
 // isolation is `NSView` itself, which has no primary declaration in this project -- exactly the
-// motivating shape (`UIViewController` in the real `~/ios` case).
+// motivating shape (`UIViewController` in the real `Project Iris` case).
 extension NSView {
     func realExtensionMethod() {}
 }

@@ -1,6 +1,6 @@
 /// Shared positive-validation logic for `SymbolGraphIsolationParser` and `FullyAnnotatedDeclParser`:
 /// an attribute fragment/XML element resolving to a real type via USR is not, by itself, evidence
-/// that type is a global actor. Confirmed real, non-hypothetical on `~/ios`
+/// that type is a global actor. Confirmed real, non-hypothetical on `Project Iris`
 /// (docs/task-oracle-query-concurrency.md's decision record, `KFImageRenderer`): a property
 /// declared `@StateObject private var binder: ImageBinder` queried directly resolved its own
 /// isolation as `globalActor(name: "StateObject")` -- `StateObject` is a SwiftUI property wrapper,
