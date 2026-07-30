@@ -59,4 +59,5 @@ Read in order — each responds to the one(s) before it:
     real regressions hypothesis 0's own correctness gate surfaced (`MBPersistenceStorage`, a
     baseline bug; `PhotoServiceImpl`, a genuine new-code regression) — both closed, per
     `../priority-3-compiled-dependency-isolation.md` and `../task-oracle-query-concurrency.md`'s
-    own decision records.
+    own decision records. See `../hypothesis-0-file-sorted-oracle-queries.md` for what hypothesis 0
+    itself is, if you're arriving here without that context.

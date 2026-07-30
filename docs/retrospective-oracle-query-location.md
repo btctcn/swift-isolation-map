@@ -6,7 +6,8 @@ methodology lessons they forced, kept here so a future contributor touching this
 have to rediscover them the hard way. Not required reading to use or maintain the tool; useful if
 you're about to change how `ExternalIsolationBackfill` picks a query location or representative,
 or if a future correctness-gate diff produces a discrepancy and you're tempted to trust the first
-plausible explanation.
+plausible explanation. See `docs/hypothesis-0-file-sorted-oracle-queries.md` for what hypothesis 0
+*is*, if you're not already familiar with it.
 
 ## The setup
 

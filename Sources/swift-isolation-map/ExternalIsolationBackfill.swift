@@ -31,7 +31,8 @@ struct ExternalIsolationResolution {
 /// that bug is a pure inheritance-chain failure, not a call-graph-edge case at all, so an
 /// edge-only trigger would never have caught it.
 ///
-/// **Hypothesis 0 (docs/task-oracle-query-concurrency.md): a real `Project Iris` measurement showed 4780
+/// **Hypothesis 0 (docs/hypothesis-0-file-sorted-oracle-queries.md; full decision record in
+/// docs/task-oracle-query-concurrency.md §7): a real `Project Iris` measurement showed 4780
 /// AST builds against 4825 live oracle queries (99%, only 44 cache hits) -- essentially no AST
 /// cache reuse, because neither trigger's own natural order (call-graph order; `Dictionary` hash
 /// order) guarantees consecutive queries share a file.** Both triggers are collected into

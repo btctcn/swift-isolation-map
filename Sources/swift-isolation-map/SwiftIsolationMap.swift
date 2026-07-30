@@ -425,9 +425,10 @@ struct SwiftIsolationMap: ParsableCommand {
             return empty
         }
 
-        // Permanent, opt-in diagnostic (docs/task-oracle-query-concurrency.md's decision record) --
-        // originally added for one measurement (deciding whether hypothesis 0's file-sorted
-        // ordering was worth implementing at all; it was), but kept: before/after
+        // Permanent, opt-in diagnostic (docs/hypothesis-0-file-sorted-oracle-queries.md; full
+        // decision record in docs/task-oracle-query-concurrency.md's §7) -- originally added for
+        // one measurement (deciding whether hypothesis 0's file-sorted ordering was worth
+        // implementing at all; it was), but kept: before/after
         // `source.request.statistics` snapshots around the oracle phase remain the cheapest way to
         // directly verify hypothesis 0's own AST-cache-locality acceptance criterion (`num-ast-
         // builds` should track the merged plan's distinct live-query file-group count, not the

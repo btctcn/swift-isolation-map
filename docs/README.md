@@ -63,9 +63,9 @@ flowchart TD
     AP --> R["Backfilled/updated declarations + conformance pairs,<br/>fed back into the merge step in the pipeline diagram above"]
 ```
 
-The file-adjacent sort order (hypothesis 0) and the sequential-only issuance decision (hypothesis
-1) are both real, measured findings — not assumptions — see the status table below for where each
-is written up.
+The file-adjacent sort order (hypothesis 0 — `hypothesis-0-file-sorted-oracle-queries.md`) and the
+sequential-only issuance decision (hypothesis 1) are both real, measured findings — not
+assumptions — see the status table below for where each is written up.
 
 ## Status of every other doc here
 
@@ -93,5 +93,6 @@ is written up.
 | `task-pods-in-scope-research.md` | Should `Pods`/`Carthage` sources stay in scope? | **Open** — genuinely deferred, a product decision, not yet made |
 | `task-external-type-extension-isolation.md` | Extensions of external `@MainActor` types falsely flagged | **Closed** — shipped this session, own header accurate |
 | `task-cross-file-type-entry-collision.md` | Cross-file type-entry collision bug | **Closed** — shipped this session, own header accurate |
-| `task-oracle-query-concurrency.md` | Hypothesis 0 (query ordering) + hypothesis 1 (concurrent issuance) | **Closed** — own header says "not yet designed," stale. Hypothesis 0 shipped (PR #15, ~33% faster). Hypothesis 1 closed (§7.7) as "don't build": `sourcekitd`'s own `ASTBuildQueue` serializes all AST building process-wide regardless of client concurrency — originally established in `research/12-oracle-concurrency-research-response.md` *before* any spike code, independently reconfirmed against source during closure. `cancel_on_subsequent_request:0` reverted out of production code (only ever needed for the rejected concurrent path) |
+| `task-oracle-query-concurrency.md` | Hypothesis 0 (query ordering) + hypothesis 1 (concurrent issuance) — the full task + exhaustive decision record | **Closed** — own header says "not yet designed," stale. Hypothesis 0 shipped (PR #15, ~33% faster; see `hypothesis-0-file-sorted-oracle-queries.md` for the readable summary). Hypothesis 1 closed (§7.7) as "don't build": `sourcekitd`'s own `ASTBuildQueue` serializes all AST building process-wide regardless of client concurrency — originally established in `research/12-oracle-concurrency-research-response.md` *before* any spike code, independently reconfirmed against source during closure. `cancel_on_subsequent_request:0` reverted out of production code (only ever needed for the rejected concurrent path) |
+| `hypothesis-0-file-sorted-oracle-queries.md` | Standalone summary of hypothesis 0 — what shipped, why, the numbers | **Closed** — shipped, PR #15. Added 2026-07-30 so every other mention of "hypothesis 0" has one clear place to link to instead of the full decision record |
 | `retrospective-oracle-query-location.md` | Retrospective on hypothesis 0's own query-location bugs | Closed narrative — always current as a record of what happened |

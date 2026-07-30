@@ -506,6 +506,10 @@ ratio actually improved) is captured for the decision record.
 
 ## 7. Decision record: hypothesis 0 shipped, three real bugs it exposed, and the language-mode contract
 
+**See `docs/hypothesis-0-file-sorted-oracle-queries.md` for the readable, standalone summary of
+everything in §7.1–§7.6** (what shipped, why, the numbers) — this section is the exhaustive,
+line-by-line trace that document points back to, not the place to start reading.
+
 Hypothesis 0 (file-sorted, single merged execution pass across both trigger kinds) shipped. Getting
 it to a state that passes the hard correctness gate against real `Project Iris` took four real, non-
 hypothetical problems, each found by the gate itself and each requiring its own empirical
