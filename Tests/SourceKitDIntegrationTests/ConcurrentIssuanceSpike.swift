@@ -285,8 +285,9 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     //   1. Balance -- the 7 groups below are dealt round-robin from a file-size-sorted pool, so
     //      each group gets a comparable spread of small/medium/large files, rather than "first N /
     //      next N" which could silently compare set composition instead of concurrency mode.
-    //   2. The central risk: hypothesis 0's whole ~33% win rests on file-adjacency exploiting
-    //      sourcekitd's small (8-slot) AST cache. A shared work queue drained by K workers in
+    //   2. The central risk: hypothesis 0's (docs/hypothesis-0-file-sorted-oracle-queries.md)
+    //      whole ~33% win rests on file-adjacency exploiting sourcekitd's small (8-slot) AST
+    //      cache. A shared work queue drained by K workers in
     //      mixed file order can thrash that cache and drive `num-ast-builds` back toward 1:1 with
     //      query count -- the failure mode this phase is built to catch, not just wall-clock.
     //      Every run below snapshots `source.request.statistics` before/after and reports the
