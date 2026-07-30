@@ -12,6 +12,21 @@ map, not a single runtime trace.
 > one public), not just fixtures. `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.2`
 > items below (`diff` subcommand, GitHub Action, migration-debt map).
 
+## Quick start
+
+No packaged distribution yet (Homebrew/SPM-plugin are `v0.2`+, see Roadmap below) — build from
+source:
+
+```
+git clone https://github.com/btctcn/swift-isolation-map.git
+cd swift-isolation-map
+swift build -c release
+.build/release/swift-isolation-map --help
+```
+
+See [Usage](#usage) below for the full flag reference, or
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for running the test suite and opening the package in Xcode.
+
 ## The problem
 
 Swift 6's strict concurrency checking turned actor isolation violations into hard compiler errors. Developers migrating legacy codebases hit opaque errors like `Sending value risks data race` with no architectural context for *why* the boundary is unsafe, and no tool that shows the isolation structure of the whole project at once.
@@ -224,38 +239,6 @@ touch each file. What it doesn't give you:
   someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
   watch move.
 
-## Building and running (development)
-
-### 1. From the terminal
-
-```
-swift build              # debug build
-swift build -c release   # release build
-swift test -c release    # run the test suite -- release, not debug: once IndexStoreDB and
-                          # sourcekitdInProc (both C/C++-interop dependencies) are linked into
-                          # the test bundle, a plain debug-config `swift test` has reproduced an
-                          # intermittent segfault inside the swift-testing runtime itself
-                          # (unrelated to this project's own code; release builds are unaffected,
-                          # and CI always uses release). See docs/priority-2-phase-3-linking.md
-                          # and docs/priority-3-phase-b-sourcekitd-client.md. Debug-config runs
-                          # have also completed cleanly on this same machine — the crash is real
-                          # but not deterministic, so a clean debug run is not evidence it's gone;
-                          # -c release stays the safe default until it's root-caused further.
-swift run swift-isolation-map --help
-```
-
-### 2. From Xcode
-
-This is a plain Swift package — there's no `.xcodeproj` checked into the repo, and none is needed. Xcode opens `Package.swift` directly as a SwiftPM project:
-
-```
-xed .
-```
-
-or from Xcode itself: **File → Open…**, then select the repository folder (or `Package.swift` inside it) — not a `.xcodeproj`, there isn't one.
-
-Xcode indexes the package and creates a scheme per target automatically. Pick the `swift-isolation-map` scheme to build/run the CLI, or a `*Tests` scheme to run a specific test target. Since this is a command-line tool, pass arguments via **Product → Scheme → Edit Scheme… → Run → Arguments Passed On Launch** (e.g. `./SomeProject.xcodeproj --scheme SomeScheme`) before hitting Run — otherwise it runs with no arguments and just prints the usage error.
-
 ## Guiding principle
 
 A tool that gives an incorrect concurrency-safety result is worse than no tool at all. Every isolation-inference rule ships with an explicit test referencing the exact compiler behavior it verifies (tracked in [`docs/isolation-rules.md`](docs/isolation-rules.md)), and the tool refuses to run rather than silently produce a result it isn't confident in (stale index store, unrecognized Swift version, an oracle query that failed outright reports `unknown`, never a guessed `nonisolated`).
@@ -267,8 +250,13 @@ This tool reports actor isolation **as the code actually compiles today** — us
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
-- **v0.2** — `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map.
-- **v0.3** — revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
+- **v0.2 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin).
+- **v0.3 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for building from source, running the test suite, using
+Xcode, and where to start reading in `docs/`.
 
 ## License
 
