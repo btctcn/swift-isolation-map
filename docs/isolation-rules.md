@@ -103,9 +103,9 @@ Trigger: `.github/workflows/swift-version-watch.yml` opens an issue titled "New 
 detected: `swift-X.Y.Z-RELEASE`" when `swiftlang/swift`'s latest non-prerelease tag's major.minor
 no longer matches `SUPPORTED_SWIFT_VERSIONS.md`'s last line (weekly, or `workflow_dispatch` on
 demand). The same four steps apply whichever Swift version this is — this section is a checklist
-for a human doing the review the issue asks for, not something the workflow itself automates
-further; per the architecture spec's own principle, judgment calls like "did this proposal
-actually change inference" don't belong in unattended automation.
+for the maintainer doing the review the issue asks for, not something the workflow itself
+automates further; per the architecture spec's own principle, judgment calls like "did this
+proposal actually change inference" don't belong in unattended automation.
 
 ### 1. Research — per the sourcing hierarchy in `docs/architecture.md` §1.5.1
 
