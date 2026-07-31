@@ -247,6 +247,41 @@ A tool that gives an incorrect concurrency-safety result is worse than no tool a
 
 This tool reports actor isolation **as the code actually compiles today** — using each module's own real `-swift-version` from its real build arguments, never a hardcoded or assumed language mode. This matters because isolation semantics genuinely differ between language modes for some constructs (e.g. whether a class's synthesized zero-argument `init()` inherits its type's global-actor isolation depends on the language mode in effect — see SE-0411 — confirmed empirically, not assumed, against a real project's own build). Analysis results describe the project as it is built right now; they are **not** a prediction of what a future migration to a newer Swift language mode would report. If your build mixes modules on different `-swift-version` settings, each module's isolation is computed in its own mode, matching how the real build itself behaves.
 
+## Normative references
+
+The isolation-inference rules this tool implements are sourced directly from Swift Evolution
+proposals (primary source of intent), cross-checked against the compiler's own source when a
+proposal's text is ambiguous, and validated empirically against a real `swiftc` (see
+[`docs/architecture.md`](docs/architecture.md) §1.5.1 and [`docs/isolation-rules.md`](docs/isolation-rules.md)
+for the full sourcing discipline and rule-by-rule citations). This is the list of proposals
+actually checked and cited throughout this codebase — not a general reading list. No Apple
+Technical Notes are cited anywhere in this project; none were found relevant to actor isolation
+inference specifically.
+
+**Proposals that define or change the isolation model this tool implements:**
+
+| Proposal | Title | Swift version |
+|---|---|---|
+| [SE-0306](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md) | Actors | 5.5 |
+| [SE-0316](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0316-global-actors.md) | Global actors | 5.5 |
+| [SE-0401](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0401-remove-property-wrapper-isolation.md) | Remove Actor Isolation Inference caused by Property Wrappers | 5.9 |
+| [SE-0411](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0411-isolated-default-values.md) | Isolated default value expressions | 5.10 |
+| [SE-0420](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0420-inheritance-of-actor-isolation.md) | Inheritance of actor isolation | 6.0 |
+| [SE-0449](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0449-nonisolated-for-global-actor-cutoff.md) | Allow `nonisolated` to prevent global actor inference | 6.1 |
+| [SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) | Control default actor isolation inference | 6.2 |
+| [SE-0478](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0478-default-isolation-typealias.md) | File-level defaults | accepted, not yet shipped — confirmed empirically that its `default:` syntax doesn't compile on the local Swift 6.3 toolchain; review once it lands |
+| [SE-0518](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0518-tilde-sendable.md) | `~Sendable` for explicitly marking non-`Sendable` types | 6.4 — not yet reviewed, see the runbook in [`docs/isolation-rules.md`](docs/isolation-rules.md) |
+
+SE-0411 is worth calling out specifically: whether a class's synthesized zero-argument `init()`
+inherits its type's global-actor isolation depends on the language mode in effect under this
+proposal — the exact behavior this project's [language-mode contract](#language-mode-contract)
+exists to report correctly, confirmed the hard way against a real project's own build (see
+`docs/hypothesis-0-file-sorted-oracle-queries.md`).
+
+**Proposals reviewed per Swift version and confirmed not to change isolation inference** (kept as
+the record of what was checked, not assumed — see `docs/isolation-rules.md`, "Rule set version
+boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-0481.
+
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
