@@ -1,6 +1,7 @@
 # Task: thread the real, configured `-default-isolation` value into the analyzed project's rule set
 
-Tracks [issue #30](https://github.com/btctcn/swift-isolation-map/issues/30). Confirmed real bug,
+**Status: closed** — fixed and shipped, PR #31. Tracks
+[issue #30](https://github.com/btctcn/swift-isolation-map/issues/30). Confirmed real bug,
 not a hypothesis: `Swift62RuleSet`/`Swift63RuleSet` fully implement SE-0466's opt-in
 module-default-isolation model (12 tested rules, `docs/isolation-rules.md`), but in production
 can never resolve to anything other than `.nonisolated` — the tool silently reports every
