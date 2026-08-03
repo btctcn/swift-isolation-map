@@ -108,6 +108,29 @@ func baseOfResolutionSkipsSameBareNameCollision() throws {
     #expect(linkedNominal.conformances.first?.protocolUSR == "syntactic:Foo")
 }
 
+@Test("A duplicate, verbatim-identical (name, USR) base-type entry resolves, it is not treated as a collision")
+func baseOfResolutionDedupesIdenticalDuplicateEntry() throws {
+    // Confirmed against a real project: IndexStoreDB's `.baseOf` relation can report one real
+    // base type twice with the exact same USR both times (observed for a direct `UIViewController`
+    // subclass) -- this must resolve normally, unlike the genuine same-name-different-USR
+    // collision above. The pre-fix version of this loop conflated the two cases, silently leaving
+    // the subclass's `superclassUSR` as an unresolved placeholder and its isolation as
+    // `nonisolated` instead of inheriting `@MainActor` from `UIViewController`.
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    fake.symbolsByFile["/f.swift"] = [IndexedSymbol(usr: "s:Widget", name: "Widget", location: location)]
+    fake.baseTypeUSRsByUSR["s:Widget"] = [
+        (usr: "c:objc(cs)UIViewController", name: "UIViewController"),
+        (usr: "c:objc(cs)UIViewController", name: "UIViewController")
+    ]
+
+    let nominal = makeDeclaration(usr: "syntactic:Widget", name: "Widget", location: location, superclassUSR: "syntactic:UIViewController")
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [nominal], protocolGlobalActorNames: [:])])
+
+    let linkedNominal = try #require(linked.declarations["s:Widget"])
+    #expect(linkedNominal.superclassUSR == "c:objc(cs)UIViewController")
+}
+
 @Test("A superclass reference whose nominal never resolved to a real USR is left as the placeholder, not guessed")
 func baseOfResolutionLeavesPlaceholderWhenNominalUnresolved() throws {
     let fake = FakeIndexStoreQuerying()
