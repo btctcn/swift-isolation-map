@@ -101,14 +101,20 @@ struct SwiftIsolationMap: ParsableCommand {
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
         logVerbose("Language mode: \(languageMode); compiler: \(compilerVersion); effective: \(effectiveVersion)")
 
-        let ruleSet = try resolveRuleSet(forSwiftVersion: effectiveVersion)
-        logVerbose("Rule set: \(type(of: ruleSet))")
-
         // A single read per source file drives both the staleness content-hash and the syntactic
         // extraction -- see StalenessOrchestration.swiftFiles's own doc comment for why this list
         // is reused for both purposes, and FileAnalyzer's for why one read yields both facts.
+        // Computed before rule-set resolution too: SE-0466 default-isolation detection below needs
+        // at least one real project file to query real compiler args for.
         let sourceFiles = StalenessOrchestration.swiftFiles(under: projectRoot, fileSystem: fileSystem)
         logVerbose("Found \(sourceFiles.count) Swift source file(s) under \(projectRoot.path)")
+
+        let compilerArguments = makeCompilerArgumentsProvider(container: container, processRunning: processRunning, fileSystem: fileSystem)
+        let defaultIsolation = detectConfiguredDefaultIsolation(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
+        logVerbose("Configured default isolation: \(defaultIsolation)")
+
+        let ruleSet = try resolveRuleSet(forSwiftVersion: effectiveVersion, defaultIsolation: defaultIsolation)
+        logVerbose("Rule set: \(type(of: ruleSet))")
         let analyzer = FileAnalyzer(fileSystem: fileSystem)
         var currentHashes: [String: String] = [:]
         var extractionResults: [ExtractionResult] = []
@@ -144,7 +150,7 @@ struct SwiftIsolationMap: ParsableCommand {
 
         let externalResolution = runAsyncBridge {
             await resolveExternalIsolation(
-                linked: linked, container: container, processRunning: processRunning, fileSystem: fileSystem
+                linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem
             )
         }
         logVerbose(
@@ -222,9 +228,9 @@ struct SwiftIsolationMap: ParsableCommand {
         eprint(schemeMismatchMessage(requested: requested, available: available))
     }
 
-    private func resolveRuleSet(forSwiftVersion version: String) throws -> IsolationRuleSet {
+    private func resolveRuleSet(forSwiftVersion version: String, defaultIsolation: IsolationKind) throws -> IsolationRuleSet {
         do {
-            return try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: version)
+            return try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: version, defaultIsolation: defaultIsolation)
         } catch let error as UnsupportedSwiftVersionError {
             var message = "swift-isolation-map doesn't support Swift \(error.version) yet."
             if let highest = error.highestSupportedUpperBound {
@@ -233,6 +239,58 @@ struct SwiftIsolationMap: ParsableCommand {
             eprint(message)
             throw ExitCode(2)
         }
+    }
+
+    /// One `CompilerArgumentsProviding`, constructed once and shared by both the SE-0466
+    /// default-isolation detection below and `resolveExternalIsolation`'s live oracle fallback --
+    /// construction itself is cheap (no build runs yet), and the real `swift build -v`/
+    /// `xcodebuild -verbose` invocation it eventually triggers is cached for the provider's
+    /// lifetime (see `LiveSwiftPMCompilerArgumentsProvider`'s own doc comment), so sharing one
+    /// instance means that real build runs at most once per invocation, not once per consumer.
+    private func makeCompilerArgumentsProvider(
+        container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying
+    ) -> CompilerArgumentsProviding {
+        switch container {
+        case .swiftPackage(let packageURL):
+            return LiveSwiftPMCompilerArgumentsProvider(
+                packageDirectory: packageURL.deletingLastPathComponent(), processRunning: processRunning
+            )
+        case .xcodeproj, .xcworkspace:
+            return LiveXcodeCompilerArgumentsProvider(
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
+            )
+        }
+    }
+
+    /// SE-0466: a module opts into `@MainActor`-by-default only via a real, explicit
+    /// `-default-isolation MainActor` compiler flag (confirmed against `swiftc --help-hidden`:
+    /// `-default-isolation MainActor|nonisolated`, defaults to `nonisolated`) -- never inferred
+    /// just from targeting Swift 6.2+. Reads the flag from the *real* compiler arguments of the
+    /// first genuine target-source file `compilerArguments` can resolve (the flag is per-target,
+    /// not per-file, so any one resolvable target file reflects the whole target's setting).
+    /// `Package.swift` itself is deliberately skipped even though `StalenessOrchestration.swiftFiles`
+    /// includes it (it's a real `.swift` file under the project root, syntactically analyzed like
+    /// any other) -- confirmed empirically (real `swift build -v` output, first end-to-end run of
+    /// this very fix) that SwiftPM compiles the manifest itself as a *separate* `-primary-file`
+    /// invocation carrying `-package-description-version`, never `-default-isolation`, which a
+    /// naive "first resolvable file" search silently took as authoritative "no flag configured" --
+    /// a real, live-caught bug, not a hypothetical: this fix's own first live run against the spike
+    /// package printed `nonisolated` instead of the configured `MainActor` for exactly this reason.
+    /// Deliberately fail-soft to `.nonisolated` (today's exact prior behavior) if no real target
+    /// file resolves or the flag is absent -- matching `resolveExternalIsolation`'s own "don't abort
+    /// the whole analysis over one optional enrichment step failing" precedent, since a project
+    /// with no `-default-isolation` configured is the common case, not an error.
+    private func detectConfiguredDefaultIsolation(
+        compilerArguments: CompilerArgumentsProviding, sourceFiles: [URL]
+    ) -> IsolationKind {
+        for file in sourceFiles where file.lastPathComponent != "Package.swift" {
+            guard let args = try? compilerArguments.compilerArguments(forFile: file.path) else { continue }
+            guard let flagIndex = args.firstIndex(of: "-default-isolation"), args.indices.contains(flagIndex + 1) else {
+                return .nonisolated
+            }
+            return args[flagIndex + 1] == "MainActor" ? .globalActor(name: "MainActor") : .nonisolated
+        }
+        return .nonisolated
     }
 
     // MARK: - Index store resolution (locate / prompt / build / stop)
@@ -400,26 +458,20 @@ struct SwiftIsolationMap: ParsableCommand {
     private func resolveExternalIsolation(
         linked: LinkedAnalysis,
         container: ProjectContainer,
+        compilerArguments: CompilerArgumentsProviding,
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying
     ) async -> ExternalIsolationResolution {
         let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
 
-        let compilerArguments: CompilerArgumentsProviding
         let environmentProvider: BulkExtractionEnvironmentProviding
         switch container {
         case .swiftPackage(let packageURL):
             let packageDirectory = packageURL.deletingLastPathComponent()
-            compilerArguments = LiveSwiftPMCompilerArgumentsProvider(
-                packageDirectory: packageDirectory, processRunning: processRunning
-            )
             environmentProvider = SwiftPMBulkExtractionEnvironmentProvider(
                 packageDirectory: packageDirectory, processRunning: processRunning, fileSystem: fileSystem
             )
         case .xcodeproj, .xcworkspace:
-            compilerArguments = LiveXcodeCompilerArgumentsProvider(
-                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
-            )
             environmentProvider = LiveXcodeBulkExtractionEnvironmentProvider(
                 container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
             )
