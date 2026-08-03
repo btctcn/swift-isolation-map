@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import SourceKitDIntegration
 
+/// This spike's diagnostic output goes to stderr, not stdout, matching this project's convention
+/// (`Sources/swift-isolation-map/SwiftIsolationMap.swift`'s own `eprint`) that only a tool's actual
+/// result -- never a status/progress line -- writes to stdout.
+private func eprint(_ message: String, terminator: String = "\n") {
+    FileHandle.standardError.write(Data((message + terminator).utf8))
+}
+
 /// Hypothesis 1's crux (`docs/task-oracle-query-concurrency.md`, section 3 item 1): does real,
 /// concurrent `sourcekitd_send_request_sync` issuance against a *single* real `sourcekitdInProc`
 /// session actually work -- correctly (results matching a sequential run byte-for-byte) and
@@ -213,11 +220,11 @@ func concurrentCursorInfoIssuanceSpike() async throws {
         }
     }
 
-    FileHandle.standardError.write(Data((
+    eprint((
         "CONCURRENCY-SPIKE total=\(total) sequential=\(sequentialElapsed)s concurrent=\(concurrentElapsed)s "
         + "speedup=\(sequentialElapsed / max(concurrentElapsed, 0.0001))x mismatches=\(mismatches.count)\n"
         + mismatches.map { "  MISMATCH: \($0)\n" }.joined()
-    ).utf8))
+    ), terminator: "")
 
     #expect(mismatches.isEmpty, "concurrent issuance produced \(mismatches.count) mismatch(es) against the sequential baseline -- see stderr for detail")
 
@@ -233,7 +240,7 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     // CI or another machine.
     let coldDataPath = "/tmp/concurrency_spike_cold_data.json"
     guard FileManager.default.fileExists(atPath: coldDataPath) else {
-        FileHandle.standardError.write(Data("CONCURRENCY-SPIKE-COLD skipped: \(coldDataPath) not present\n".utf8))
+        eprint("CONCURRENCY-SPIKE-COLD skipped: \(coldDataPath) not present")
         return
     }
 
@@ -272,13 +279,13 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     }
     let coldConcurrentElapsed = Date().timeIntervalSince(coldConcurrentStart)
 
-    FileHandle.standardError.write(Data((
+    eprint((
         "CONCURRENCY-SPIKE-COLD groupA(sequential)=\(coldData.groupA.count) resolved=\(coldSequentialOK) time=\(coldSequentialElapsed)s "
         + "groupB(concurrent)=\(coldData.groupB.count) resolved=\(coldConcurrentOK.value) time=\(coldConcurrentElapsed)s "
         + "perQuerySequential=\(coldSequentialElapsed / Double(coldData.groupA.count))s "
         + "perQueryConcurrent=\(coldConcurrentElapsed / Double(coldData.groupB.count))s "
         + "coldSpeedup=\((coldSequentialElapsed / Double(coldData.groupA.count)) / max(coldConcurrentElapsed / Double(coldData.groupB.count), 0.0001))x\n"
-    ).utf8))
+    ), terminator: "")
 
     // ---- Phase D: rigor pass on Phase C, per review (four gaps identified before any Phase 2
     // redesign could be trusted):
@@ -300,7 +307,7 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     // already burned those), same graceful skip-if-absent behavior for portability/CI-safety.
     let phaseDDataPath = "/tmp/concurrency_spike_phase_d_data.json"
     guard FileManager.default.fileExists(atPath: phaseDDataPath) else {
-        FileHandle.standardError.write(Data("CONCURRENCY-SPIKE-PHASE-D skipped: \(phaseDDataPath) not present\n".utf8))
+        eprint("CONCURRENCY-SPIKE-PHASE-D skipped: \(phaseDDataPath) not present")
         return
     }
 
@@ -401,15 +408,15 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     }
 
     guard let seqItems = phaseDData.groups["seq"] else {
-        FileHandle.standardError.write(Data("CONCURRENCY-SPIKE-PHASE-D skipped: \"seq\" group missing\n".utf8))
+        eprint("CONCURRENCY-SPIKE-PHASE-D skipped: \"seq\" group missing")
         return
     }
     let seqResult = measure("seq") { sequentialRun(seqItems) }
     let seqPerQuery = seqResult.elapsed / Double(seqItems.count)
-    FileHandle.standardError.write(Data((
+    eprint((
         "CONCURRENCY-SPIKE-PHASE-D group=seq(K=1) n=\(seqItems.count) resolved=\(seqResult.resolved) time=\(seqResult.elapsed)s "
         + "perQuery=\(seqPerQuery)s builds=\(seqResult.buildsDelta) cacheHits=\(seqResult.cacheHitsDelta)\n"
-    ).utf8))
+    ), terminator: "")
 
     for k in [2, 4, 8] {
         guard let sharedItems = phaseDData.groups["shared_k\(k)"], let shardedItems = phaseDData.groups["sharded_k\(k)"] else {
@@ -417,19 +424,19 @@ func concurrentCursorInfoIssuanceSpike() async throws {
         }
         let sharedResult = measure("shared_k\(k)") { sharedQueueRun(sharedItems, k: k) }
         let sharedPerQuery = sharedResult.elapsed / Double(sharedItems.count)
-        FileHandle.standardError.write(Data((
+        eprint((
             "CONCURRENCY-SPIKE-PHASE-D group=shared_k\(k) n=\(sharedItems.count) resolved=\(sharedResult.resolved) time=\(sharedResult.elapsed)s "
             + "perQuery=\(sharedPerQuery)s builds=\(sharedResult.buildsDelta) cacheHits=\(sharedResult.cacheHitsDelta) "
             + "speedupVsSeq=\(seqPerQuery / max(sharedPerQuery, 0.0001))x\n"
-        ).utf8))
+        ), terminator: "")
 
         let shardedResult = measure("sharded_k\(k)") { fileShardedRun(shardedItems, k: k) }
         let shardedPerQuery = shardedResult.elapsed / Double(shardedItems.count)
-        FileHandle.standardError.write(Data((
+        eprint((
             "CONCURRENCY-SPIKE-PHASE-D group=sharded_k\(k) n=\(shardedItems.count) resolved=\(shardedResult.resolved) time=\(shardedResult.elapsed)s "
             + "perQuery=\(shardedPerQuery)s builds=\(shardedResult.buildsDelta) cacheHits=\(shardedResult.cacheHitsDelta) "
             + "speedupVsSeq=\(seqPerQuery / max(shardedPerQuery, 0.0001))x\n"
-        ).utf8))
+        ), terminator: "")
     }
 
     // ---- Phase E: does the fear in review point 2 actually materialize? Phase D's dataset (one
@@ -452,7 +459,7 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     // if they come back equal, mixed-order issuance isn't the risk it could have been.
     let phaseEDataPath = "/tmp/concurrency_spike_phase_e_data.json"
     guard FileManager.default.fileExists(atPath: phaseEDataPath) else {
-        FileHandle.standardError.write(Data("CONCURRENCY-SPIKE-PHASE-E skipped: \(phaseEDataPath) not present\n".utf8))
+        eprint("CONCURRENCY-SPIKE-PHASE-E skipped: \(phaseEDataPath) not present")
         return
     }
 
@@ -516,15 +523,15 @@ func concurrentCursorInfoIssuanceSpike() async throws {
     }
 
     guard let seqGroupE = phaseEData.groups["seq"] else {
-        FileHandle.standardError.write(Data("CONCURRENCY-SPIKE-PHASE-E skipped: \"seq\" group missing\n".utf8))
+        eprint("CONCURRENCY-SPIKE-PHASE-E skipped: \"seq\" group missing")
         return
     }
     let seqResultE = measure("seqE") { sequentialRunE(seqGroupE.fileGrouped) }
     let seqPerQueryE = seqResultE.elapsed / Double(seqGroupE.fileGrouped.count)
-    FileHandle.standardError.write(Data((
+    eprint((
         "CONCURRENCY-SPIKE-PHASE-E group=seq(K=1) files=\(seqGroupE.fileCount) n=\(seqGroupE.fileGrouped.count) resolved=\(seqResultE.resolved) "
         + "time=\(seqResultE.elapsed)s perQuery=\(seqPerQueryE)s builds=\(seqResultE.buildsDelta) cacheHits=\(seqResultE.cacheHitsDelta)\n"
-    ).utf8))
+    ), terminator: "")
 
     for k in [2, 4, 8] {
         guard let sharedGroup = phaseEData.groups["shared_k\(k)"], let shardedGroup = phaseEData.groups["sharded_k\(k)"] else {
@@ -532,19 +539,19 @@ func concurrentCursorInfoIssuanceSpike() async throws {
         }
         let sharedResultE = measure("shared_k\(k)E") { sharedQueueRunE(sharedGroup.interleaved, k: k) }
         let sharedPerQueryE = sharedResultE.elapsed / Double(sharedGroup.interleaved.count)
-        FileHandle.standardError.write(Data((
+        eprint((
             "CONCURRENCY-SPIKE-PHASE-E group=shared_k\(k) files=\(sharedGroup.fileCount) n=\(sharedGroup.interleaved.count) resolved=\(sharedResultE.resolved) "
             + "time=\(sharedResultE.elapsed)s perQuery=\(sharedPerQueryE)s builds=\(sharedResultE.buildsDelta) cacheHits=\(sharedResultE.cacheHitsDelta) "
             + "speedupVsSeq=\(seqPerQueryE / max(sharedPerQueryE, 0.0001))x\n"
-        ).utf8))
+        ), terminator: "")
 
         let shardedResultE = measure("sharded_k\(k)E") { fileShardedRunE(shardedGroup.fileGrouped, k: k) }
         let shardedPerQueryE = shardedResultE.elapsed / Double(shardedGroup.fileGrouped.count)
-        FileHandle.standardError.write(Data((
+        eprint((
             "CONCURRENCY-SPIKE-PHASE-E group=sharded_k\(k) files=\(shardedGroup.fileCount) n=\(shardedGroup.fileGrouped.count) resolved=\(shardedResultE.resolved) "
             + "time=\(shardedResultE.elapsed)s perQuery=\(shardedPerQueryE)s builds=\(shardedResultE.buildsDelta) cacheHits=\(shardedResultE.cacheHitsDelta) "
             + "speedupVsSeq=\(seqPerQueryE / max(shardedPerQueryE, 0.0001))x\n"
-        ).utf8))
+        ), terminator: "")
     }
 }
 
