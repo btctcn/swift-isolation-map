@@ -215,13 +215,24 @@ public struct DeclarationLinker {
         // rather than guess" philosophy -- this same per-nominal map is also the mechanism
         // `ExternalIsolationBackfill`'s own per-member dedup (Phase I3) keys against, so the two
         // phases share one "which nominal does this declaration belong to" answer, not two.
+        //
+        // A collision is only real when the *same name* maps to two *different* USRs. Confirmed
+        // against a real project (`OldPurchaseReturnViewController: UIViewController`) that
+        // `IndexStoreDB.occurrences(relatedToUSR:roles:.baseOf)` can report one real base type
+        // twice, verbatim-identical USR both times -- an earlier version of this loop treated any
+        // repeated name as a collision regardless of whether the USR actually differed, silently
+        // dropping a real, unambiguous base type (`UIViewController`) and leaving the subclass
+        // incorrectly `nonisolated` instead of inheriting `@MainActor`. A repeated identical
+        // (name, USR) pair is a harmless duplicate occurrence, not an ambiguity.
         func baseTypeNames(forNominal nominalUSR: String) -> [String: String] {
             if let cached = baseTypeNamesByNominal[nominalUSR] { return cached }
             var byName: [String: String] = [:]
             var collidedNames: Set<String> = []
             for candidate in indexStore.baseTypeUSRs(forUSR: nominalUSR) {
-                if byName[candidate.name] != nil {
-                    collidedNames.insert(candidate.name)
+                if let existingUSR = byName[candidate.name] {
+                    if existingUSR != candidate.usr {
+                        collidedNames.insert(candidate.name)
+                    }
                 } else {
                     byName[candidate.name] = candidate.usr
                 }
