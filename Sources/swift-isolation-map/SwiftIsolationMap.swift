@@ -7,6 +7,14 @@ import ProjectResolution
 import SourceKitDIntegration
 import SyntaxAnalysis
 
+/// Every status/prompt message in this target goes through here, to stderr -- `--output json`
+/// (or any format) needs to be safely pipeable, and a "Building project..." or interactive
+/// prompt line interleaved into stdout would corrupt that. Only `writeOutput`'s final
+/// `print(text)` (the actual analysis result) writes to stdout.
+func eprint(_ message: String, terminator: String = "\n") {
+    FileHandle.standardError.write(Data((message + terminator).utf8))
+}
+
 enum OutputFormatOption: String, ExpressibleByArgument, CaseIterable {
     case mermaid
     case dot
@@ -211,7 +219,7 @@ struct SwiftIsolationMap: ParsableCommand {
     }
 
     private func reportSchemeMismatch(requested: String, available: [String]) {
-        FileHandle.standardError.write(Data((schemeMismatchMessage(requested: requested, available: available) + "\n").utf8))
+        eprint(schemeMismatchMessage(requested: requested, available: available))
     }
 
     private func resolveRuleSet(forSwiftVersion version: String) throws -> IsolationRuleSet {
@@ -222,7 +230,7 @@ struct SwiftIsolationMap: ParsableCommand {
             if let highest = error.highestSupportedUpperBound {
                 message += " Highest supported version: \(highest)."
             }
-            FileHandle.standardError.write(Data((message + "\n").utf8))
+            eprint(message)
             throw ExitCode(2)
         }
     }
@@ -246,7 +254,7 @@ struct SwiftIsolationMap: ParsableCommand {
             var message = "Index store is stale: \(changedFiles.count) file(s) changed since the last indexing:\n"
             message += changedFiles.map { "    - \($0)" }.joined(separator: "\n")
             message += "\nRe-run with --auto-build or --force-reindex, or rebuild the project yourself."
-            FileHandle.standardError.write(Data((message + "\n").utf8))
+            eprint(message)
             throw ExitCode(1)
 
         case .rebuildThenProceed:
@@ -494,11 +502,4 @@ struct SwiftIsolationMap: ParsableCommand {
         eprint("[verbose] " + message)
     }
 
-    /// Every status/prompt message in this file goes through here, to stderr -- `--output json`
-    /// (or any format) needs to be safely pipeable, and a "Building project..." or interactive
-    /// prompt line interleaved into stdout would corrupt that. Only `writeOutput`'s final
-    /// `print(text)` (the actual analysis result) writes to stdout.
-    private func eprint(_ message: String, terminator: String = "\n") {
-        FileHandle.standardError.write(Data((message + terminator).utf8))
-    }
 }

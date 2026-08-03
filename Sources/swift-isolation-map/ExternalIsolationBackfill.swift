@@ -160,7 +160,7 @@ enum ExternalIsolationBackfill {
         // "close enough," it's a concrete signal the ordering/merge is broken somewhere.
         if ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_ORACLE_STATS"] != nil {
             let liveFiles = Set(merged.filter { bulkCache[$0.targetUSR] == nil }.map { $0.location.file })
-            FileHandle.standardError.write(Data("distinct live-query file groups: \(liveFiles.count)\n".utf8))
+            eprint("distinct live-query file groups: \(liveFiles.count)")
         }
 
         // Diagnostic-only, opt-in: dump the fully-planned, deterministically-sorted merged work
