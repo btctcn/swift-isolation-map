@@ -79,6 +79,9 @@ OPTIONS:
   --auto-build                If the index store is missing or stale, build the project
                               without an interactive prompt.
   --force-reindex             Forces a rebuild, ignoring any existing (even fresh) index store.
+  --oracle-workers <N>        Parallelize the external-oracle live-query phase across N worker
+                              processes (default: 1, sequential). Real speedup on a large project:
+                              ~1.8x at N=4, ~3.3x at N=8 -- see docs/task-process-tree-optimization.md.
   --output <format>           mermaid | dot | json (default: mermaid)
   --out-file <path>           Where to write the result (default: stdout)
   --verbose                   What was searched, where the index store was found, how many
