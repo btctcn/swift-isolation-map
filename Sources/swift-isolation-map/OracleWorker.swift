@@ -106,10 +106,7 @@ enum OracleWorker {
             return await sequentialFallback(items: items, compilerArguments: compilerArguments)
         }
 
-        let chunkSize = Int((Double(items.count) / Double(workerCount)).rounded(.up))
-        let chunks = stride(from: 0, to: items.count, by: chunkSize).map {
-            Array(items[$0..<min($0 + chunkSize, items.count)])
-        }
+        let chunks = balancedChunks(items: items, workerCount: workerCount)
 
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("swift-isolation-map-oracle-\(UUID().uuidString)")
@@ -139,6 +136,44 @@ enum OracleWorker {
             }
         }
         return results
+    }
+
+    /// Balances chunks by *distinct file count*, not item count (issue #35 -- confirmed via a
+    /// real simulation against Project Iris's own merged plan: equal-item-count chunking produced
+    /// a 5.08x spread in distinct-file count across 8 chunks (77 to 391), which is what actually
+    /// drives real cost -- a chunk touching many distinct files gets far fewer AST-cache hits than
+    /// one touching few, per hypothesis 0's own logic, regardless of item count. Balancing by
+    /// distinct file count instead reduced that spread to 1.02x (226 to 230) on the same data.
+    /// `items` is assumed already file-sorted (hypothesis 0's own invariant, preserved here since
+    /// this only ever cuts a new chunk at a file boundary, never mid-file) -- walks the list once,
+    /// closing the current chunk whenever adding the next item's file would push its distinct-file
+    /// count over an equal `N`-way share, capped at `workerCount - 1` cuts so the final chunk
+    /// absorbs whatever remains (avoids ever producing more than `workerCount` chunks from
+    /// rounding).
+    static func balancedChunks(
+        items: [(targetUSR: String, file: String, line: Int, column: Int)], workerCount: Int
+    ) -> [[(targetUSR: String, file: String, line: Int, column: Int)]] {
+        let totalDistinctFiles = Set(items.map(\.file)).count
+        let targetFilesPerChunk = Double(totalDistinctFiles) / Double(workerCount)
+
+        var chunks: [[(targetUSR: String, file: String, line: Int, column: Int)]] = []
+        var currentChunk: [(targetUSR: String, file: String, line: Int, column: Int)] = []
+        var seenFiles: Set<String> = []
+
+        for item in items {
+            if !currentChunk.isEmpty, !seenFiles.contains(item.file),
+               Double(seenFiles.count + 1) > targetFilesPerChunk, chunks.count < workerCount - 1 {
+                chunks.append(currentChunk)
+                currentChunk = []
+                seenFiles = []
+            }
+            currentChunk.append(item)
+            seenFiles.insert(item.file)
+        }
+        if !currentChunk.isEmpty {
+            chunks.append(currentChunk)
+        }
+        return chunks
     }
 
     private static func runWorker(
