@@ -1,4 +1,4 @@
-public enum IsolationKind: Equatable, Sendable {
+public enum IsolationKind: Equatable, Sendable, Codable {
     case actor(name: String)
     case globalActor(name: String)
     case nonisolated
