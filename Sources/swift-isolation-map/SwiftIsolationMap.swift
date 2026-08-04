@@ -65,11 +65,24 @@ struct SwiftIsolationMap: ParsableCommand {
         abstract: "Static actor isolation and data-race analysis for Swift projects."
     )
 
+    // Defaulted to "" rather than left required so the hidden `--oracle-worker-*` mode below can
+    // be parsed without also having to supply a real path/scheme -- a worker never resolves a
+    // project at all, it only ever runs live oracle queries handed to it by the root process.
+    // `run()` validates both are non-empty itself, in every path except worker mode.
     @Argument(help: "Path to a .xcodeproj, .xcworkspace, or Package.swift")
-    var path: String
+    var path: String = ""
 
     @Option(help: "Build scheme (Xcode) or product/target (SPM). Required.")
-    var scheme: String
+    var scheme: String = ""
+
+    @Option(help: "Parallelize the external-oracle live-query phase across N worker processes (docs/task-process-tree-optimization.md). Default 1: today's exact sequential behavior.")
+    var oracleWorkers: Int = 1
+
+    @Option(help: ArgumentHelp("Internal: run as an oracle worker, reading its assigned queries from this JSON file.", visibility: .hidden))
+    var oracleWorkerInput: String?
+
+    @Option(help: ArgumentHelp("Internal: where an oracle worker writes its resolved outcomes as JSON.", visibility: .hidden))
+    var oracleWorkerOutput: String?
 
     @Option(help: "Explicit path to the index store. If provided, auto-detection is skipped.")
     var indexStorePath: String?
@@ -90,6 +103,23 @@ struct SwiftIsolationMap: ParsableCommand {
     var verbose: Bool = false
 
     func run() throws {
+        if let oracleWorkerInput, let oracleWorkerOutput {
+            let succeeded = runAsyncBridge { () -> Bool in
+                do {
+                    try await OracleWorker.run(inputPath: oracleWorkerInput, outputPath: oracleWorkerOutput)
+                    return true
+                } catch {
+                    eprint("Oracle worker failed: \(error)")
+                    return false
+                }
+            }
+            if !succeeded { throw ExitCode(1) }
+            return
+        }
+        guard !path.isEmpty, !scheme.isEmpty else {
+            throw ValidationError("<path> and --scheme are required.")
+        }
+
         let fileSystem = LiveFileSystem()
         let processRunning = LiveProcessRunner()
 
@@ -150,7 +180,8 @@ struct SwiftIsolationMap: ParsableCommand {
 
         let externalResolution = runAsyncBridge {
             await resolveExternalIsolation(
-                linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem
+                linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
+                oracleWorkers: oracleWorkers
             )
         }
         logVerbose(
@@ -460,7 +491,8 @@ struct SwiftIsolationMap: ParsableCommand {
         container: ProjectContainer,
         compilerArguments: CompilerArgumentsProviding,
         processRunning: ProcessRunning,
-        fileSystem: FileSystemQuerying
+        fileSystem: FileSystemQuerying,
+        oracleWorkers: Int
     ) async -> ExternalIsolationResolution {
         let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
 
@@ -508,7 +540,9 @@ struct SwiftIsolationMap: ParsableCommand {
 
         let result = await ExternalIsolationBackfill.resolve(
             linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
-            processRunning: processRunning, environmentProvider: environmentProvider
+            processRunning: processRunning, environmentProvider: environmentProvider,
+            oracleWorkerCount: oracleWorkers,
+            oracleWorkerExecutablePath: oracleWorkers > 1 ? URL(fileURLWithPath: CommandLine.arguments[0]).path : nil
         )
 
         if statsEnabled, let before {

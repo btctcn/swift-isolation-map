@@ -98,16 +98,31 @@ enum ExternalIsolationBackfill {
         fileSystem: FileSystemQuerying,
         processRunning: ProcessRunning,
         environmentProvider: BulkExtractionEnvironmentProviding,
-        bulkModuleNames: [String] = BulkSymbolGraphExtractor.defaultModules
+        bulkModuleNames: [String] = BulkSymbolGraphExtractor.defaultModules,
+        oracleWorkerCount: Int = 1,
+        oracleWorkerExecutablePath: String? = nil
     ) async -> ExternalIsolationResolution {
         var backfilled: [String: DeclarationInfo] = [:]
         var updated: [String: DeclarationInfo] = [:]
         var unknown: Set<String> = []
 
+        // Spike instrument (docs/task-process-tree-optimization.md): real wall-clock split between
+        // the one-shot bulk symbol-graph phase and the live-query phases, to decide whether a
+        // process-per-dependency redesign is worth its complexity or whether parallelizing the
+        // (much simpler) bulk phase alone would already capture most of the win. Temporary --
+        // remove once that decision is made, or promote to a permanent diagnostic like
+        // `SWIFT_ISOLATION_MAP_ORACLE_STATS` if it proves broadly useful.
+        let phaseTimingEnabled = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_PHASE_TIMING"] != nil
+        let bulkPhaseStart = phaseTimingEnabled ? Date() : nil
+
         let bulkCache = bulkSymbolGraphCache(
             environmentProvider: environmentProvider, processRunning: processRunning,
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
+
+        if let bulkPhaseStart {
+            eprint("PHASE-TIMING bulk-symbol-graph-phase: \(Date().timeIntervalSince(bulkPhaseStart))s")
+        }
 
         // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
         // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
@@ -176,12 +191,46 @@ enum ExternalIsolationBackfill {
             exit(0)
         }
 
+        let liveQueryPhaseStart = phaseTimingEnabled ? Date() : nil
+
         var outcomes: [String: QueryOutcome] = [:]
-        for item in merged {
-            outcomes[item.targetUSR] = await query(
-                targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+        if oracleWorkerCount > 1, let oracleWorkerExecutablePath {
+            // docs/task-process-tree-optimization.md: the live-query phase is 97.6% of real oracle
+            // wall-clock, and separate processes (separate `sourcekitd`, separate `ASTBuildQueue`)
+            // achieve real, near-linear parallelism, confirmed by two real spikes -- one on timing,
+            // one on correctness (byte-identical results to a sequential run). Only genuinely live
+            // items go to workers; bulk-cache hits are already free and resolved here directly, in
+            // the same file-sorted order they'd have taken in the sequential path.
+            var liveItems: [MergedWorkItem] = []
+            for item in merged {
+                if let cached = bulkCache[item.targetUSR] {
+                    outcomes[item.targetUSR] = .resolved(cached)
+                } else {
+                    liveItems.append(item)
+                }
+            }
+            let parallelOutcomes = await OracleWorker.resolveInParallel(
+                items: liveItems.map { (targetUSR: $0.targetUSR, file: $0.location.file, line: $0.location.line, column: $0.location.column) },
+                workerCount: oracleWorkerCount,
+                compilerArguments: compilerArguments,
+                workerExecutablePath: oracleWorkerExecutablePath,
+                processRunning: processRunning
             )
+            for (usr, outcome) in parallelOutcomes {
+                outcomes[usr] = outcome
+            }
+        } else {
+            for item in merged {
+                outcomes[item.targetUSR] = await query(
+                    targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
+                    compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+                )
+            }
+        }
+
+        if let liveQueryPhaseStart {
+            let liveFiles = Set(merged.filter { bulkCache[$0.targetUSR] == nil }.map { $0.location.file })
+            eprint("PHASE-TIMING merged-live-query-phase: \(Date().timeIntervalSince(liveQueryPhaseStart))s (\(merged.count) items, \(liveFiles.count) distinct live-query files)")
         }
 
         // ---- Phase 3: apply, deterministically (dict/set content is independent of apply order). ----
@@ -197,10 +246,16 @@ enum ExternalIsolationBackfill {
         // edge-level + real-USR declaration-level + conformance pairs -- see
         // `resolveSyntacticPlaceholderNeeds`'s own doc comment for why placeholder-typed
         // superclass/containingType needs cannot join the merged batch above.
+        let placeholderPhaseStart = phaseTimingEnabled ? Date() : nil
+
         await resolveSyntacticPlaceholderNeeds(
             placeholderNeeds, linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
             bulkCache: bulkCache, backfilled: &backfilled, unknown: &unknown
         )
+
+        if let placeholderPhaseStart {
+            eprint("PHASE-TIMING syntactic-placeholder-phase: \(Date().timeIntervalSince(placeholderPhaseStart))s (\(placeholderNeeds.count) items)")
+        }
 
         return ExternalIsolationResolution(backfilledDeclarations: backfilled, updatedDeclarations: updated, unknownUSRs: unknown)
     }
@@ -740,7 +795,7 @@ enum ExternalIsolationBackfill {
 
     // MARK: - Shared oracle query
 
-    private enum QueryOutcome {
+    enum QueryOutcome {
         case resolved(IsolationKind)
         case unknown
     }
@@ -750,7 +805,7 @@ enum ExternalIsolationBackfill {
     /// Every failure mode -- compiler-args unavailable, offset conversion failure, the query
     /// itself throwing, no USR match among the results, or a matched result whose isolation can't
     /// be parsed at all -- becomes `.unknown`, never a crash and never a silent `.nonisolated`.
-    private static func query(
+    static func query(
         targetUSR: String,
         file: String,
         line: Int,

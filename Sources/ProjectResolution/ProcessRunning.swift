@@ -40,6 +40,14 @@ extension ProcessRunning {
 /// path itself -- avoids hardcoding toolchain-specific paths (`swift`, `xcodebuild`, `xcrun` are
 /// all expected to be on `PATH`), consistent with how this project already locates `libIndexStore`
 /// via `xcrun` rather than a baked-in path (see docs/priority-2-phase-0-spike.md).
+/// Carries one pipe's fully-read `Data` out of the background queue that reads it --
+/// `@unchecked Sendable` is safe here specifically because the write inside the queue's closure
+/// always happens-before the `group.wait()` that unblocks the read of `value` afterward, so there
+/// is no actual concurrent access.
+private final class DataBox: @unchecked Sendable {
+    var value = Data()
+}
+
 public struct LiveProcessRunner: ProcessRunning {
     public init() {}
 
@@ -70,15 +78,45 @@ public struct LiveProcessRunner: ProcessRunning {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: workItem)
         }
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        // Both pipes must be drained concurrently, never one to completion before the other --
+        // confirmed as a real, reproducible deadlock (not theoretical): a child that writes enough
+        // to *either* stream while the other is still being read blocks on write() once that
+        // stream's kernel pipe buffer fills, which then blocks this process from ever exiting,
+        // which then blocks the first readDataToEndOfFile() from ever seeing EOF. Reproduced via a
+        // real oracle worker (docs/task-process-tree-optimization.md) whose live cursor-info
+        // queries produce substantial real sourcekitd diagnostic noise on stderr while stdout was
+        // being read to completion first -- no earlier caller of this function had ever produced
+        // enough of both streams at once to hit it.
+        //
+        // Deliberately real OS threads (`Thread.detachNewThread`), not `DispatchQueue.global()`:
+        // confirmed as a second real, reproduced deadlock (`swift test`'s own concurrent test
+        // execution) that submitting work to `DispatchQueue.global()` and then *synchronously
+        // blocking* on it (`DispatchGroup.wait()`) can starve libdispatch's limited-width
+        // cooperative thread pool once enough callers do it at once -- every pool thread ends up
+        // parked in `wait()`, so the two just-submitted read tasks this same call needs can never
+        // get a thread to run on. A real `Thread` is never drawn from that pool, so blocking this
+        // calling thread on it can't shrink the pool available to anyone else.
+        let stdoutBox = DataBox()
+        let stderrBox = DataBox()
+        let stdoutReadDone = DispatchSemaphore(value: 0)
+        let stderrReadDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            stdoutBox.value = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            stdoutReadDone.signal()
+        }
+        Thread.detachNewThread {
+            stderrBox.value = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrReadDone.signal()
+        }
+        stdoutReadDone.wait()
+        stderrReadDone.wait()
         process.waitUntilExit()
         timeoutWorkItem?.cancel()
 
         return ProcessResult(
             exitCode: timedOut ? -1 : process.terminationStatus,
-            standardOutput: String(data: stdoutData, encoding: .utf8) ?? "",
-            standardError: timedOut ? "process timed out after \(timeout ?? 0)s" : (String(data: stderrData, encoding: .utf8) ?? "")
+            standardOutput: String(data: stdoutBox.value, encoding: .utf8) ?? "",
+            standardError: timedOut ? "process timed out after \(timeout ?? 0)s" : (String(data: stderrBox.value, encoding: .utf8) ?? "")
         )
     }
 }
