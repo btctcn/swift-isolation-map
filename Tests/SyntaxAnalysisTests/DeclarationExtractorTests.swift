@@ -61,6 +61,70 @@ func customGlobalActorAttributeIsRecognized() {
     #expect(widget?.explicitIsolation == .globalActor(name: "CustomActor"))
 }
 
+@Test("A custom @globalActor-attributed struct is recognized as a valid attribute name elsewhere in the same file")
+func customGlobalActorStructAttributeIsRecognized() {
+    let decls = declarations("""
+    @globalActor
+    struct CustomActor {
+        actor Impl {}
+        static let shared = Impl()
+    }
+
+    @CustomActor
+    class Widget {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.explicitIsolation == .globalActor(name: "CustomActor"))
+}
+
+@Test("A custom @globalActor-attributed enum is recognized as a valid attribute name elsewhere in the same file")
+func customGlobalActorEnumAttributeIsRecognized() {
+    let decls = declarations("""
+    @globalActor
+    enum CustomActor {
+        actor Impl {}
+        static let shared = Impl()
+    }
+
+    @CustomActor
+    class Widget {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.explicitIsolation == .globalActor(name: "CustomActor"))
+}
+
+@Test("A custom @globalActor-attributed final class is recognized as a valid attribute name elsewhere in the same file")
+func customGlobalActorFinalClassAttributeIsRecognized() {
+    let decls = declarations("""
+    @globalActor
+    final class CustomActor {
+        actor Impl {}
+        static let shared = Impl()
+    }
+
+    @CustomActor
+    class Widget {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.explicitIsolation == .globalActor(name: "CustomActor"))
+}
+
+@Test("A non-final @globalActor-attributed class is NOT recognized as a valid global actor name (SE-0316 requires final; a non-final one is a hard compile error and must not be trusted)")
+func nonFinalGlobalActorClassIsNotRecognized() {
+    let decls = declarations("""
+    @globalActor
+    class CustomActor {
+        actor Impl {}
+        static let shared = Impl()
+    }
+
+    @CustomActor
+    class Widget {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.explicitIsolation == nil)
+}
+
 @Test("An unattributed, unrecognized attribute is not mistaken for a global actor")
 func unrecognizedAttributeIsNotTreatedAsGlobalActor() {
     let decls = declarations("""

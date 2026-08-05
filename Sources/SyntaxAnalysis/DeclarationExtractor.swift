@@ -108,9 +108,11 @@ enum SyntacticIdentity {
 /// actor" must know that fact regardless of where in the file the reference appears.
 struct FileWideNames {
     /// Always includes `"MainActor"` (an SDK global actor, never locally declared). Every other
-    /// name comes from an actor declaration attributed `@globalActor` (SE-0316) -- e.g.
-    /// `@globalActor actor CustomActor {}` makes `@CustomActor` elsewhere in the file mean
-    /// `.globalActor(name: "CustomActor")`.
+    /// name comes from a type declaration attributed `@globalActor` (SE-0316): an `actor`, or a
+    /// `struct`/`enum`/`final class` -- SE-0316's own text: "a global actor type can be a struct,
+    /// enum, actor, or final class". E.g. `@globalActor actor CustomActor {}` or
+    /// `@globalActor struct CustomActor { static let shared = ... }` both make `@CustomActor`
+    /// elsewhere in the file mean `.globalActor(name: "CustomActor")`.
     var globalActorNames: Set<String> = ["MainActor"]
     /// Every protocol name declared in this file -- used to resolve the superclass-vs-protocol
     /// ambiguity in an inheritance clause's first entry (only classes have superclasses, and
@@ -132,6 +134,35 @@ enum FileWideNameCollector {
 
         override func visit(_ node: ActorDeclSyntax) -> SyntaxVisitorContinueKind {
             if node.attributes.contains(named: "globalActor") {
+                result.globalActorNames.insert(node.name.text)
+            }
+            return .visitChildren
+        }
+
+        override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
+            if node.attributes.contains(named: "globalActor") {
+                result.globalActorNames.insert(node.name.text)
+            }
+            return .visitChildren
+        }
+
+        override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
+            if node.attributes.contains(named: "globalActor") {
+                result.globalActorNames.insert(node.name.text)
+            }
+            return .visitChildren
+        }
+
+        override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
+            // A non-final class attributed @globalActor is a hard compile error (SE-0316 requires
+            // struct/enum/actor/final class), so real compiling source never needs this check --
+            // but this collector must not lean on that premise: `SyntaxAnalysis` parses whatever
+            // is on disk regardless of build success (see `FileAnalyzer.analyze`, no dependency on
+            // the index store or a successful build), so a broken/mid-edit file could otherwise
+            // inject a non-actor name into a downstream project-wide accept-list built from this
+            // collector's output (a future consumer of `globalActorNames`, e.g. issue #33).
+            if node.attributes.contains(named: "globalActor"),
+               node.modifiers.contains(where: { $0.name.text == "final" }) {
                 result.globalActorNames.insert(node.name.text)
             }
             return .visitChildren
