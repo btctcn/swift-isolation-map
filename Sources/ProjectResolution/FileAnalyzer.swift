@@ -8,6 +8,13 @@ public struct FileAnalysisResult: Equatable, Sendable {
     /// files' results (`IndexStoreIntegration.DeclarationLinker`) has what it needs for cross-file
     /// `protocolGlobalActorName` backfill, without a second parse of the same source.
     public let protocolGlobalActorNames: [String: String]
+    /// This file's own `@globalActor`-declared names, threaded through for the same reason --
+    /// `DeclarationLinker` unions every file's set into one project-wide closure-attribute
+    /// accept-list (`docs/task-closure-isolation-attribution.md` §7.3.1).
+    public let globalActorNames: Set<String>
+    /// This file's raw closure-literal evidence, threaded through for `DeclarationLinker` to
+    /// classify once the project-wide accept-list above is assembled (same doc, §7.1).
+    public let closureLiteralRecords: [ClosureLiteralRecord]
     public let contentHash: String
 }
 
@@ -35,6 +42,8 @@ public struct FileAnalyzer {
         return FileAnalysisResult(
             declarations: extraction.declarations,
             protocolGlobalActorNames: extraction.protocolGlobalActorNames,
+            globalActorNames: extraction.globalActorNames,
+            closureLiteralRecords: extraction.closureLiteralRecords,
             contentHash: contentHash(of: data)
         )
     }

@@ -30,10 +30,24 @@ import IsolationCore
 public struct ExtractionResult: Equatable, Sendable {
     public let declarations: [DeclarationInfo]
     public let protocolGlobalActorNames: [String: String]
+    /// This file's own global-actor names (`FileWideNames.globalActorNames`) -- file-local, like
+    /// `protocolGlobalActorNames`. A multi-file caller (`IndexStoreIntegration.DeclarationLinker`)
+    /// unions every file's set into one project-wide accept-list for closure-attribute recognition
+    /// (`docs/task-closure-isolation-attribution.md` §7.3.1) -- the same cross-file-merge need,
+    /// over a different fact.
+    public let globalActorNames: Set<String>
+    /// Every closure literal this file's `ClosureIsolationExtractor` pass found, as raw evidence
+    /// not yet classified against the project-wide accept-list (same doc, §7.1 step 1).
+    public let closureLiteralRecords: [ClosureLiteralRecord]
 
-    public init(declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String]) {
+    public init(
+        declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String],
+        globalActorNames: Set<String> = [], closureLiteralRecords: [ClosureLiteralRecord] = []
+    ) {
         self.declarations = declarations
         self.protocolGlobalActorNames = protocolGlobalActorNames
+        self.globalActorNames = globalActorNames
+        self.closureLiteralRecords = closureLiteralRecords
     }
 }
 
@@ -57,7 +71,11 @@ public enum DeclarationExtractor {
             protocolGlobalActorNames: protocolGlobalActorNames
         )
         visitor.walk(tree)
-        return ExtractionResult(declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames)
+        let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter)
+        return ExtractionResult(
+            declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames,
+            globalActorNames: fileWideNames.globalActorNames, closureLiteralRecords: closureLiteralRecords
+        )
     }
 }
 

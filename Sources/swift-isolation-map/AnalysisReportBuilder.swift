@@ -1,5 +1,6 @@
 import IsolationCore
 import OutputFormat
+import SyntaxAnalysis
 
 /// Builds the machine-readable `AnalysisReport` from an already-resolved `IsolationInferenceEngine`
 /// (Priority 1, unmodified) plus the Swift-version/rule-set strings `SwiftVersionDetection`
@@ -13,7 +14,8 @@ enum AnalysisReportBuilder {
         swiftVersion: String,
         ruleSetUsed: String,
         toolVersion: String,
-        unknownUSRs: Set<String> = []
+        unknownUSRs: Set<String> = [],
+        closuresByFile: [String: [ClassifiedClosure]] = [:]
     ) -> AnalysisReport {
         let declarations = engine.declarations
         // A declaration with no location (never matched to a real IndexStoreDB symbol -- see
@@ -31,7 +33,16 @@ enum AnalysisReportBuilder {
         }
 
         let edges = engine.crossIsolationEdges().map { edge -> AnalysisEdge in
-            let callerIsolation = engine.resolveIsolation(for: edge.callerUSR)
+            // §7.2's innermost-enclosing-closure rule (docs/task-closure-isolation-attribution.md):
+            // if this call site falls inside a closure the project-wide accept-list recognizes
+            // (Rule A/B), that closure's isolation -- not the declaration's own -- decides this
+            // edge's risk. Nothing else about `edge.callerUSR`'s declaration changes: the node
+            // entry below and every *other* edge from the same declaration still resolve through
+            // `engine.resolveIsolation(for:)` untouched (§7.4's invariant).
+            let declaredCallerIsolation = engine.resolveIsolation(for: edge.callerUSR)
+            let callerIsolation = closuresByFile[edge.location.file].flatMap {
+                effectiveCallerIsolation(atLine: edge.location.line, column: edge.location.column, in: $0)
+            } ?? declaredCallerIsolation
             let calleeIsolation = engine.resolveIsolation(for: edge.calleeUSR)
             let risk = riskLevel(caller: callerIsolation, callee: calleeIsolation)
             // Orthogonal to `risk` (computed above, unchanged, still a pure function of the two

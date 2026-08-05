@@ -151,7 +151,10 @@ struct SwiftIsolationMap: ParsableCommand {
         for file in sourceFiles {
             let result = try analyzer.analyze(fileAt: file)
             currentHashes[file.path] = result.contentHash
-            extractionResults.append(ExtractionResult(declarations: result.declarations, protocolGlobalActorNames: result.protocolGlobalActorNames))
+            extractionResults.append(ExtractionResult(
+                declarations: result.declarations, protocolGlobalActorNames: result.protocolGlobalActorNames,
+                globalActorNames: result.globalActorNames, closureLiteralRecords: result.closureLiteralRecords
+            ))
         }
 
         let manifestURL = StalenessOrchestration.manifestURL(for: container)
@@ -203,7 +206,8 @@ struct SwiftIsolationMap: ParsableCommand {
             swiftVersion: effectiveVersion,
             ruleSetUsed: String(describing: type(of: ruleSet)),
             toolVersion: Self.toolVersion,
-            unknownUSRs: externalResolution.unknownUSRs
+            unknownUSRs: externalResolution.unknownUSRs,
+            closuresByFile: linked.closuresByFile
         )
 
         try StalenessOrchestration.writeManifest(StalenessManifest(contentHashesByFilePath: currentHashes), to: manifestURL, fileSystem: fileSystem)
