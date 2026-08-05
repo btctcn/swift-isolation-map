@@ -86,6 +86,118 @@ struct BulkSymbolGraphExtractorTests {
         #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated)
     }
 
+    @Test("extract() omits a member with no isolation attribute of its own, but keeps a non-member with no attribute -- real shape confirmed against UIKit's own symbolgraph-extract output for UINavigationController.pushViewController(_:animated:) (docs/task-closure-isolation-attribution.md's sibling investigation)")
+    func omitsAmbiguousMemberButKeepsConfirmedNonMember() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // `pushViewController(_:animated:)` is genuinely `@MainActor`, inherited from
+        // `@MainActor class UINavigationController` -- confirmed by direct compilation and by a
+        // live `cursorinfo` query at a real call site, whose own symbol-graph response *does*
+        // include the attribute. The bulk `symbolgraph-extract` shape captured here is real, not
+        // hand-assembled: the method's own `declarationFragments` carry no attribute at all,
+        // because inherited class-level isolation is never restated per member.
+        let json = """
+        {
+          "symbols":[
+            {"identifier":{"precise":"c:objc(cs)UINavigationController"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(cs)UINavigationController(im)pushViewController:animated:"},"declarationFragments":[{"kind":"keyword","spelling":"func"}]},
+            {"identifier":{"precise":"c:objc(cs)NSSomethingPlain"},"declarationFragments":[{"kind":"keyword","spelling":"class"}]}
+          ],
+          "relationships":[
+            {"kind":"memberOf","source":"c:objc(cs)UINavigationController(im)pushViewController:animated:","target":"c:objc(cs)UINavigationController"}
+          ]
+        }
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            let primaryFile = outputDir.appendingPathComponent("UIKit.symbols.json")
+            try? fileSystem.write(data: Data(json.utf8), to: primaryFile)
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved["c:objc(cs)UINavigationController"] == .globalActor(name: "MainActor"))
+        #expect(resolved["c:objc(cs)UINavigationController(im)pushViewController:animated:"] == nil, "a member with no confirmed signal of its own must be omitted, not cached as a wrong .nonisolated fact -- a real call site's live query is what correctly resolves it instead")
+        #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated, "a non-member's own \"no attribute\" fragments have no containing type to have inherited from, so they stay a trustworthy, cached .nonisolated fact")
+    }
+
+    @Test("extract() trusts a member's own \"no attribute\" fragments when its container itself resolves to .nonisolated -- the real Int.+= regression this check's first, over-broad version introduced")
+    func trustsMemberOfANonisolatedContainer() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // `+=` is a real static member of `Int` (a plain, nonisolated struct -- no attribute of
+        // its own either). Treating *every* member with no attribute as ambiguous (this check's
+        // first version) wrongly omitted this and every other stdlib operator/member with the
+        // same shape, turning a confirmed `.nonisolated` fact into `unspecified` project-wide --
+        // caught by `CapstoneCLITests`'s own real fixture.
+        let json = """
+        {
+          "symbols":[
+            {"identifier":{"precise":"s:Si"},"declarationFragments":[{"kind":"keyword","spelling":"struct"}]},
+            {"identifier":{"precise":"s:Si2peoiyySiz_SitFZ"},"declarationFragments":[{"kind":"keyword","spelling":"static"}]}
+          ],
+          "relationships":[
+            {"kind":"memberOf","source":"s:Si2peoiyySiz_SitFZ","target":"s:Si"}
+          ]
+        }
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            let primaryFile = outputDir.appendingPathComponent("Swift.symbols.json")
+            try? fileSystem.write(data: Data(json.utf8), to: primaryFile)
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "Swift", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved["s:Si2peoiyySiz_SitFZ"] == .nonisolated)
+    }
+
+    @Test("extract() walks a superclass chain (inheritsFrom) to find a confirmed container isolation, not just the immediate container's own fragments")
+    func walksSuperclassChainForContainerIsolation() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // `GrandchildView` doesn't restate `@MainActor` (nothing does, per member -- that's the
+        // whole bug), and neither does its immediate superclass `MiddleView`; only the root
+        // `BaseView` states it explicitly. A member of `GrandchildView` must still resolve as
+        // ambiguous (omitted), not trusted as `.nonisolated`, by walking the full chain.
+        let json = """
+        {
+          "symbols":[
+            {"identifier":{"precise":"c:objc(cs)BaseView"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(cs)MiddleView"},"declarationFragments":[{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(cs)GrandchildView"},"declarationFragments":[{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(cs)GrandchildView(im)someMethod"},"declarationFragments":[{"kind":"keyword","spelling":"func"}]}
+          ],
+          "relationships":[
+            {"kind":"inheritsFrom","source":"c:objc(cs)MiddleView","target":"c:objc(cs)BaseView"},
+            {"kind":"inheritsFrom","source":"c:objc(cs)GrandchildView","target":"c:objc(cs)MiddleView"},
+            {"kind":"memberOf","source":"c:objc(cs)GrandchildView(im)someMethod","target":"c:objc(cs)GrandchildView"}
+          ]
+        }
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            let primaryFile = outputDir.appendingPathComponent("UIKit.symbols.json")
+            try? fileSystem.write(data: Data(json.utf8), to: primaryFile)
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved["c:objc(cs)GrandchildView(im)someMethod"] == nil, "GrandchildView's own isolation comes from two inheritsFrom hops away -- a shallow, one-level container check would have missed this and wrongly trusted the member as .nonisolated")
+    }
+
     @Test("extract() merges symbols from every *.symbols.json sibling file, not just the module's own primary file")
     func mergesSymbolsFromSiblingExtensionFiles() {
         let processRunning = FakeProcessRunning()
