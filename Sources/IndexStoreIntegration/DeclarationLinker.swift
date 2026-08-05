@@ -5,10 +5,16 @@ import SyntaxAnalysis
 public struct LinkedAnalysis: Equatable, Sendable {
     public let declarations: [String: DeclarationInfo]
     public let callGraph: [CallGraphEdge]
+    /// Every closure literal found across every linked file, already classified against the
+    /// project-wide accept-list (`docs/task-closure-isolation-attribution.md` §7.3.1), keyed by
+    /// file path -- the same key `CallGraphEdge.location.file` uses, so
+    /// `AnalysisReportBuilder` can look up "closures in this edge's file" directly.
+    public let closuresByFile: [String: [ClassifiedClosure]]
 
-    public init(declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge]) {
+    public init(declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge], closuresByFile: [String: [ClassifiedClosure]] = [:]) {
         self.declarations = declarations
         self.callGraph = callGraph
+        self.closuresByFile = closuresByFile
     }
 }
 
@@ -65,8 +71,26 @@ public struct DeclarationLinker {
         let allDeclarations = extractionResults.flatMap(\.declarations)
 
         var mergedProtocolGlobalActorNames: [String: String] = [:]
+        var mergedGlobalActorNames: Set<String> = []
         for result in extractionResults {
             mergedProtocolGlobalActorNames.merge(result.protocolGlobalActorNames) { existing, _ in existing }
+            mergedGlobalActorNames.formUnion(result.globalActorNames)
+        }
+
+        // Rule A/B classification (docs/task-closure-isolation-attribution.md §7.1 step 2): can
+        // only happen now, project-wide, not inside any single file's own extraction -- whether a
+        // closure-signature attribute names a global actor depends on the *whole run's* declared
+        // actors, not just the declaring file's own.
+        var closuresByFile: [String: [ClassifiedClosure]] = [:]
+        for result in extractionResults {
+            for record in result.closureLiteralRecords {
+                let classified = ClassifiedClosure(
+                    startLine: record.startLine, startColumn: record.startColumn,
+                    endLine: record.endLine, endColumn: record.endColumn,
+                    isolationOverride: classify(record, knownGlobalActorNames: mergedGlobalActorNames)
+                )
+                closuresByFile[record.file, default: []].append(classified)
+            }
         }
 
         let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
@@ -178,7 +202,7 @@ public struct DeclarationLinker {
             CallGraphEdge(callerUSR: canonicalized(edge.callerUSR), calleeUSR: canonicalized(edge.calleeUSR), location: edge.location)
         }
 
-        return LinkedAnalysis(declarations: byUSR, callGraph: callGraph)
+        return LinkedAnalysis(declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile)
     }
 
     /// Gap B Phase I2's core fix (docs/task-gap-b-implementation-plan.md): resolves whatever
