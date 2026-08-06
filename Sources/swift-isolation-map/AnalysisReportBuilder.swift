@@ -32,7 +32,7 @@ enum AnalysisReportBuilder {
             )
         }
 
-        let edges = engine.crossIsolationEdges().map { edge -> AnalysisEdge in
+        let edges = engine.crossIsolationEdges().compactMap { edge -> AnalysisEdge? in
             // §7.2's innermost-enclosing-closure rule (docs/task-closure-isolation-attribution.md):
             // if this call site falls inside a closure the project-wide accept-list recognizes
             // (Rule A/B), that closure's isolation -- not the declaration's own -- decides this
@@ -51,6 +51,21 @@ enum AnalysisReportBuilder {
             // docs/task-compiled-dependency-isolation.md's binding requirement that "no idea"
             // must never be conflated with a confirmed risk.
             let isUnknown = unknownUSRs.contains(edge.callerUSR) || unknownUSRs.contains(edge.calleeUSR)
+            // An isolated caller reaching a *confirmed* `.nonisolated` callee is never a risk, not
+            // even a low one: `nonisolated` imposes no isolation requirement on its caller, so the
+            // call needs no `await` and can never race, regardless of which actor the caller is
+            // isolated to. Confirmed directly by compilation (both a `@MainActor` class and a
+            // custom `actor` calling a plain nonisolated function: zero diagnostics under
+            // `-strict-concurrency=complete`) -- found auditing the medium-risk bucket against
+            // Project Iris, where this shape alone was ~48% of it. Suppressed entirely rather than
+            // downgraded to a new "no risk" level, per the audit's own conclusion: it isn't
+            // ambiguous, so it doesn't belong in the report at all. Left alone when `isUnknown` --
+            // an oracle-failed lookup that happened to default to `.nonisolated` is a fallback
+            // under uncertainty, not a confirmed fact, so it must still surface, not be silently
+            // treated as proven-safe.
+            if isIsolated(callerIsolation), case .nonisolated = calleeIsolation, !isUnknown {
+                return nil
+            }
             return AnalysisEdge(
                 callerUSR: edge.callerUSR,
                 calleeUSR: edge.calleeUSR,
@@ -129,6 +144,58 @@ enum AnalysisReportBuilder {
         )
     }
 
+    /// Presentation-only filter applied after `build()`, driven by the CLI's `--severity` option --
+    /// never changes what was actually detected, only what a given invocation chooses to display.
+    /// `nil` (no `--severity` given) returns `report` unchanged.
+    ///
+    /// An edge is kept if it meets the threshold (`.high` keeps only `.high`; `.medium` keeps
+    /// `.high` and `.medium`; `.low` keeps everything) **or** if either side of it is uncertain
+    /// (`isUnknown`, or an isolation string of `"unspecified"`) -- regardless of threshold.
+    /// Filtering to a stricter severity must never be a way to accidentally hide a case the tool
+    /// doesn't have confirmed information about; that's the same "never conflate uncertainty with
+    /// a confirmed risk" principle `isUnknown` itself exists for (see the suppression comment in
+    /// `build()` for the analogous reasoning in the opposite direction -- confirmed-safe edges are
+    /// dropped unconditionally, but never-confirmed ones are never dropped).
+    ///
+    /// Only `edges` and `summary.crossActorBoundaries` change (the latter kept consistent with the
+    /// filtered edge count, so the output is never self-contradictory). `nodes` stays complete --
+    /// every analyzed declaration is still real and still analyzed regardless of which edges this
+    /// view chooses to surface. `highRiskBoundaries` is unaffected by construction: `.high` edges
+    /// are never filtered out at any threshold.
+    static func filtered(_ report: AnalysisReport, minimumSeverity: RiskLevel?) -> AnalysisReport {
+        guard let minimumSeverity else { return report }
+
+        func isUncertain(_ edge: AnalysisEdge) -> Bool {
+            edge.isUnknown || edge.callerIsolation == "unspecified" || edge.calleeIsolation == "unspecified"
+        }
+        func meetsThreshold(_ edge: AnalysisEdge) -> Bool {
+            switch minimumSeverity {
+            case .low: return true
+            case .medium: return edge.risk == .medium || edge.risk == .high
+            case .high: return edge.risk == .high
+            }
+        }
+
+        let filteredEdges = report.edges.filter { meetsThreshold($0) || isUncertain($0) }
+        let summary = AnalysisSummary(
+            typesAnalyzed: report.summary.typesAnalyzed,
+            actors: report.summary.actors,
+            mainActorTypes: report.summary.mainActorTypes,
+            unspecifiedIsolation: report.summary.unspecifiedIsolation,
+            crossActorBoundaries: filteredEdges.count,
+            highRiskBoundaries: report.summary.highRiskBoundaries
+        )
+        return AnalysisReport(
+            schemaVersion: report.schemaVersion,
+            toolVersion: report.toolVersion,
+            swiftVersion: report.swiftVersion,
+            ruleSetUsed: report.ruleSetUsed,
+            summary: summary,
+            nodes: report.nodes,
+            edges: filteredEdges
+        )
+    }
+
     /// Structural, resolved-isolation-kind-based heuristic -- **not** `@unchecked Sendable`/
     /// `nonisolated(unsafe)`-aware data-race detection. By the time a project compiles, every
     /// cross-isolation call is already either `await`-ed or uses an explicit unsafe escape
@@ -139,6 +206,10 @@ enum AnalysisReportBuilder {
     /// - `low`: both sides are actor-protected (crosses a boundary, but still compiler-enforced
     ///   via `await` on both ends).
     /// - `medium`: everything else that's still cross-isolation (e.g. either side `.unspecified`).
+    ///   Note: an isolated caller reaching a *confirmed* `.nonisolated` callee would fall through
+    ///   to here, but `build()` suppresses that shape before it ever reaches an `AnalysisEdge` --
+    ///   see the suppression comment there. This function stays a pure classifier of the two
+    ///   `IsolationKind`s regardless, so its own unit tests still exercise that raw case.
     static func riskLevel(caller: IsolationKind, callee: IsolationKind) -> RiskLevel {
         if case .nonisolated = caller, isIsolated(callee) {
             return .high

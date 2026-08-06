@@ -240,4 +240,118 @@ struct AnalysisReportBuilderTests {
         #expect(mainEdge.risk == .low)
         #expect(globalEdge.risk == .high)
     }
+
+    // MARK: - Isolated-caller-reaching-confirmed-nonisolated-callee suppression
+
+    @Test("An isolated caller (actor or globalActor) reaching a confirmed nonisolated callee is suppressed entirely, not reported as medium")
+    func isolatedCallerReachingConfirmedNonisolatedCalleeIsSuppressed() {
+        let actorCaller = DeclarationInfo(usr: "usr:actorCaller", name: "trigger", isActorType: true)
+        let mainActorCaller = DeclarationInfo(usr: "usr:mainActorCaller", name: "render", explicitIsolation: .globalActor(name: "MainActor"))
+        let plainCallee = DeclarationInfo(usr: "usr:plain", name: "log", explicitIsolation: .nonisolated)
+        let declarations: [String: DeclarationInfo] = [
+            "usr:actorCaller": actorCaller,
+            "usr:mainActorCaller": mainActorCaller,
+            "usr:plain": plainCallee
+        ]
+        let callGraph = [
+            CallGraphEdge(callerUSR: "usr:actorCaller", calleeUSR: "usr:plain", location: SymbolLocation(file: "T.swift", line: 1, column: 1)),
+            CallGraphEdge(callerUSR: "usr:mainActorCaller", calleeUSR: "usr:plain", location: SymbolLocation(file: "T.swift", line: 2, column: 1))
+        ]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        #expect(report.edges.isEmpty, "calling a confirmed nonisolated declaration is never a risk from any isolated context -- must not appear in the report at all")
+        #expect(report.summary.crossActorBoundaries == 0)
+    }
+
+    @Test("The suppression does not apply when the nonisolated resolution is only an oracle-failure fallback (isUnknown)")
+    func suppressionDoesNotApplyWhenCalleeIsolationIsUnknown() throws {
+        let actorCaller = DeclarationInfo(usr: "usr:actorCaller", name: "trigger", isActorType: true)
+        let plainCallee = DeclarationInfo(usr: "usr:plain", name: "log", explicitIsolation: .nonisolated)
+        let declarations: [String: DeclarationInfo] = ["usr:actorCaller": actorCaller, "usr:plain": plainCallee]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:actorCaller", calleeUSR: "usr:plain", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            unknownUSRs: ["usr:plain"]
+        )
+
+        let edge = try #require(report.edges.first, "an oracle-failure fallback to .nonisolated is not a confirmed fact -- must still surface, not be silently treated as proven-safe")
+        #expect(edge.isUnknown)
+    }
+
+    // MARK: - `--severity` presentation filter (AnalysisReportBuilder.filtered)
+
+    private func makeEdge(
+        id: String, risk: RiskLevel,
+        callerIsolation: String = "actor(A)", calleeIsolation: String = "actor(B)",
+        isUnknown: Bool = false
+    ) -> AnalysisEdge {
+        AnalysisEdge(
+            callerUSR: "usr:caller.\(id)", calleeUSR: "usr:callee.\(id)",
+            callerIsolation: callerIsolation, calleeIsolation: calleeIsolation,
+            risk: risk, explanation: "test edge \(id)",
+            location: AnalysisLocation(file: "T.swift", line: 1), isUnknown: isUnknown
+        )
+    }
+
+    private func makeReport(edges: [AnalysisEdge]) -> AnalysisReport {
+        AnalysisReport(
+            schemaVersion: "1.0", toolVersion: "0.1.0", swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet",
+            summary: AnalysisSummary(typesAnalyzed: 0, actors: 0, mainActorTypes: 0, unspecifiedIsolation: 0, crossActorBoundaries: edges.count, highRiskBoundaries: edges.filter { $0.risk == .high }.count),
+            nodes: [], edges: edges
+        )
+    }
+
+    @Test("filtered(): nil severity (no --severity given) returns the report unchanged")
+    func filteredWithNilSeverityIsIdentity() {
+        let report = makeReport(edges: [makeEdge(id: "1", risk: .high), makeEdge(id: "2", risk: .medium), makeEdge(id: "3", risk: .low)])
+        #expect(AnalysisReportBuilder.filtered(report, minimumSeverity: nil) == report)
+    }
+
+    @Test("filtered(): --severity high keeps only high-risk edges, plus any edge with unresolved/unknown isolation on either side")
+    func filteredHighSeverityKeepsHighAndUncertain() {
+        let highEdge = makeEdge(id: "high", risk: .high)
+        let mediumEdge = makeEdge(id: "medium", risk: .medium)
+        let lowEdge = makeEdge(id: "low", risk: .low)
+        let unspecifiedCallerEdge = makeEdge(id: "unspecified", risk: .medium, callerIsolation: "unspecified")
+        let unknownLowEdge = makeEdge(id: "unknown", risk: .low, isUnknown: true)
+        let report = makeReport(edges: [highEdge, mediumEdge, lowEdge, unspecifiedCallerEdge, unknownLowEdge])
+
+        let result = AnalysisReportBuilder.filtered(report, minimumSeverity: .high)
+
+        #expect(result.edges.count == 3)
+        #expect(result.edges.contains(highEdge))
+        #expect(result.edges.contains(unspecifiedCallerEdge), "unresolved isolation must survive even the strictest filter")
+        #expect(result.edges.contains(unknownLowEdge), "isUnknown must survive even the strictest filter, regardless of its own risk level")
+        #expect(!result.edges.contains(mediumEdge))
+        #expect(!result.edges.contains(lowEdge))
+        #expect(result.summary.crossActorBoundaries == 3, "kept consistent with the filtered edge count")
+        #expect(result.summary.highRiskBoundaries == report.summary.highRiskBoundaries, "unaffected by the presentation filter")
+    }
+
+    @Test("filtered(): --severity medium keeps high and medium, plus uncertain edges; drops confirmed low")
+    func filteredMediumSeverityDropsOnlyConfirmedLow() {
+        let highEdge = makeEdge(id: "high", risk: .high)
+        let mediumEdge = makeEdge(id: "medium", risk: .medium)
+        let lowEdge = makeEdge(id: "low", risk: .low)
+        let unknownLowEdge = makeEdge(id: "unknown", risk: .low, isUnknown: true)
+        let report = makeReport(edges: [highEdge, mediumEdge, lowEdge, unknownLowEdge])
+
+        let result = AnalysisReportBuilder.filtered(report, minimumSeverity: .medium)
+
+        #expect(result.edges.count == 3)
+        #expect(result.edges.contains(highEdge))
+        #expect(result.edges.contains(mediumEdge))
+        #expect(result.edges.contains(unknownLowEdge))
+        #expect(!result.edges.contains(lowEdge))
+    }
+
+    @Test("filtered(): --severity low keeps everything")
+    func filteredLowSeverityKeepsEverything() {
+        let report = makeReport(edges: [makeEdge(id: "1", risk: .high), makeEdge(id: "2", risk: .medium), makeEdge(id: "3", risk: .low)])
+        #expect(AnalysisReportBuilder.filtered(report, minimumSeverity: .low).edges.count == 3)
+    }
 }
