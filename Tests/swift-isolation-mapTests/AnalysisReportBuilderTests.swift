@@ -282,6 +282,83 @@ struct AnalysisReportBuilderTests {
         #expect(edge.isUnknown)
     }
 
+    // MARK: - Low-risk explanation text accuracy (issue #47)
+
+    @Test("Low risk, same global actor on both sides: explanation says 'same isolation domain', not 'compiler-enforced via await'")
+    func lowRiskSameGlobalActorExplanationDoesNotClaimAwait() throws {
+        // Reproduces the real shape found auditing Project Iris's own `.low` app-code edges
+        // (docs/reference-project-corpora.md): `Task { @MainActor in AuthenticationService.shared.
+        // userDidLogout() }` inside a caller whose own *declared* isolation is `.nonisolated` --
+        // `crossIsolationEdges()` sees the call as crossing using that declared value (which is
+        // why it's an edge at all), but the closure-attribution substitution (Rule A, #33) then
+        // reports both sides as `.globalActor(MainActor)` for risk/explanation purposes. Verified
+        // by reading the real source: no `await` at that call site at all -- same-actor calls
+        // never need one, so asserting "compiler-enforced via await" here was simply false.
+        let (engine, location) = closureFixtureEngine()
+        let closures = [ClassifiedClosure(startLine: 4, startColumn: 1, endLine: 6, endColumn: 1, isolationOverride: .globalActor(name: "MainActor"))]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            closuresByFile: [location.file: closures]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .low)
+        #expect(edge.callerIsolation == edge.calleeIsolation)
+        #expect(edge.explanation.contains("same isolation domain"))
+        #expect(!edge.explanation.contains("await"))
+    }
+
+    @Test("Low risk, two different isolated domains: explanation still correctly says 'compiler-enforced via await'")
+    func lowRiskDifferentDomainsExplanationStillClaimsAwait() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "refresh", isActorType: true)
+        let callee = DeclarationInfo(usr: "usr:callee", name: "render", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": caller, "usr:callee": callee]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .low)
+        #expect(edge.explanation.contains("compiler-enforced via await"))
+    }
+
+    @Test("Low risk, effective caller and callee both resolve to the same custom actor name: still claims await (no instance-identity tracking, so this must stay conservative)")
+    func lowRiskSameActorTypeNameStillClaimsAwait() throws {
+        // Deliberately NOT the same fix as the globalActor case: this tool tracks actor isolation
+        // by *type name* only, so two `.actor(name: "Cache")` endpoints are not provably the same
+        // isolation domain the way a global actor's singleton semantics guarantee -- they could be
+        // two distinct instances of `Cache` (or two distinct types that happen to share the literal
+        // name in different modules) genuinely needing a real `await` between them. Uses the same
+        // closure-substitution mechanism as the real `.globalActor` bug (issue #47) to reach an
+        // edge with identical caller/callee isolation strings, but overridden to `.actor`, not
+        // `.globalActor` -- claiming "no suspension needed" here would be an unconfirmed safety
+        // claim this project's guiding principle rules out.
+        let location = SymbolLocation(file: "Widget.swift", line: 5, column: 5)
+        let closures = [ClassifiedClosure(startLine: 4, startColumn: 1, endLine: 6, endColumn: 1, isolationOverride: .actor(name: "Cache"))]
+        // Declared caller isolation (`.nonisolated`) differs from the declared callee isolation
+        // (`.actor(name: "Cache")`), so `crossIsolationEdges()` sees this as crossing; the closure
+        // override then substitutes the *caller's* effective isolation to `.actor(name: "Cache")`
+        // too, landing both sides on the identical string for `explanation()` to see.
+        let declarations: [String: DeclarationInfo] = [
+            "usr:caller": DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .nonisolated),
+            "usr:callee": DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .actor(name: "Cache"))
+        ]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            closuresByFile: [location.file: closures]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.callerIsolation == edge.calleeIsolation, "both sides must resolve to the identical .actor(name:) string for this test to exercise the intended scoping")
+        #expect(edge.risk == .low)
+        #expect(edge.explanation.contains("compiler-enforced via await"))
+    }
+
     // MARK: - `--severity` presentation filter (AnalysisReportBuilder.filtered)
 
     private func makeEdge(
