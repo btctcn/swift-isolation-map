@@ -10,6 +10,7 @@ enum SyntacticDeclarationKind {
     case enumCase
     case function
     case initializerDecl
+    case deinitializerDecl
     case variableProperty
     case subscriptDecl
     case accessor
@@ -38,7 +39,7 @@ func isEligibleForModuleDefaultIsolation(
     case .typealiasDecl, .enumCase, .accessor:
         return false
     case .actorType, .classType, .structType, .enumType, .function, .initializerDecl,
-         .variableProperty, .subscriptDecl:
+         .deinitializerDecl, .variableProperty, .subscriptDecl:
         break
     }
     if isMemberOfActorType { return false }
