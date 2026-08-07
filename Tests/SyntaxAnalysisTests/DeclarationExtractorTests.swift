@@ -532,3 +532,38 @@ func protocolOwnDeclarationHasARealLocation() {
     let disposable = decls.first { $0.name == "Disposable" }!
     #expect(disposable.location != nil, "the protocol's own type-level declaration must carry the real source location of `protocol Disposable`, not nil")
 }
+
+// MARK: - `deinit` extraction (issue #48)
+
+@Test("An explicit deinit is extracted as its own member declaration, with the correct containing type")
+func deinitIsExtractedAsAMemberDeclaration() {
+    // `DeclarationVisitor` previously had no `visit(_ node: DeinitializerDeclSyntax)` override at
+    // all, so no explicit `deinit` anywhere in the codebase ever became a `DeclarationInfo` --
+    // confirmed as the real root cause of issue #48's own "MaskTextField.deinit resolves
+    // unspecified" finding (not IndexStoreDB USR ambiguity, its original hypothesis: a direct
+    // probe against Project Iris's real index store showed `definedSymbols(inFile:)` and
+    // `callSites(inFile:)` already agree on the identical USR for a real deinit).
+    let decls = declarations("""
+    @MainActor class Widget {
+        deinit {
+            tearDown()
+        }
+    }
+    """)
+    let widgetType = find(decls, name: "Widget")!
+    let deinitDecl = find(decls, name: "deinit")
+    #expect(deinitDecl != nil, "an explicit deinit must produce its own DeclarationInfo")
+    #expect(deinitDecl?.containingTypeUSR == widgetType.usr)
+}
+
+@Test("A deinit inherits its containing type's isolation, the same as any other member")
+func deinitInheritsContainingTypeIsolation() {
+    let decls = declarations("""
+    @MainActor class Widget {
+        deinit {}
+    }
+    """)
+    let engine = IsolationInferenceEngine(declarations: decls, callGraph: [], ruleSet: Swift60RuleSet())
+    let deinitDecl = decls.values.first { $0.name == "deinit" }!
+    #expect(engine.resolveIsolation(for: deinitDecl.usr) == .globalActor(name: "MainActor"))
+}

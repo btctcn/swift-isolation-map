@@ -644,6 +644,19 @@ private final class DeclarationVisitor: SyntaxVisitor {
         return .visitChildren
     }
 
+    // Issue #48: `DeinitializerDeclSyntax` had no handler at all here, so *every* explicit
+    // `deinit` in the whole codebase -- not just the `@objc`-visible-override subset the issue
+    // was found auditing -- never became a `DeclarationInfo` in the first place. Confirmed
+    // directly against Project Iris's real index store (not IndexStoreDB USR ambiguity, the
+    // issue's own original hypothesis): `IndexStoreClient.definedSymbols(inFile:)` and
+    // `callSites(inFile:)` agree on the *exact same* USR for a real `deinit`
+    // (`c:@M@Ls_net_ru@objc(cs)MaskTextField(im)dealloc`) at both its definition and its call
+    // site -- there is no USR to reconcile. The gap was purely this file's own missing visitor.
+    override func visit(_ node: DeinitializerDeclSyntax) -> SyntaxVisitorContinueKind {
+        emitMember(name: "deinit", node: node, namePosition: node.deinitKeyword.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .deinitializerDecl)
+        return .visitChildren
+    }
+
     override func visit(_ node: SubscriptDeclSyntax) -> SyntaxVisitorContinueKind {
         emitMember(name: "subscript", node: node, namePosition: node.subscriptKeyword.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .subscriptDecl)
         return .visitChildren
