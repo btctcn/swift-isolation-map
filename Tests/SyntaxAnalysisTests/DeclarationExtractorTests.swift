@@ -507,3 +507,28 @@ func protocolRequirementUSRIsWellFormed() {
     let bar = decls.first { $0.name == "bar" }!
     #expect(bar.usr.hasPrefix("syntactic:"))
 }
+
+// MARK: - Protocol's own type-level location (docs/task-implicit-synthesized-declarations.md's Step 6 follow-up)
+
+@Test("A protocol's own type-level declaration carries a real location, even when a same-file extension is the first thing to reference its name")
+func protocolOwnDeclarationHasARealLocation() {
+    // `TypeIndexBuilder.Visitor` (the first pass) previously had a `visit(_ node:
+    // ProtocolDeclSyntax)` that only recorded `protocolGlobalActorNames`, never calling
+    // `recordPrimaryDeclaration` -- the only function that sets `TypeIndexEntry.location`. A
+    // same-file `extension Disposable { ... }` was then the *only* thing that ever created
+    // `index["Disposable"]` (via `index[extendedName] ?? TypeIndexEntry()`), leaving its
+    // `.location` permanently `nil`. Reproduces the real, confirmed shape found auditing Project
+    // Iris's own `Disposable.swift` (a protocol with a default-implementation extension in the
+    // same file -- a common Swift idiom, not a one-off).
+    let decls = DeclarationExtractor.extract(source: """
+    public protocol Disposable {
+        func dispose()
+    }
+
+    extension Disposable {
+        public func disposed() {}
+    }
+    """, fileName: "Disposable.swift")
+    let disposable = decls.first { $0.name == "Disposable" }!
+    #expect(disposable.location != nil, "the protocol's own type-level declaration must carry the real source location of `protocol Disposable`, not nil")
+}
