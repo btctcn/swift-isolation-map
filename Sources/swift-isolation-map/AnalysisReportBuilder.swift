@@ -239,6 +239,19 @@ enum AnalysisReportBuilder {
         case .high:
             return "nonisolated code reaches \(describe(callee))-isolated state -- no static isolation check protects this boundary"
         case .low:
+            // A global actor is a singleton -- there's only ever one `MainActor`, so caller and
+            // callee naming the *same* global actor describes one isolation domain, not a
+            // boundary at all: no suspension point exists, and none is needed (confirmed reading
+            // real `.low` app-code edges against Project Iris -- every one of them was exactly
+            // this shape, and none had an `await` at its call site; issue #47). Scoped to
+            // `.globalActor` specifically, not `.actor` too: this tool has no notion of actor
+            // *instance* identity, only actor *type* name, so two `.actor(name: "Foo")` endpoints
+            // could still be two distinct instances of `Foo` needing a real `await` between them
+            // -- claiming otherwise would be an unconfirmed, potentially wrong safety claim, which
+            // this project's guiding principle rules out.
+            if case .globalActor = caller, caller == callee {
+                return "caller and callee share the same isolation domain (\(describe(caller))) -- no suspension needed"
+            }
             return "crosses an actor boundary between two isolated contexts (\(describe(caller)) -> \(describe(callee))), compiler-enforced via await"
         case .medium:
             return "crosses isolation from \(describe(caller)) to \(describe(callee))"
