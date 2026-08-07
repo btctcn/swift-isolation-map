@@ -471,7 +471,31 @@ private final class DeclarationVisitor: SyntaxVisitor {
         kind: SyntacticDeclarationKind
     ) {
         let qualifiedTypeName = SyntacticIdentity.qualifiedName(path)
-        let memberUSR = "syntactic:\(qualifiedTypeName).\(name)#\(offset(of: node))"
+        // Protocol requirements have no enclosing type scope to qualify against --
+        // `DeclarationVisitor` doesn't treat `protocol` as a type scope the way class/struct/
+        // enum/actor are (see this file's own `visit(_ node: ProtocolDeclSyntax)` -- there isn't
+        // one), so `path` (hence `qualifiedTypeName`) is empty here. The discriminator
+        // (`offset(of:)`, a byte offset) is then this placeholder USR's *only* distinguishing
+        // information -- unique within one file, not project-wide. Two unrelated protocols in
+        // different files whose requirement of the same name happens to sit at the same byte
+        // offset (common with copy-pasted VIPER-style boilerplate: identical file headers,
+        // `protocol XxxRouter { func dismiss()` on the same source line in both) then produce
+        // identical placeholder USRs -- a real, confirmed collision found auditing Project Iris
+        // (docs/task-indexstore-declaration-completeness.md's "401 remaining" follow-up): one
+        // silently overwrites the other in `DeclarationLinker`'s `byUSR` dictionary, and the
+        // discarded one's isolation is lost from the whole analysis, indistinguishable from a
+        // genuinely external declaration. Disambiguated with the file's own name (sanitized --
+        // `.`/`/` would otherwise be misread as a qualified-name separator by
+        // `DeclarationLinker`'s own nesting-mismatch fallback, which scans every `syntactic:` USR
+        // for its rightmost `.`) whenever there's no containing type to do that job instead.
+        let discriminator: String
+        if qualifiedTypeName.isEmpty {
+            let sanitizedFileName = fileName.replacingOccurrences(of: ".", with: "_").replacingOccurrences(of: "/", with: "_")
+            discriminator = "\(sanitizedFileName)_\(offset(of: node))"
+        } else {
+            discriminator = "\(offset(of: node))"
+        }
+        let memberUSR = "syntactic:\(qualifiedTypeName).\(name)#\(discriminator)"
         let isMemberOfActorType = typeIndex[qualifiedTypeName]?.isActor ?? false
         let sourceLocation = converter.location(for: namePosition)
         let memberLocation = SymbolLocation(file: fileName, line: sourceLocation.line, column: sourceLocation.column)
