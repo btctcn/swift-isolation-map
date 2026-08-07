@@ -359,6 +359,88 @@ struct AnalysisReportBuilderTests {
         #expect(edge.explanation.contains("compiler-enforced via await"))
     }
 
+    // MARK: - `isAwaited`, informational only (issue #46)
+
+    @Test("A call site inside a real await expression is marked isAwaited, but risk is unchanged -- .high still means migration debt, awaited or not")
+    func awaitedCallSiteIsMarkedButRiskIsUnchanged() throws {
+        let nonisolatedCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .nonisolated)
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": nonisolatedCaller, "usr:callee": mainActorCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 2, column: 11)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        // Reproduces `await onMain()` at line 2, starting column 5 (the `await` keyword itself)
+        // through column 21 (end of the call) -- the call site at column 11 falls inside it.
+        let awaited = [AwaitedRange(file: "Widget.swift", startLine: 2, startColumn: 5, endLine: 2, endColumn: 21)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            awaitedRangesByFile: ["Widget.swift": awaited]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.isAwaited)
+        #expect(edge.risk == .high, "confirmed against this project's own golden-fixture ground truth (Mechanism A): a real, compiling, already-awaited nonisolated-async call into isolated state is deliberately still .high -- it tracks migration debt, not just unguarded races")
+        #expect(report.summary.highRiskBoundaries == 1)
+    }
+
+    @Test("The same shape without an await at the call site is not marked isAwaited")
+    func sameShapeWithoutAwaitIsNotMarkedAwaited() throws {
+        let nonisolatedCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .nonisolated)
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": nonisolatedCaller, "usr:callee": mainActorCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 2, column: 5)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(!edge.isAwaited)
+        #expect(edge.risk == .high)
+    }
+
+    @Test("An await range in a different file never marks an edge in this file as awaited -- ranges are looked up per file, not globally")
+    func awaitedRangeInADifferentFileDoesNotMarkThisEdge() throws {
+        let nonisolatedCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .nonisolated)
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": nonisolatedCaller, "usr:callee": mainActorCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 2, column: 11)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let awaited = [AwaitedRange(file: "Other.swift", startLine: 2, startColumn: 5, endLine: 2, endColumn: 21)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            awaitedRangesByFile: ["Other.swift": awaited]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(!edge.isAwaited)
+        #expect(edge.risk == .high)
+    }
+
+    @Test("isAwaited is set for medium/low edges too, not just high -- it's a pure syntactic fact about the call site, independent of risk")
+    func isAwaitedIsSetRegardlessOfRiskLevel() throws {
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:callee": mainActorCallee]
+        // "usr:caller" is deliberately absent from `declarations`, so it resolves to `.unspecified`
+        // -- the existing medium-risk shape, unrelated to `.nonisolated`.
+        let location = SymbolLocation(file: "Widget.swift", line: 2, column: 11)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let awaited = [AwaitedRange(file: "Widget.swift", startLine: 2, startColumn: 5, endLine: 2, endColumn: 21)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            awaitedRangesByFile: ["Widget.swift": awaited]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.isAwaited)
+        #expect(edge.risk == .medium, "isAwaited is orthogonal to risk -- it doesn't move a .medium edge to any other bucket")
+    }
+
     // MARK: - `--severity` presentation filter (AnalysisReportBuilder.filtered)
 
     private func makeEdge(

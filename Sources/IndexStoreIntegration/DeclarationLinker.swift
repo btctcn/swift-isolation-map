@@ -10,11 +10,20 @@ public struct LinkedAnalysis: Equatable, Sendable {
     /// file path -- the same key `CallGraphEdge.location.file` uses, so
     /// `AnalysisReportBuilder` can look up "closures in this edge's file" directly.
     public let closuresByFile: [String: [ClassifiedClosure]]
+    /// Every `await <expr>` range found across every linked file, keyed by file path -- the same
+    /// key `CallGraphEdge.location.file` uses, so `AnalysisReportBuilder` can look up "awaited
+    /// ranges in this edge's file" directly (docs/task-await-aware-risk-classification.md, issue
+    /// #46). Unlike `closuresByFile`, needs no project-wide classification step -- just a merge.
+    public let awaitedRangesByFile: [String: [AwaitedRange]]
 
-    public init(declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge], closuresByFile: [String: [ClassifiedClosure]] = [:]) {
+    public init(
+        declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge],
+        closuresByFile: [String: [ClassifiedClosure]] = [:], awaitedRangesByFile: [String: [AwaitedRange]] = [:]
+    ) {
         self.declarations = declarations
         self.callGraph = callGraph
         self.closuresByFile = closuresByFile
+        self.awaitedRangesByFile = awaitedRangesByFile
     }
 }
 
@@ -119,6 +128,13 @@ public struct DeclarationLinker {
                     isolationOverride: classify(record, knownGlobalActorNames: mergedGlobalActorNames)
                 )
                 closuresByFile[record.file, default: []].append(classified)
+            }
+        }
+
+        var awaitedRangesByFile: [String: [AwaitedRange]] = [:]
+        for result in extractionResults {
+            for range in result.awaitedRanges {
+                awaitedRangesByFile[range.file, default: []].append(range)
             }
         }
 
@@ -234,7 +250,7 @@ public struct DeclarationLinker {
             CallGraphEdge(callerUSR: canonicalized(edge.callerUSR), calleeUSR: canonicalized(edge.calleeUSR), location: edge.location)
         }
 
-        return LinkedAnalysis(declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile)
+        return LinkedAnalysis(declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile, awaitedRangesByFile: awaitedRangesByFile)
     }
 
     /// Gap B Phase I2's core fix (docs/task-gap-b-implementation-plan.md): resolves whatever

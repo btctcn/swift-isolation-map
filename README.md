@@ -209,6 +209,9 @@ and the two edges — the real output also lists every other analyzed declaratio
   dependency the oracle failed to resolve). When `true`, `risk` is still present but **must not**
   be read as a confirmed finding — it reflects `unspecified` isolation, not a proven-unsafe
   boundary. The tool would rather tell you "I don't know" than guess.
+- **`isAwaited`** — `true` when this exact call site is syntactically inside a real `await <expr>`
+  expression. Purely informational, and deliberately **never changes `risk`** — see the caveat
+  below for why.
 - **`summary`** — the numbers you'd put in a PR description or a migration-tracking spreadsheet
   today, by hand (`highRiskBoundaries` is the CI-gate number — see exit codes above).
 
@@ -216,15 +219,20 @@ and the two edges — the real output also lists every other analyzed declaratio
 
 Today's `risk` classification is structural, not syntactic: `high` means *"a `nonisolated`
 declaration has a call edge into `actor`/`globalActor`-isolated state,"* full stop — it does not
-currently check whether that call already has a correct `await` (or an `@unchecked
-Sendable`/`nonisolated(unsafe)` escape hatch) protecting it. A perfectly correct, properly-`await`ed
-hop like the example above and a genuine missing-`await` bug both show up as `high` right now. In
-practice this is rarely a problem for triage — by the time your project compiles under Swift 6,
-every one of these edges is already `await`-ed or explicitly unsafe *somehow*, so `high` findings
-are best read today as **"every place migration debt lives,"** not **"every place there's an
-active bug."** Distinguishing the two (and detecting the `@unchecked Sendable` escape hatch
-specifically) is a named, tracked gap — see `docs/task-compiled-dependency-isolation-integration.md`
-§5 — not a silent limitation.
+distinguish a call that already has a correct `await` protecting it from one that doesn't (or from
+an `@unchecked Sendable`/`nonisolated(unsafe)` escape hatch). A perfectly correct, properly-`await`ed
+hop like the example above and a genuine missing-`await` bug both show up as `high`, **on purpose**:
+by the time your project compiles under Swift 6, every one of these edges is already `await`-ed or
+explicitly unsafe *somehow*, and `high` exists to track migration debt — every place a `nonisolated`
+context still reaches into isolated state — not just the subset that happens to be unguarded today.
+Confirmed directly against this project's own real fixture matrix (`docs/task-await-aware-risk-
+classification.md`): downgrading an already-`await`-ed edge to `low` was tried and reverted, because
+it stopped surfacing exactly the boundaries a migration effort most wants visible. `high` findings
+are best read as **"every place migration debt lives,"** not **"every place there's an active
+bug."** The `isAwaited` field above gives you the `await`-presence signal directly, without the tool
+making an incorrect claim about which shapes are risk-free; distinguishing the `@unchecked Sendable`
+escape hatch specifically is a separate, named, tracked gap — see
+`docs/task-compiled-dependency-isolation-integration.md` §5 — not a silent limitation.
 
 ## Why this is useful
 

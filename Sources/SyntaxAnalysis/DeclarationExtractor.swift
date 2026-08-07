@@ -39,15 +39,21 @@ public struct ExtractionResult: Equatable, Sendable {
     /// Every closure literal this file's `ClosureIsolationExtractor` pass found, as raw evidence
     /// not yet classified against the project-wide accept-list (same doc, §7.1 step 1).
     public let closureLiteralRecords: [ClosureLiteralRecord]
+    /// Every `await <expr>` expression's own source range in this file (issue #46,
+    /// `docs/task-await-aware-risk-classification.md`) -- needs no cross-file classification, so
+    /// this is the final fact, unlike `closureLiteralRecords`.
+    public let awaitedRanges: [AwaitedRange]
 
     public init(
         declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String],
-        globalActorNames: Set<String> = [], closureLiteralRecords: [ClosureLiteralRecord] = []
+        globalActorNames: Set<String> = [], closureLiteralRecords: [ClosureLiteralRecord] = [],
+        awaitedRanges: [AwaitedRange] = []
     ) {
         self.declarations = declarations
         self.protocolGlobalActorNames = protocolGlobalActorNames
         self.globalActorNames = globalActorNames
         self.closureLiteralRecords = closureLiteralRecords
+        self.awaitedRanges = awaitedRanges
     }
 }
 
@@ -72,9 +78,11 @@ public enum DeclarationExtractor {
         )
         visitor.walk(tree)
         let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter)
+        let awaitedRanges = AwaitedCallSiteExtractor.extract(from: tree, fileName: fileName, converter: converter)
         return ExtractionResult(
             declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames,
-            globalActorNames: fileWideNames.globalActorNames, closureLiteralRecords: closureLiteralRecords
+            globalActorNames: fileWideNames.globalActorNames, closureLiteralRecords: closureLiteralRecords,
+            awaitedRanges: awaitedRanges
         )
     }
 }
