@@ -171,11 +171,15 @@ queried for at all if that USR never made it into `usrRewriteMap`'s values -- th
 edge count itself grew from 123318 to 137133 for the same reason). Surfacing previously-invisible
 risk, not manufacturing new noise.
 
-The remaining 401 (of the original 803) are declarations the live fallback also failed to resolve
--- out of scope for this pass to chase further; plausibly the same category of `sourcekitd`-side
-instability at a different layer, or a real, legitimate "no compiler arguments available" case this
-count doesn't yet distinguish from the genuine miss.
+The remaining 401 (of the original 803) are declarations the live fallback also failed to resolve.
+**Follow-up finding**: demangling them showed a real cluster (protocol requirements -- `dismiss()`,
+`setViewData(_:)`, etc.) that turned out to be a *different*, unrelated bug -- not `IndexStoreDB`
+instability at all, but this project's own `SyntaxAnalysis` colliding two unrelated protocols'
+same-named requirements into one placeholder USR when they land at the same byte offset in
+different files. See `docs/task-protocol-requirement-usr-collision.md` (issue #53) -- fixed
+separately, dropped the 401 to 361.
 
 ## Step 7 — PR
 
-Next.
+Shipped: #52 (this document's own fix). The protocol-requirement-collision follow-up shipped
+separately, see its own document.

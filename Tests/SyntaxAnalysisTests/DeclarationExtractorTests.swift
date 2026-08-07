@@ -478,3 +478,32 @@ func extractedDeclarationsComposeWithEngineForConformance() {
     let engine = IsolationInferenceEngine(declarations: decls, callGraph: [], ruleSet: Swift60RuleSet())
     #expect(engine.resolveIsolation(for: coordinator.usr) == .globalActor(name: "MainActor"))
 }
+
+// MARK: - Protocol requirement USR uniqueness (docs/task-indexstore-declaration-completeness.md's "401 remaining" follow-up)
+
+@Test("Two unrelated protocols in different files whose requirement of the same name sits at the same byte offset get distinct placeholder USRs")
+func protocolRequirementsAtIdenticalByteOffsetInDifferentFilesDoNotCollide() {
+    // "RouterA"/"RouterB" are deliberately the same length so `func dismiss()` lands at the
+    // exact same byte offset in both sources -- reproducing the real, confirmed collision found
+    // auditing Project Iris: `protocol` never enters `DeclarationVisitor`'s type-scope stack the
+    // way class/struct/enum/actor do, so a requirement's placeholder USR was `"syntactic:.<name>
+    // #<byteOffset>"` -- no containing-type qualification, byte offset alone as the discriminator,
+    // which is unique only within one file, not project-wide.
+    let sourceA = "protocol RouterA {\n    func dismiss()\n}\n"
+    let sourceB = "protocol RouterB {\n    func dismiss()\n}\n"
+
+    let declsA = DeclarationExtractor.extract(source: sourceA, fileName: "RouterA.swift")
+    let declsB = DeclarationExtractor.extract(source: sourceB, fileName: "RouterB.swift")
+
+    let dismissA = declsA.first { $0.name == "dismiss" }!
+    let dismissB = declsB.first { $0.name == "dismiss" }!
+
+    #expect(dismissA.usr != dismissB.usr, "two unrelated protocols' same-named, same-offset requirements must not produce the same placeholder USR")
+}
+
+@Test("A protocol requirement's placeholder USR is stable and non-empty even when the protocol has no name-qualified path")
+func protocolRequirementUSRIsWellFormed() {
+    let decls = DeclarationExtractor.extract(source: "protocol Foo {\n    func bar()\n}\n", fileName: "Foo.swift")
+    let bar = decls.first { $0.name == "bar" }!
+    #expect(bar.usr.hasPrefix("syntactic:"))
+}
