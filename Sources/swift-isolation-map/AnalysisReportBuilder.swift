@@ -15,7 +15,8 @@ enum AnalysisReportBuilder {
         ruleSetUsed: String,
         toolVersion: String,
         unknownUSRs: Set<String> = [],
-        closuresByFile: [String: [ClassifiedClosure]] = [:]
+        closuresByFile: [String: [ClassifiedClosure]] = [:],
+        awaitedRangesByFile: [String: [AwaitedRange]] = [:]
     ) -> AnalysisReport {
         let declarations = engine.declarations
         // A declaration with no location (never matched to a real IndexStoreDB symbol -- see
@@ -45,6 +46,19 @@ enum AnalysisReportBuilder {
             } ?? declaredCallerIsolation
             let calleeIsolation = engine.resolveIsolation(for: edge.calleeUSR)
             let risk = riskLevel(caller: callerIsolation, callee: calleeIsolation)
+            // Issue #46: whether this exact call site is syntactically inside a real
+            // `await <expr>` expression (`AwaitedCallSiteExtractor`, purely syntactic, no
+            // project-wide classification needed unlike closures) -- informational only, never
+            // changes `risk`. `.high` deliberately tracks migration debt ("a nonisolated
+            // declaration has a call edge into isolated state"), regardless of whether that edge
+            // is already correctly `await`-ed today -- confirmed against this project's own
+            // golden-fixture ground truth (`CompiledDependencyCLITests.swift`'s Mechanism A: a
+            // real, compiling, already-`await`-ed `nonisolated async` call into `@MainActor`
+            // state is deliberately still `.high`, exactly the shape this field now surfaces
+            // without touching risk). See the root README's "An honest caveat about risk".
+            let isAwaited = (awaitedRangesByFile[edge.location.file] ?? []).contains {
+                $0.contains(line: edge.location.line, column: edge.location.column)
+            }
             // Orthogonal to `risk` (computed above, unchanged, still a pure function of the two
             // resolved `IsolationKind`s) -- whether either endpoint is a USR the compiled-
             // dependency oracle tried and failed to resolve, per
@@ -76,7 +90,8 @@ enum AnalysisReportBuilder {
                     ? "isolation for one side of this call could not be determined (compiled dependency, oracle resolution failed) -- not a confirmed risk"
                     : explanation(caller: callerIsolation, callee: calleeIsolation, risk: risk),
                 location: AnalysisLocation(file: edge.location.file, line: edge.location.line),
-                isUnknown: isUnknown
+                isUnknown: isUnknown,
+                isAwaited: isAwaited
             )
         }
 

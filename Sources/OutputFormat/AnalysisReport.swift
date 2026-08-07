@@ -97,6 +97,16 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
     /// side resolving to `.unspecified` (never queried/never found), not a confirmed real risk.
     /// Defaulted so existing JSON without this field still decodes.
     public let isUnknown: Bool
+    /// True when this exact call site is syntactically inside an `await <expr>` expression
+    /// (`docs/task-await-aware-risk-classification.md`, issue #46) -- purely informational,
+    /// **never** changes `risk`. `risk`'s `.high` deliberately means "a nonisolated declaration
+    /// has a call edge into isolated state," full stop, tracking migration debt regardless of
+    /// whether that edge already has a correct `await` protecting it today (see the root
+    /// README's "An honest caveat about risk" section) -- so a `.high` edge with `isAwaited ==
+    /// true` is real, compiling, already-safe code that still represents a boundary worth
+    /// tracking, not a false positive to suppress. Defaulted so existing JSON without this field
+    /// still decodes.
+    public let isAwaited: Bool
 
     public init(
         callerUSR: String,
@@ -106,7 +116,8 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         risk: RiskLevel,
         explanation: String,
         location: AnalysisLocation,
-        isUnknown: Bool = false
+        isUnknown: Bool = false,
+        isAwaited: Bool = false
     ) {
         self.callerUSR = callerUSR
         self.calleeUSR = calleeUSR
@@ -116,12 +127,13 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         self.explanation = explanation
         self.location = location
         self.isUnknown = isUnknown
+        self.isAwaited = isAwaited
     }
 
-    // Swift's synthesized `Decodable` would otherwise *require* `isUnknown` to be present in the
-    // JSON (a non-optional stored property's key isn't implicitly treated as defaultable just
-    // because the memberwise init defaults it) -- decoded explicitly here so JSON written before
-    // this field existed still decodes, with `isUnknown` defaulting to `false`.
+    // Swift's synthesized `Decodable` would otherwise *require* `isUnknown`/`isAwaited` to be
+    // present in the JSON (a non-optional stored property's key isn't implicitly treated as
+    // defaultable just because the memberwise init defaults it) -- decoded explicitly here so
+    // JSON written before these fields existed still decodes, defaulting to `false`.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         callerUSR = try container.decode(String.self, forKey: .callerUSR)
@@ -132,5 +144,6 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         explanation = try container.decode(String.self, forKey: .explanation)
         location = try container.decode(AnalysisLocation.self, forKey: .location)
         isUnknown = try container.decodeIfPresent(Bool.self, forKey: .isUnknown) ?? false
+        isAwaited = try container.decodeIfPresent(Bool.self, forKey: .isAwaited) ?? false
     }
 }

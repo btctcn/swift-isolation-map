@@ -15,6 +15,9 @@ public struct FileAnalysisResult: Equatable, Sendable {
     /// This file's raw closure-literal evidence, threaded through for `DeclarationLinker` to
     /// classify once the project-wide accept-list above is assembled (same doc, §7.1).
     public let closureLiteralRecords: [ClosureLiteralRecord]
+    /// This file's `await <expr>` ranges, threaded through for `AnalysisReportBuilder`'s
+    /// await-aware risk classification (docs/task-await-aware-risk-classification.md, issue #46).
+    public let awaitedRanges: [AwaitedRange]
     public let contentHash: String
 }
 
@@ -44,6 +47,7 @@ public struct FileAnalyzer {
             protocolGlobalActorNames: extraction.protocolGlobalActorNames,
             globalActorNames: extraction.globalActorNames,
             closureLiteralRecords: extraction.closureLiteralRecords,
+            awaitedRanges: extraction.awaitedRanges,
             contentHash: contentHash(of: data)
         )
     }
