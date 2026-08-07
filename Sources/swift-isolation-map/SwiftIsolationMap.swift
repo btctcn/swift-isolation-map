@@ -95,6 +95,12 @@ struct SwiftIsolationMap: ParsableCommand {
     @Option(help: ArgumentHelp("Internal: where an oracle worker writes its resolved outcomes as JSON.", visibility: .hidden))
     var oracleWorkerOutput: String?
 
+    @Option(help: ArgumentHelp("Internal: run as a local-declaration-resolution worker, reading its assigned queries from this JSON file.", visibility: .hidden))
+    var localDeclarationWorkerInput: String?
+
+    @Option(help: ArgumentHelp("Internal: where a local-declaration-resolution worker writes its resolved outcomes as JSON.", visibility: .hidden))
+    var localDeclarationWorkerOutput: String?
+
     @Option(help: "Explicit path to the index store. If provided, auto-detection is skipped.")
     var indexStorePath: String?
 
@@ -124,6 +130,19 @@ struct SwiftIsolationMap: ParsableCommand {
                     return true
                 } catch {
                     eprint("Oracle worker failed: \(error)")
+                    return false
+                }
+            }
+            if !succeeded { throw ExitCode(1) }
+            return
+        }
+        if let localDeclarationWorkerInput, let localDeclarationWorkerOutput {
+            let succeeded = runAsyncBridge { () -> Bool in
+                do {
+                    try await LocalDeclarationWorker.run(inputPath: localDeclarationWorkerInput, outputPath: localDeclarationWorkerOutput)
+                    return true
+                } catch {
+                    eprint("Local declaration worker failed: \(error)")
                     return false
                 }
             }
@@ -192,7 +211,22 @@ struct SwiftIsolationMap: ParsableCommand {
             databasePath: projectRoot.appendingPathComponent(".swift-isolation-map-index-db").path
         )
         let linker = DeclarationLinker(indexStore: indexStoreClient)
-        let linked = linker.link(extractionResults)
+        // docs/task-indexstore-declaration-completeness.md: a real fraction of a large project's
+        // own declarations (803, measured on Project Iris) never resolve via the bulk index's
+        // location-based matching under full-project load, though the identical query against the
+        // identical index store succeeds for the same file linked in isolation -- traced to
+        // `IndexStoreDB` itself, not this project's own linking logic. Same "bulk first, live
+        // per-declaration fallback for what bulk missed" shape `resolveExternalIsolation` already
+        // uses for compiled dependencies, applied here to the project's own declarations instead.
+        let unresolvedPlaceholders = linker.unresolvedPlaceholders(for: extractionResults)
+        logVerbose("\(unresolvedPlaceholders.count) declaration(s) unresolved by bulk index linking; attempting live fallback")
+        let localFallbackOverrides = runAsyncBridge {
+            await resolveLocalDeclarationFallback(
+                unresolved: unresolvedPlaceholders, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem
+            )
+        }
+        logVerbose("Live fallback resolved \(localFallbackOverrides.count) of \(unresolvedPlaceholders.count) unresolved declaration(s)")
+        let linked = linker.link(extractionResults, usrRewriteMapOverrides: localFallbackOverrides)
         logVerbose("Linked \(linked.declarations.count) declaration(s), \(linked.callGraph.count) call-graph edge(s)")
 
         let externalResolution = runAsyncBridge {
@@ -497,6 +531,42 @@ struct SwiftIsolationMap: ParsableCommand {
         }
         semaphore.wait()
         return box.value!
+    }
+
+    // MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)
+
+    /// One-off `SourceKitDClient`, separate from `resolveExternalIsolation`'s own -- kept simple
+    /// and independent rather than threading a shared client through both call sites, since
+    /// construction is a local, in-process `dlopen` + connection setup, not a network round trip.
+    /// Skips creating a client at all when there's nothing to resolve (the common case for a
+    /// small project, or once bulk linking is fully reliable for a given run). Fail-soft, same
+    /// precedent as `resolveExternalIsolation`: sourcekitd unavailable, or any individual query
+    /// failing, just means those declarations stay unresolved -- never a crash, never a silently
+    /// wrong answer.
+    private func resolveLocalDeclarationFallback(
+        unresolved: [(placeholder: String, location: SymbolLocation)],
+        compilerArguments: CompilerArgumentsProviding,
+        processRunning: ProcessRunning,
+        fileSystem: FileSystemQuerying
+    ) async -> [String: String] {
+        guard !unresolved.isEmpty else { return [:] }
+        let sourceKitD: SourceKitDClient
+        do {
+            sourceKitD = try SourceKitDClient()
+        } catch {
+            eprint("Warning: sourcekitd unavailable (\(error)) -- local declaration completeness fallback will not run this run.")
+            return [:]
+        }
+        // Same worker-count knob and executable-relaunch pattern as `resolveExternalIsolation`'s
+        // own oracle-worker dispatch below -- 10954 unresolved placeholders measured on a real run
+        // against Project Iris made the plain sequential path (confirmed by a real timed run:
+        // over 15 minutes and still going) impractical for a tool meant to run on every invocation,
+        // not just once.
+        return await LocalDeclarationLiveFallback.resolveInParallel(
+            unresolved: unresolved, workerCount: oracleWorkers, compilerArguments: compilerArguments,
+            workerExecutablePath: oracleWorkers > 1 ? URL(fileURLWithPath: CommandLine.arguments[0]).path : nil,
+            processRunning: processRunning, fileSystem: fileSystem, sourceKitD: sourceKitD
+        )
     }
 
     // MARK: - External isolation (compiled-dependency oracle)
