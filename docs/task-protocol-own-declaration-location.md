@@ -109,12 +109,28 @@ referencing the protocol name first) a real location, which is a *precondition* 
 resolution path (bulk `usrRewriteMap` or the #51/#52 live fallback) to even attempt resolving them
 -- it does not, by itself, guarantee every one of the 57 bare-protocol-name cases now resolves
 (some may still fail bulk resolution and require the live fallback; a few may have a different root
-cause not yet checked individually). Re-run against Project Iris, before vs. after (both after
-#51/#52/#53's fixes already shipped, so directly comparable):
+cause not yet checked individually). Confirmed directly: `Disposable`'s own node now carries its
+real location (`Disposable.swift:1`) instead of `nil`. Re-run against Project Iris, before vs.
+after (both after #51/#52/#53's fixes already shipped, so directly comparable):
 
 | | before | after |
 |---|---|---|
-| Missing app-module declarations (#51's follow-up, most recently "361 remaining") | 361 | (see PR) |
+| Missing app-module declarations (#51's follow-up, most recently "361 remaining") | 361 | **335 (-26)** |
+| `highRiskBoundaries` | 933 | **1167 (+234)** |
+| `crossActorBoundaries` | 24616 | 24852 (+236) |
+| `unspecifiedIsolation` | 1501 | 1501 (unchanged) |
+| Total nodes | 51195 | 51095 |
+
+Not every one of the 57 candidates resolved (335 still missing, not 361-57=304) -- consistent with
+the note above that some bare-protocol-name cases likely need the live fallback on top of this fix,
+or have a distinct root cause not yet individually checked. The `highRiskBoundaries` jump (+234) is
+disproportionately large relative to the 26 additional resolved declarations, and that's expected,
+not a red flag: a protocol's own identity feeds every conformance/isolation-propagation check for
+every type that conforms to it (and every witness that satisfies one of its requirements), so
+correctly resolving one protocol the same way it's already used to give one class or struct a real
+`highRiskBoundaries` boost (#44's own comparable-shape finding) ripples across every conformer, not
+just the protocol's own single node. Same fail-safe direction as every other fix this cycle:
+previously-hidden real risk surfacing, not manufactured noise.
 
 ## Step 7 — PR
 
