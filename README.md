@@ -247,6 +247,24 @@ touch each file. What it doesn't give you:
   someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
   watch move.
 
+## Known limitations
+
+**Compiler-synthesized declarations (default `init()`, `deinit`, `rawValue`/`allCases` accessors,
+...) are structurally invisible to this tool's extraction pass.** Declaration extraction is built
+on `SwiftSyntax`, a lossless parse of exactly the *source text* in a file — nothing more, nothing
+less. A declaration the compiler generates because none was hand-written (a memberwise initializer,
+a default `deinit`, an enum's `rawValue` accessor) has no corresponding node anywhere in the parse
+tree, so there is nothing for the extraction pass to visit in the first place. This is a structural
+limitation (не чинится), not a bug scoped to one code path — a real fix would mean independently
+re-deriving the compiler's own synthesis-eligibility rules (which members get synthesized, and
+under exactly which conditions) inside this tool, which risks introducing new, harder-to-verify
+false positives/negatives for a class of declaration that isn't where undiscovered isolation risk
+tends to hide in practice. See
+[`docs/task-implicit-synthesized-declarations.md`](docs/task-implicit-synthesized-declarations.md)
+(issue #55) for the full investigation, including a measured real-world scope (84% of one large
+project's remaining unresolved declarations are this shape) and why call sites into these
+declarations degrade safely to `unspecified` isolation rather than a false `high`.
+
 ## Guiding principle
 
 A tool that gives an incorrect concurrency-safety result is worse than no tool at all. Every isolation-inference rule ships with an explicit test referencing the exact compiler behavior it verifies (tracked in [`docs/isolation-rules.md`](docs/isolation-rules.md)), and the tool refuses to run rather than silently produce a result it isn't confident in (stale index store, unrecognized Swift version, an oracle query that failed outright reports `unknown`, never a guessed `nonisolated`).
