@@ -67,7 +67,36 @@ public struct DeclarationLinker {
         self.indexStore = indexStore
     }
 
-    public func link(_ extractionResults: [ExtractionResult]) -> LinkedAnalysis {
+    /// Every declaration whose own placeholder USR never resolved via `buildUSRRewriteMap`'s
+    /// location-based matching -- paired with the real source location this project's own
+    /// `SyntaxAnalysis` extraction found for it, so a caller can attempt a live, per-declaration
+    /// fallback resolution (docs/task-indexstore-declaration-completeness.md) before falling back
+    /// to `link()`'s own "leave it as `syntactic:`, `IsolationInferenceEngine` treats that as
+    /// `.unspecified`" default. Declarations with no real location (fixture-only, never extracted
+    /// from a file) are skipped -- there's no position to query live against.
+    ///
+    /// Deliberately a separate, cheap pass (just `buildUSRRewriteMap`, not the rest of `link()`'s
+    /// work) rather than baked into `link()` itself: the live fallback this exists for is
+    /// `async`, and `DeclarationLinker` stays synchronous by design (see this type's own doc
+    /// comment) -- the caller resolves the async part between this call and `link(_:
+    /// usrRewriteMapOverrides:)`.
+    public func unresolvedPlaceholders(for extractionResults: [ExtractionResult]) -> [(placeholder: String, location: SymbolLocation)] {
+        let allDeclarations = extractionResults.flatMap(\.declarations)
+        let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
+        return allDeclarations.compactMap { declaration in
+            guard declaration.usr.hasPrefix("syntactic:"), usrRewriteMap[declaration.usr] == nil,
+                  let location = declaration.location else {
+                return nil
+            }
+            return (declaration.usr, location)
+        }
+    }
+
+    /// `usrRewriteMapOverrides` -- from `unresolvedPlaceholders(for:)` plus a live fallback
+    /// resolution -- take priority over whatever `buildUSRRewriteMap`'s own location-based match
+    /// found (or didn't) for the same placeholder: a live, authoritative `sourcekitd` answer for
+    /// a specific declaration is never less trustworthy than the bulk index's own miss.
+    public func link(_ extractionResults: [ExtractionResult], usrRewriteMapOverrides: [String: String] = [:]) -> LinkedAnalysis {
         let allDeclarations = extractionResults.flatMap(\.declarations)
 
         var mergedProtocolGlobalActorNames: [String: String] = [:]
@@ -93,7 +122,10 @@ public struct DeclarationLinker {
             }
         }
 
-        let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
+        var usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
+        for (placeholder, realUSR) in usrRewriteMapOverrides {
+            usrRewriteMap[placeholder] = realUSR
+        }
 
         // Nesting-mismatch fallback (Gap B Phase I2, per external review): a nested type's own
         // declaration placeholder is qualified (`"syntactic:Outer.Inner"`, from

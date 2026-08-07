@@ -516,3 +516,57 @@ func linkMergesCrossFileTypeEntriesRegardlessOfOrder() throws {
         )
     }
 }
+
+// MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)
+
+@Test("unresolvedPlaceholders(for:) returns a declaration whose location-based match found nothing, paired with its real location")
+func unresolvedPlaceholdersReportsLocationMatchMisses() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/Widget.swift", line: 10, column: 5)
+    // Deliberately no `fake.symbolsByFile` entry for this file at all -- the bulk index simply
+    // never reports an occurrence here, exactly the real symptom (`IndexStoreDB`'s own
+    // `symbolOccurrences(inFilePath:)` returning incomplete data under load, not a lookup bug in
+    // this project's own matching code).
+    let declaration = makeDeclaration(usr: "syntactic:Widget#0", name: "Widget", location: location)
+
+    let unresolved = DeclarationLinker(indexStore: fake).unresolvedPlaceholders(for: [ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:])])
+
+    #expect(unresolved.count == 1)
+    #expect(unresolved.first?.placeholder == "syntactic:Widget#0")
+    #expect(unresolved.first?.location == location)
+}
+
+@Test("unresolvedPlaceholders(for:) omits a declaration that resolved successfully, and one with no real location at all")
+func unresolvedPlaceholdersOmitsResolvedAndLocationlessDeclarations() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/Widget.swift", line: 10, column: 5)
+    fake.symbolsByFile["/Widget.swift"] = [IndexedSymbol(usr: "s:realWidget", name: "Widget", location: location)]
+
+    let resolved = makeDeclaration(usr: "syntactic:Widget#0", name: "Widget", location: location)
+    let locationless = makeDeclaration(usr: "syntactic:Member#1", name: "member", location: nil)
+
+    let unresolved = DeclarationLinker(indexStore: fake).unresolvedPlaceholders(
+        for: [ExtractionResult(declarations: [resolved, locationless], protocolGlobalActorNames: [:])]
+    )
+
+    #expect(unresolved.isEmpty)
+}
+
+@Test("link(_:usrRewriteMapOverrides:) rescues a declaration the bulk index's own location match missed, using the live-fallback-provided real USR")
+func linkAppliesUsrRewriteMapOverrides() throws {
+    let fake = FakeIndexStoreQuerying()
+    // No `fake.symbolsByFile` entry -- bulk location matching finds nothing for this declaration,
+    // mirroring the real, confirmed symptom.
+    let declaration = makeDeclaration(usr: "syntactic:Widget#0", name: "Widget", location: SymbolLocation(file: "/Widget.swift", line: 10, column: 5))
+
+    let withoutOverride = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:])])
+    #expect(withoutOverride.declarations["syntactic:Widget#0"] != nil, "without a live fallback, the declaration stays under its own unresolved placeholder USR")
+    #expect(withoutOverride.declarations["s:realWidgetFromLiveQuery"] == nil)
+
+    let withOverride = DeclarationLinker(indexStore: fake).link(
+        [ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:])],
+        usrRewriteMapOverrides: ["syntactic:Widget#0": "s:realWidgetFromLiveQuery"]
+    )
+    let rescued = try #require(withOverride.declarations["s:realWidgetFromLiveQuery"], "a live-fallback override must rewrite the declaration to its real USR, exactly as a successful bulk-index match would have")
+    #expect(rescued.name == "Widget")
+}
