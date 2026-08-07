@@ -248,6 +248,16 @@ enum TypeIndexBuilder {
             if let actorName = recognizedGlobalActorAttribute(in: node.attributes, known: fileWideNames.globalActorNames) {
                 protocolGlobalActorNames[node.name.text] = actorName
             }
+            // A protocol can't be nested inside another type in Swift, so unlike
+            // actor/class/struct/enum there's no `path` to push/pop here. Recording this as a
+            // primary declaration (crucially, setting `entry.location`) matters even though a
+            // protocol is neither `isActor` nor `isClass`: without it, a same-file `extension
+            // Disposable { ... }` (docs/priority-2-phase-3-linking.md's own `visit(_ node:
+            // ExtensionDeclSyntax)`) is the *only* thing that ever creates `index["Disposable"]`
+            // -- via `index[extendedName] ?? TypeIndexEntry()`, never through this function -- so
+            // the entry's `.location` stayed permanently `nil` (docs/task-implicit-synthesized-
+            // declarations.md's Step 6).
+            recordPrimaryDeclaration(nameToken: node.name, isActor: false, isClass: false, attributes: node.attributes, modifiers: node.modifiers, inheritance: node.inheritanceClause)
             return .visitChildren
         }
 
