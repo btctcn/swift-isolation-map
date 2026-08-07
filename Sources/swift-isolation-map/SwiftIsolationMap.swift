@@ -21,6 +21,17 @@ enum OutputFormatOption: String, ExpressibleByArgument, CaseIterable {
     case json
 }
 
+/// `--severity`'s value type is `OutputFormat.RiskLevel` itself (not a parallel CLI-only enum) so
+/// there's exactly one definition of what "high/medium/low" mean, shared between the edges the
+/// engine actually classifies and the threshold a user filters by. `ExpressibleByArgument` has a
+/// free default implementation for any `String`-raw-value `RawRepresentable` type, so this is the
+/// entire retroactive conformance; `CaseIterable` is added the same way, only so `--help` can list
+/// the valid values.
+extension RiskLevel: ExpressibleByArgument {}
+extension RiskLevel: CaseIterable {
+    public static var allCases: [RiskLevel] { [.low, .medium, .high] }
+}
+
 enum SwiftIsolationMapError: Error, CustomStringConvertible {
     case unrecognizedPath(String)
     case indexStoreMissingAfterRebuild
@@ -95,6 +106,9 @@ struct SwiftIsolationMap: ParsableCommand {
 
     @Option(help: "Output format: mermaid | dot | json")
     var output: OutputFormatOption = .mermaid
+
+    @Option(help: "Only include edges at or above this risk level in the output: low | medium | high. An edge with unresolved/unknown isolation on either side is always included regardless -- filtering to a stricter severity never hides genuine uncertainty. Default: no filtering, everything is included.")
+    var severity: RiskLevel?
 
     @Option(help: "Where to write the result (default: stdout)")
     var outFile: String?
@@ -211,7 +225,10 @@ struct SwiftIsolationMap: ParsableCommand {
         )
 
         try StalenessOrchestration.writeManifest(StalenessManifest(contentHashesByFilePath: currentHashes), to: manifestURL, fileSystem: fileSystem)
-        try writeOutput(report)
+        // The exit-code decision below is based on `report` itself, not the filtered view --
+        // `--severity` is a presentation choice for this invocation's output, never a way to
+        // change whether the analysis considers the project to have a real high-risk boundary.
+        try writeOutput(AnalysisReportBuilder.filtered(report, minimumSeverity: severity))
 
         throw ExitCode(report.summary.highRiskBoundaries > 0 ? 1 : 0)
     }

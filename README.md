@@ -73,17 +73,22 @@ ARGUMENTS:
   <path>                      Path to a .xcodeproj, .xcworkspace, or Package.swift
 
 OPTIONS:
-  --scheme <scheme>           Build scheme (Xcode) or product/target (SPM). Required.
-  --index-store-path <path>   Explicit path to the index store. If provided, auto-detection
-                              is skipped.
   --auto-build                If the index store is missing or stale, build the project
                               without an interactive prompt.
   --force-reindex             Forces a rebuild, ignoring any existing (even fresh) index store.
+  --index-store-path <path>   Explicit path to the index store. If provided, auto-detection
+                              is skipped.
   --oracle-workers <N>        Parallelize the external-oracle live-query phase across N worker
                               processes (default: 1, sequential). Real speedup on a large project:
                               ~1.8x at N=4, ~3.3x at N=8 -- see docs/task-process-tree-optimization.md.
-  --output <format>           mermaid | dot | json (default: mermaid)
   --out-file <path>           Where to write the result (default: stdout)
+  --output <format>           mermaid | dot | json (default: mermaid)
+  --scheme <scheme>           Build scheme (Xcode) or product/target (SPM). Required.
+  --severity <level>          Only include edges at or above this risk level in the output:
+                              low | medium | high (default: no filtering, everything is
+                              included). An edge with unresolved/unknown isolation on either
+                              side is always included regardless of this setting -- filtering
+                              to a stricter severity never hides genuine uncertainty.
   --verbose                   What was searched, where the index store was found, how many
                               types were processed.
 ```

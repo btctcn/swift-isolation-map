@@ -77,24 +77,23 @@ struct CapstoneCLITests {
         #expect(triggerNode.isolation == "nonisolated")
 
         #expect(report.summary.actors == 1)
-        // 2, not 1: `DeclarationLinker.callSites(inFile:)` (Phase C) also surfaces
+        // 1, not 2: `DeclarationLinker.callSites(inFile:)` (Phase C) also surfaces
         // `Counter.increment()`'s calls into its own implicitly-synthesized property
         // accessors/`Int.+=` -- real edges IndexStoreDB's call graph always contained but this
-        // tool never surfaced before that existed. Of those additional edges, the two into
-        // `count`'s own getter/setter now correctly canonicalize (via `DeclarationLinker`'s
-        // `owningPropertyUSR`-based accessor normalization, Gap A of
-        // docs/task-compiled-dependency-isolation-usr-granularity.md) to `count`'s own property
-        // USR -- the *same* actor as `increment()` itself, so they're correctly not cross-actor
-        // boundaries at all anymore. The third, `Int.+=` (a real Swift-stdlib call, not a
-        // synthesized accessor), now resolves via the bulk-extracted `Swift` module (added
-        // alongside Gap A) to a real, positive `.nonisolated` fact -- a genuine
-        // actor-isolated-caller-into-nonisolated-callee edge, safe by direction but still a real
-        // cross-isolation boundary, correctly classified `medium`. `highRiskBoundaries` is
+        // tool never surfaced before that existed. The two into `count`'s own getter/setter
+        // correctly canonicalize (via `DeclarationLinker`'s `owningPropertyUSR`-based accessor
+        // normalization, Gap A of docs/task-compiled-dependency-isolation-usr-granularity.md) to
+        // `count`'s own property USR -- the *same* actor as `increment()` itself, so they're
+        // correctly not cross-actor boundaries at all. The third, `Int.+=` (a real Swift-stdlib
+        // call, not a synthesized accessor), resolves via the bulk-extracted `Swift` module (added
+        // alongside Gap A) to a real, positive `.nonisolated` fact -- an actor-isolated caller
+        // reaching a *confirmed* nonisolated callee, which `AnalysisReportBuilder.build()`
+        // suppresses entirely (found auditing the medium-risk bucket against Project Iris: calling
+        // a confirmed nonisolated declaration from any isolated context is never a risk, since
+        // `nonisolated` imposes no isolation requirement on its caller). `highRiskBoundaries` is
         // unaffected either way -- exactly the epistemic distinction
-        // (docs/task-compiled-dependency-isolation.md) this whole feature exists to draw, now with
-        // fewer things landing in `unknown` than before because more of them are genuinely
-        // resolvable.
-        #expect(report.summary.crossActorBoundaries == 2)
+        // (docs/task-compiled-dependency-isolation.md) this whole feature exists to draw.
+        #expect(report.summary.crossActorBoundaries == 1)
         #expect(report.summary.highRiskBoundaries == 1)
 
         let edge = try #require(report.edges.first { $0.callerUSR == triggerNode.usr && $0.calleeUSR == incrementNode.usr })
@@ -103,11 +102,8 @@ struct CapstoneCLITests {
         #expect(edge.calleeIsolation == "actor(Counter)")
         #expect(!edge.isUnknown)
 
-        let intPlusEqualsEdge = try #require(report.edges.first { $0.callerUSR == incrementNode.usr && $0.calleeUSR != triggerNode.usr })
-        #expect(intPlusEqualsEdge.risk == .medium)
-        #expect(intPlusEqualsEdge.callerIsolation == "actor(Counter)")
-        #expect(intPlusEqualsEdge.calleeIsolation == "nonisolated")
-        #expect(!intPlusEqualsEdge.isUnknown)
+        // `Int.+=` is confirmed suppressed, not merely absent for some other reason.
+        #expect(report.edges.first { $0.callerUSR == incrementNode.usr && $0.calleeUSR != triggerNode.usr } == nil)
 
         // No edges land in `unknown` anymore for this fixture -- both the accessor-granularity
         // mismatch (Gap A) and the missing-stdlib-coverage gap it was tangled up with are now
