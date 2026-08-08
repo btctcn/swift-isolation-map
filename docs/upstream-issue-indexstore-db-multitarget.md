@@ -47,7 +47,7 @@ extension, or any multi-target setup with shared sources.
 
 ### Minimal reproduction
 
-No SwiftPM, no Xcode project, no third-party dependency — three `swiftc` invocations against the
+No SwiftPM, no Xcode project, no third-party dependency — two `swiftc` invocations against the
 same file, indexed into one store:
 
 ```sh
