@@ -207,10 +207,17 @@ struct SwiftIsolationMap: ParsableCommand {
         )
         logVerbose("Using index store at \(indexStoreURL.path)")
 
-        let indexStoreClient = try IndexStoreClient(
-            storePath: indexStoreURL.path,
-            databasePath: projectRoot.appendingPathComponent(".swift-isolation-map-index-db").path
-        )
+        // Switched from IndexStoreDB (`IndexStoreClient`) to a raw `libIndexStore` C-API-backed
+        // client (docs/task-raw-indexstore-spike.md, issue #51): a real, structural gap found in
+        // `IndexStoreDB.symbolOccurrences(inFilePath:)` -- for a source file shared across
+        // multiple compilation targets (a real, confirmed shape on Project Iris: a Common/ file
+        // compiled into the main app plus two notification-extension targets), it silently
+        // returns occurrences from only *one* compiled variant, dropping the others entirely
+        // (measured: 72 of 216 real declarations, 209 of 627 real call sites, for one such file).
+        // `RawIndexStoreClient`'s own one-shot full-store scan processes every distinct on-disk
+        // record independently and has no such gap -- confirmed via a controlled, same-process,
+        // same-moment diff against `IndexStoreClient`. No `databasePath`/LMDB accelerator needed.
+        let indexStoreClient = try RawIndexStoreClient(storePath: indexStoreURL.path)
         let linker = DeclarationLinker(indexStore: indexStoreClient)
         // docs/task-indexstore-declaration-completeness.md: a real fraction of a large project's
         // own declarations (803, measured on Project Iris) never resolve via the bulk index's

@@ -50,9 +50,19 @@ let package = Package(
             dependencies: [
                 "IsolationCore",
                 "ProjectResolution",
-                .product(name: "IndexStoreDB", package: "indexstore-db")
+                .product(name: "IndexStoreDB", package: "indexstore-db"),
+                "CIndexStoreRaw"
             ]
         ),
+        // Spike/investigation target (issue #51, docs/task-raw-indexstore-spike.md): a plain C
+        // shim over `libIndexStore`'s own raw C API, `dlopen`'d at runtime like `CSourceKitD` --
+        // not for the same ABI reason (this API's own signatures are already fully
+        // `@convention(c)`-representable in Swift; see the header's own doc comment), but for the
+        // same "never hard-link one specific toolchain's dylib" reason. Backs
+        // `RawIndexStoreClient`, an experimental second `IndexStoreQuerying` conformer bypassing
+        // `IndexStoreDB`'s own async/persistent layer entirely, to test whether issue #51's
+        // declaration-loss is rooted in that layer specifically.
+        .target(name: "CIndexStoreRaw"),
         // A plain C target, not a systemLibrary -- `sourcekitd_variant_t` (24 bytes, passed/
         // returned by value) is passed indirectly per the platform ABI once it exceeds 16 bytes,
         // which a hand-declared Swift `@convention(c)` closure type cannot express ("not
