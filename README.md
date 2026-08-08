@@ -4,7 +4,7 @@ A static analysis CLI for Swift actor isolation and data-race risk — a whole-p
 map, not a single runtime trace.
 
 > **Status: working.** The full pipeline is implemented and tested — project/scheme resolution,
-> index-store discovery and staleness detection, a hybrid `IndexStoreDB` + `SwiftSyntax`
+> index-store discovery and staleness detection, a hybrid `libIndexStore` + `SwiftSyntax`
 > inference engine, and an external-isolation oracle that resolves compiled-dependency symbols
 > (CocoaPods, XCFrameworks, SDK frameworks) via bulk `symbolgraph-extract` and, as a fallback, live
 > `sourcekitd` queries. 246 tests passing (`swift test`), continuously validated against two real,
@@ -54,8 +54,10 @@ unedited compiler output.
 
 ## How it works
 
-A hybrid of `IndexStoreDB` (semantic call graph, resolved through protocols/generics/witnesses)
-and `SwiftSyntax` (lexical isolation attributes), combined by a version-aware inference engine.
+A hybrid of `libIndexStore` (semantic call graph, resolved through protocols/generics/witnesses --
+read directly via its raw C API, not the higher-level `IndexStoreDB` wrapper; see
+`docs/task-raw-indexstore-spike.md`) and `SwiftSyntax` (lexical isolation attributes), combined by
+a version-aware inference engine.
 Where a call reaches into a *compiled* dependency the index alone can't explain (a CocoaPod, an
 XCFramework, an SDK framework), an external-isolation oracle backfills the missing fact — a bulk
 `swift symbolgraph-extract` cache first, a live, sequential `sourcekitd` query only for what the
