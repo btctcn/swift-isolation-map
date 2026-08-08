@@ -166,6 +166,18 @@ not about staleness or timing. `RawIndexStoreClient`'s one-shot full-store scan 
 distinct on-disk record independently (by record name, not by file path), so it has no such gap by
 construction.
 
+**Exact root cause, found by reading `indexstore-db`'s own real, checked-out source** (not
+guessed): `Sources/IndexStoreDB_Index/SymbolIndex.cpp`,
+`SymbolIndexImpl::foreachSymbolOccurrenceInFilePath` (lines 509-534). The outer loop enumerates
+every unit containing the file via `reader.foreachUnitContainingFile(...)`; the very first
+matching provider found inside that callback triggers `record->foreachSymbolOccurrence(Receiver)`
+followed immediately by `return false;` (line 528) -- which returns from the *outer*
+`foreachUnitContainingFile` callback itself, terminating the whole unit enumeration after exactly
+one match. Every other unit that also contains this file (the file's other compiled targets) is
+never visited. A one-line, precisely locatable bug: `return false` should `continue`/`return true`
+so `foreachUnitContainingFile` keeps enumerating the remaining units instead of stopping after the
+first.
+
 **Minimal, standalone reproduction** (not dependent on Project Iris; saved in full, reproducible
 from this document alone --
 `/Users/ab/.claude/jobs/eb8b802b/tmp/indexstoredb-multitarget-repro/repro.sh` as of this writing,
@@ -230,14 +242,24 @@ sites) and confirmed with a minimal, standalone, three-line-of-Swift reproductio
 this project entirely. A ~2.3x reduction in index-read wall-clock time (5.09s + 0.35s vs. 8.78s
 in the controlled A/B) is a secondary, measured benefit, not the primary justification.
 
-**Next steps, not yet done:**
-- A full, real-corpus run against Project Iris with `RawIndexStoreClient` now integrated, followed
-  by the project's usual line-by-line audit (high-risk edges first, then medium, then low) --
-  expected to surface new real high-risk boundaries specifically from the previously-invisible
-  extension-target declarations this fix newly exposes.
-- An upstream issue for `swiftlang/indexstore-db` (or `swiftlang/llvm-project`, wherever
-  `symbolOccurrences(inFilePath:)`'s real implementation lives) using the minimal reproduction
-  above -- drafted, not yet filed (filing to a third-party repository needs its own explicit
-  go-ahead, separate from this project's own decisions).
+**Done since the above was written:**
+- The full, real-corpus run against Project Iris with `RawIndexStoreClient` integrated completed.
+  Line-by-line audit (high-risk edges first, then medium, then low, per the project's usual
+  methodology): the *full set* of 1166 confirmed high-risk edges was byte-identical between raw
+  and `IndexStoreDB` (verified via an isolated worktree build of the pre-migration client against
+  the same real index store) -- the multi-target fix added real declarations and edges (mostly
+  `.medium`), but **zero new or lost high-risk findings** in this specific corpus (the
+  notification-extension targets' own code doesn't happen to contain any `nonisolated`-reaching-
+  isolated-state shapes). A 25-edge random sample of high-risk edges and the full 25-edge low-risk
+  set were manually verified against real source -- no misclassifications found. One sampled
+  `.medium` edge from a previously-invisible extension-target declaration
+  (`CurrentNotifications.scheduleSave`, `MindboxNotification.swift:206`) was traced to its exact
+  root cause: a `DispatchQueue.main.async { }` closure (issue #33's Rule B), confirming the newly
+  surfaced facts flow correctly through the existing, already-tested isolation-inference pipeline.
+- Filed upstream: [swiftlang/indexstore-db#292](https://github.com/swiftlang/indexstore-db/issues/292),
+  using the minimal reproduction above. Independently re-confirmed the reproduction on a second,
+  separately-built environment before filing (same deterministic 4-vs-8 result).
+
+**Still open:**
 - The remaining `.swift-isolation-map-index-db` cleanup: any documentation/README mention of the
   LMDB accelerator database this project no longer creates should be updated to match.
