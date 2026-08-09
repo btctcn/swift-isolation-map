@@ -259,6 +259,23 @@ in the controlled A/B) is a secondary, measured benefit, not the primary justifi
 - Filed upstream: [swiftlang/indexstore-db#292](https://github.com/swiftlang/indexstore-db/issues/292),
   using the minimal reproduction above. Independently re-confirmed the reproduction on a second,
   separately-built environment before filing (same deterministic 4-vs-8 result).
+- **Unexpected bonus finding: issue #49's own dirty-vs-clean instability disappeared with the raw
+  client.** #49 found that `IndexStoreDB` (via `IndexStoreClient`) reported meaningfully different
+  edge sets between a multi-day-accumulated ("dirty," 5904 unit files for 2251 source files) and a
+  freshly-rebuilt ("clean," one unit file per source file) `DerivedData` -- 8588 edges only in the
+  dirty report, 5736 only in the clean one, out of ~44-48k. Repeated that exact experiment
+  (`xcodebuild -workspace lsboutique.xcworkspace -scheme "ls.net.ru" COMPILER_INDEX_STORE_ENABLE=YES
+  build` after deleting `DerivedData` entirely, confirmed one unit file for `MainPageInteractorImpl`
+  -- the same file #49's own investigation started from) with `RawIndexStoreClient` in place of
+  `IndexStoreClient`: **a full multiset comparison of all 25030 edges (every field, not just the
+  `(callerUSR, calleeUSR, file, line)` tuple #49's own diff used) found zero differences** between
+  the dirty and clean reports. `summary` fields identical too. Posted as a follow-up comment on #49
+  rather than closing it outright -- the *root cause* of `IndexStoreDB`'s own instability was never
+  actually identified, only worked around by switching data sources, and only one clean rebuild was
+  performed here (not #49's own repeated-build methodology) -- but it's a strong, real result worth
+  recording. If accurate, this is consistent with the instability living specifically in
+  `IndexStoreDB`'s LMDB-accelerator/async-initialization layer, not in the underlying on-disk index
+  store's own content.
 
 **Still open:**
 - The remaining `.swift-isolation-map-index-db` cleanup: any documentation/README mention of the
