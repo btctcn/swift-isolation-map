@@ -27,16 +27,16 @@ import IsolationCore
 /// fragments (`BulkSymbolGraphExtractor`) must not treat "no attribute" as confirmed `.nonisolated`
 /// the way a live-query caller safely can.
 public enum SymbolGraphIsolationParser {
-    public static func isolation(fromSymbolGraphJSON json: String) -> IsolationKind? {
+    public static func isolation(fromSymbolGraphJSON json: String, knownGlobalActorNames: Set<String>) -> IsolationKind? {
         guard let data = json.data(using: .utf8),
               let document = try? JSONDecoder().decode(SymbolGraphDocument.self, from: data),
               let symbol = document.symbols.first else {
             return nil
         }
-        return isolation(fromFragments: symbol.declarationFragments ?? [])
+        return isolation(fromFragments: symbol.declarationFragments ?? [], knownGlobalActorNames: knownGlobalActorNames)
     }
 
-    static func isolation(fromFragments fragments: [SymbolGraphDocument.Symbol.Fragment]) -> IsolationKind {
+    static func isolation(fromFragments fragments: [SymbolGraphDocument.Symbol.Fragment], knownGlobalActorNames: Set<String>) -> IsolationKind {
         for fragment in fragments where fragment.kind == "attribute" {
             if fragment.spelling == "nonisolated" {
                 return .nonisolated
@@ -47,7 +47,8 @@ public enum SymbolGraphIsolationParser {
             // means the fragment references *some* real type, not that the type is a global actor
             // (see `GlobalActorNameValidation`'s own doc comment -- `@StateObject` resolves just as
             // cleanly and is not an actor at all).
-            if let usr = fragment.preciseIdentifier, GlobalActorNameValidation.isGlobalActorName(spelling: fragment.spelling, usr: usr) {
+            if let usr = fragment.preciseIdentifier,
+               GlobalActorNameValidation.isGlobalActorName(spelling: fragment.spelling, usr: usr, knownGlobalActorNames: knownGlobalActorNames) {
                 return .globalActor(name: fragment.spelling)
             }
         }
@@ -61,12 +62,13 @@ public enum SymbolGraphIsolationParser {
     /// cannot treat those two cases the same way (`BulkSymbolGraphExtractor`) need this to tell
     /// them apart; a live-query caller does not, since a live query's own absence of an attribute
     /// is already a confirmed fact.
-    static func hasConfirmedIsolationSignal(_ fragments: [SymbolGraphDocument.Symbol.Fragment]) -> Bool {
+    static func hasConfirmedIsolationSignal(_ fragments: [SymbolGraphDocument.Symbol.Fragment], knownGlobalActorNames: Set<String>) -> Bool {
         for fragment in fragments where fragment.kind == "attribute" {
             if fragment.spelling == "nonisolated" {
                 return true
             }
-            if let usr = fragment.preciseIdentifier, GlobalActorNameValidation.isGlobalActorName(spelling: fragment.spelling, usr: usr) {
+            if let usr = fragment.preciseIdentifier,
+               GlobalActorNameValidation.isGlobalActorName(spelling: fragment.spelling, usr: usr, knownGlobalActorNames: knownGlobalActorNames) {
                 return true
             }
         }

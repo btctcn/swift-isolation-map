@@ -129,6 +129,42 @@ func liveXcodeProviderExpandsFileListAndMapsEveryFileToTheSameArguments() throws
     #expect(argsA.contains("/Users/dev/SQLumen/SQLumen/Core/DDLService.swift"))
 }
 
+@Test("skipMacroValidation: true passes -skipMacroValidation to the internal xcodebuild invocation; false (the default) never does")
+func skipMacroValidationFlagIsPassedOnlyWhenRequested() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    let fileListURL = URL(fileURLWithPath: "/DerivedData/SQLumen.SwiftFileList")
+    fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-skipMacroValidation", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: realSQLumenCompileLine.replacingOccurrences(
+                of: "/Users/dev/Library/Developer/Xcode/DerivedData/SQLumen-axiwtafjwewywncnfqkujtirqdpd/Build/Intermediates.noindex/SQLumen.build/Debug/SQLumen.build/Objects-normal/arm64/SQLumen.SwiftFileList",
+                with: "/DerivedData/SQLumen.SwiftFileList"
+            ),
+            standardError: ""
+        )
+    )
+
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem,
+        skipMacroValidation: true
+    )
+
+    // Real shape confirmed against an independent project using SPM macro plugins (`Swiftfin`,
+    // `swift-case-paths`/`StatefulMacros`): without `-skipMacroValidation`, every internal
+    // `xcodebuild` invocation this provider makes fails outright with "Macro ... must be enabled
+    // before it can be used" -- if the flag weren't included here, `FakeProcessRunner` would throw
+    // "No stubbed response" instead of returning the stubbed result below.
+    let args = try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
+    #expect(args.contains("-target"))
+}
+
 @Test("An already-up-to-date target (zero compile invocations from a plain verbose build) retries once with `clean build`, and succeeds from that retry's real output")
 func liveXcodeProviderFallsBackToCleanBuildWhenTheFirstAttemptYieldsNoInvocations() throws {
     let runner = FakeProcessRunner()
@@ -167,7 +203,9 @@ func liveXcodeProviderFallsBackToCleanBuildWhenTheFirstAttemptYieldsNoInvocation
 
     let args = try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
     #expect(args.contains("-target"))
-    #expect(runner.invocations.count == 2)
+    // 1 `-showdestinations` probe (unstubbed here, so it fails and is swallowed -- no destination
+    // override applies) + 2 build attempts (plain, then `clean`).
+    #expect(runner.invocations.count == 3)
 }
 
 @Test("A non-zero xcodebuild exit code doesn't discard compiler invocations already parsed for targets that DID compile -- only a genuinely empty result is a hard failure")
@@ -205,7 +243,8 @@ func liveXcodeProviderUsesPartialResultsWhenBuildFailsButSomeInvocationsWerePars
     // non-empty data was already recovered).
     let args = try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
     #expect(args.contains("-target"))
-    #expect(runner.invocations.count == 1)
+    // 1 `-showdestinations` probe (unstubbed, swallowed) + 1 build attempt.
+    #expect(runner.invocations.count == 2)
 }
 
 @Test("A non-zero xcodebuild exit code with nothing at all parseable is still a hard failure")
@@ -270,10 +309,12 @@ func liveXcodeProviderCachesAFailureAndDoesNotRetryOnASubsequentLookup() throws 
     #expect(throws: CompilerArgumentsError.self) {
         try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/Core/DDLService.swift")
     }
-    // Only the first call's invocation ever happened -- the second call's failure came straight
-    // from the cache, matching the `FakeProcessRunner` stub count of 1 (a second, unstubbed
-    // invocation would have thrown a *different*, "no stubbed response" error instead).
-    #expect(runner.invocations.count == 1)
+    // Only the first call's invocations ever happened -- the second call's failure came straight
+    // from the cache (a second, unstubbed invocation would have thrown a *different*, "no stubbed
+    // response" error instead). 1 `-showdestinations` probe (unstubbed, swallowed) + 1 build
+    // attempt, and both are cached just like `cachedArguments`/`cachedError` -- neither repeats on
+    // the second `compilerArguments(forFile:)` call.
+    #expect(runner.invocations.count == 2)
 }
 
 @Test
@@ -303,4 +344,94 @@ func liveXcodeProviderThrowsForAFileNotInAnyTargetsFileList() throws {
     #expect(throws: CompilerArgumentsError.argumentsNotFound(file: "/never/seen/File.swift")) {
         try provider.compilerArguments(forFile: "/never/seen/File.swift")
     }
+}
+
+/// Real `-showdestinations` output shape captured against `Swiftfin` -- a physical device paired
+/// to the host machine in the past but not currently connected sorts *ahead of* every Simulator
+/// destination. Real root cause of the regression this guards against: with no `-destination`
+/// passed, `xcodebuild` silently picked that unconnected device and built for `Debug-iphoneos`
+/// instead of `Debug-iphonesimulator`, compiling successfully but producing compiler arguments
+/// sourcekitd could not construct a working `ASTInvocation` from -- collapsing live-fallback
+/// resolution from ~1300 real declarations to zero.
+private let realSwiftfinShowDestinationsOutput = """
+	Available destinations for the "Swiftfin" scheme:
+		{ platform:iOS, id:6268785b905ba913ec773f578958320875aad293, name:ab iphone x, error:ab iphone x is not connected Xcode will continue when ab iphone x is connected and unlocked. }
+		{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device }
+		{ platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }
+		{ platform:iOS Simulator, arch:arm64, id:8BC60344-4CDF-44A1-814D-68EFF6BED4A4, OS:26.4, name:iPhone 17 Pro }
+	"""
+
+@Test("resolveDeterministicSimulatorDestination picks the first Simulator platform, ignoring an unconnected physical device sorted ahead of it (Swiftfin shape)")
+func resolveDeterministicSimulatorDestinationPicksSimulatorOverAnUnconnectedDevice() {
+    let runner = FakeProcessRunner()
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-showdestinations", "-scheme", "Swiftfin", "-project", "/Swiftfin/Swiftfin.xcodeproj"],
+        result: ProcessResult(exitCode: 0, standardOutput: realSwiftfinShowDestinationsOutput, standardError: "")
+    )
+    let destination = resolveDeterministicSimulatorDestination(
+        container: .xcodeproj(URL(fileURLWithPath: "/Swiftfin/Swiftfin.xcodeproj")), scheme: "Swiftfin", processRunning: runner
+    )
+    #expect(destination == "generic/platform=iOS Simulator")
+}
+
+@Test("resolveDeterministicSimulatorDestination returns nil for a scheme with no Simulator-capable platform at all (a pure macOS/host scheme)")
+func resolveDeterministicSimulatorDestinationReturnsNilWhenNoSimulatorPlatformExists() {
+    let runner = FakeProcessRunner()
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-showdestinations", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj"],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: """
+            	Available destinations for the "SQLumen" scheme:
+            		{ platform:macOS, arch:arm64, id:00006020-0000000000000000, name:Any Mac }
+            	""",
+            standardError: ""
+        )
+    )
+    let destination = resolveDeterministicSimulatorDestination(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")), scheme: "SQLumen", processRunning: runner
+    )
+    #expect(destination == nil)
+}
+
+@Test("A resolved Simulator destination is threaded into the real xcodebuild -verbose build invocation, not just computed and discarded")
+func liveXcodeProviderThreadsTheResolvedDestinationIntoTheBuildInvocation() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    let fileListURL = URL(fileURLWithPath: "/DerivedData/SQLumen.SwiftFileList")
+    fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-showdestinations", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj"],
+        result: ProcessResult(exitCode: 0, standardOutput: realSwiftfinShowDestinationsOutput, standardError: "")
+    )
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: [
+            "-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj",
+            "-destination", "generic/platform=iOS Simulator",
+            "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build",
+        ],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: realSQLumenCompileLine.replacingOccurrences(
+                of: "/Users/dev/Library/Developer/Xcode/DerivedData/SQLumen-axiwtafjwewywncnfqkujtirqdpd/Build/Intermediates.noindex/SQLumen.build/Debug/SQLumen.build/Objects-normal/arm64/SQLumen.SwiftFileList",
+                with: "/DerivedData/SQLumen.SwiftFileList"
+            ),
+            standardError: ""
+        )
+    )
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    // If `-destination` weren't threaded through, this would throw "No stubbed response" instead
+    // -- the build stub above only matches with the destination argument present.
+    let args = try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
+    #expect(args.contains("-target"))
 }

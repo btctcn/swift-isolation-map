@@ -15,15 +15,23 @@ public struct LinkedAnalysis: Equatable, Sendable {
     /// ranges in this edge's file" directly (docs/task-await-aware-risk-classification.md, issue
     /// #46). Unlike `closuresByFile`, needs no project-wide classification step -- just a merge.
     public let awaitedRangesByFile: [String: [AwaitedRange]]
+    /// Every real `@globalActor`-declared name found anywhere across every linked file (the same
+    /// project-wide union `link()` already computes internally for closure-attribute
+    /// classification), exposed so `ExternalIsolationBackfill`'s live-oracle queries can tell a
+    /// real global actor name from an arbitrary property wrapper/result builder that merely
+    /// resolves to *some* real type via USR -- see `GlobalActorNameValidation`'s own doc comment.
+    public let globalActorNames: Set<String>
 
     public init(
         declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge],
-        closuresByFile: [String: [ClassifiedClosure]] = [:], awaitedRangesByFile: [String: [AwaitedRange]] = [:]
+        closuresByFile: [String: [ClassifiedClosure]] = [:], awaitedRangesByFile: [String: [AwaitedRange]] = [:],
+        globalActorNames: Set<String> = []
     ) {
         self.declarations = declarations
         self.callGraph = callGraph
         self.closuresByFile = closuresByFile
         self.awaitedRangesByFile = awaitedRangesByFile
+        self.globalActorNames = globalActorNames
     }
 }
 
@@ -251,7 +259,10 @@ public struct DeclarationLinker {
             CallGraphEdge(callerUSR: canonicalized(edge.callerUSR), calleeUSR: canonicalized(edge.calleeUSR), location: edge.location)
         }
 
-        return LinkedAnalysis(declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile, awaitedRangesByFile: awaitedRangesByFile)
+        return LinkedAnalysis(
+            declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile,
+            awaitedRangesByFile: awaitedRangesByFile, globalActorNames: mergedGlobalActorNames
+        )
     }
 
     /// Gap B Phase I2's core fix (docs/task-gap-b-implementation-plan.md): resolves whatever

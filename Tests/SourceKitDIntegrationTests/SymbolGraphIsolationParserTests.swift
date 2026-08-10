@@ -36,12 +36,12 @@ private let realCustomGlobalActorSymbolGraph = """
 
 @Test
 func parsesMainActorAttributeFragmentIntoGlobalActor() {
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realMainActorSymbolGraph) == .globalActor(name: "MainActor"))
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realMainActorSymbolGraph, knownGlobalActorNames: []) == .globalActor(name: "MainActor"))
 }
 
 @Test
 func parsesNonisolatedAttributeFragment() {
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realNonisolatedSymbolGraph) == .nonisolated)
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realNonisolatedSymbolGraph, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
@@ -50,21 +50,25 @@ func aMatchedResultWithNoAttributeFragmentIsAGenuinePositiveNonisolatedFact() {
     // `ActorIsolation::Unspecified` case is a no-op, confirmed empirically via the negative
     // control), ordinary nonisolated code carries no attribute at all. A successfully matched
     // result reporting no attribute is a real, positive fact, not a failure.
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realNoAttributeSymbolGraph) == .nonisolated)
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realNoAttributeSymbolGraph, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
 func aStateObjectPropertyWrapperAttributeIsNotMistakenForAGlobalActor() {
     // The real, non-hypothetical bug this guards against: `@StateObject`'s own USR resolves just
-    // as cleanly as `@MainActor`'s, but it names a SwiftUI property wrapper, never an actor.
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realStateObjectPropertySymbolGraph) == .nonisolated)
+    // as cleanly as `@MainActor`'s, but it names a SwiftUI property wrapper, never an actor. Not
+    // in `knownGlobalActorNames` (the project's own real `@globalActor` declarations), so the
+    // allowlist correctly rejects it regardless of its resolvable USR.
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realStateObjectPropertySymbolGraph, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
 func aCustomGlobalActorOtherThanMainActorIsStillRecognized() {
     // Positive validation must not regress the general case -- `s:ScM` is a fast path, not the
-    // only accepted shape.
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realCustomGlobalActorSymbolGraph) == .globalActor(name: "MyActor"))
+    // only accepted shape -- as long as the project's own syntactic scan actually found this
+    // real `@globalActor` declaration (`knownGlobalActorNames`, the allowlist this validation
+    // now runs against).
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realCustomGlobalActorSymbolGraph, knownGlobalActorNames: ["MyActor"]) == .globalActor(name: "MyActor"))
 }
 
 /// Real, captured shape (not hand-assembled) -- `swift symbolgraph-extract -module-name UIKit`'s
@@ -80,37 +84,37 @@ private let realInheritedMainActorMemberWithNoOwnAttributeSymbolGraph = """
 
 @Test("A bulk-extracted member whose only isolation source is class inheritance parses as .nonisolated, same as a genuinely nonisolated symbol -- the known, documented ambiguity hasConfirmedIsolationSignal exists to let a bulk-cache caller detect")
 func inheritedMainActorMemberWithNoOwnAttributeParsesAsNonisolated() {
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realInheritedMainActorMemberWithNoOwnAttributeSymbolGraph) == .nonisolated)
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: realInheritedMainActorMemberWithNoOwnAttributeSymbolGraph, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test("hasConfirmedIsolationSignal is false for the same real, ambiguous fragments -- this is exactly the case BulkSymbolGraphExtractor must not cache as a confirmed nonisolated fact")
 func hasConfirmedIsolationSignalIsFalseForFragmentsWithNoAttributeAtAll() {
     let fragments = decodeFragments(from: realInheritedMainActorMemberWithNoOwnAttributeSymbolGraph)
-    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) == false)
+    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: []) == false)
 }
 
 @Test("hasConfirmedIsolationSignal is true for a real explicit @MainActor attribute")
 func hasConfirmedIsolationSignalIsTrueForMainActor() {
     let fragments = decodeFragments(from: realMainActorSymbolGraph)
-    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) == true)
+    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: []) == true)
 }
 
 @Test("hasConfirmedIsolationSignal is true for a real explicit nonisolated keyword")
 func hasConfirmedIsolationSignalIsTrueForExplicitNonisolated() {
     let fragments = decodeFragments(from: realNonisolatedSymbolGraph)
-    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) == true)
+    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: []) == true)
 }
 
 @Test("hasConfirmedIsolationSignal is true for a real custom global actor, not just the MainActor fast path")
 func hasConfirmedIsolationSignalIsTrueForCustomGlobalActor() {
     let fragments = decodeFragments(from: realCustomGlobalActorSymbolGraph)
-    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) == true)
+    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: ["MyActor"]) == true)
 }
 
 @Test("hasConfirmedIsolationSignal is false for a @StateObject attribute -- a resolvable USR alone is not a global actor")
 func hasConfirmedIsolationSignalIsFalseForStateObject() {
     let fragments = decodeFragments(from: realStateObjectPropertySymbolGraph)
-    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) == false)
+    #expect(SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: []) == false)
 }
 
 private func decodeFragments(from json: String) -> [SymbolGraphDocument.Symbol.Fragment] {
@@ -120,10 +124,10 @@ private func decodeFragments(from json: String) -> [SymbolGraphDocument.Symbol.F
 
 @Test
 func malformedJSONReturnsNilSoTheCallerCanTreatItAsUnknown() {
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: "{ not valid json") == nil)
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: "{ not valid json", knownGlobalActorNames: []) == nil)
 }
 
 @Test
 func emptyStringReturnsNil() {
-    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: "") == nil)
+    #expect(SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: "", knownGlobalActorNames: []) == nil)
 }

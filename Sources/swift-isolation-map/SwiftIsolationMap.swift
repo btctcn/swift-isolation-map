@@ -110,6 +110,20 @@ struct SwiftIsolationMap: ParsableCommand {
     @Flag(help: "Forces a rebuild, ignoring any existing (even fresh) index store.")
     var forceReindex: Bool = false
 
+    // Off by default deliberately -- unlike `xcodeIndexingBuildSettings`'s other overrides (which
+    // remove artificial obstacles this tool's own internal builds never needed, like code signing),
+    // `-skipMacroValidation` disables a real Xcode security gate: it lets a project's SPM macro
+    // plugins execute arbitrary code during compilation without the interactive trust prompt.
+    // Needed for real projects using macro-plugin packages (confirmed against `Swiftfin`, using
+    // `swift-case-paths`/`StatefulMacros`) -- without it, every one of this tool's own internal
+    // `xcodebuild` invocations (`LiveXcodeCompilerArgumentsProvider`'s live-fallback/cursor-info
+    // compiler-args resolution, `--auto-build`'s rebuild) fails with "Macro ... must be enabled
+    // before it can be used", silently starving the live-oracle phase (observed: 0 of 6804
+    // live-fallback declarations resolved, 8912 unknown external-oracle results) -- never a crash,
+    // just silently degraded data, so this is opt-in rather than a default the user never asked for.
+    @Flag(help: "Pass -skipMacroValidation to every internal xcodebuild invocation, needed for projects using SPM macro plugins (e.g. swift-case-paths). This bypasses a real Xcode security gate -- only enable it for a project you trust.")
+    var skipMacroValidation: Bool = false
+
     @Option(help: "Output format: mermaid | dot | json")
     var output: OutputFormatOption = .mermaid
 
@@ -352,7 +366,8 @@ struct SwiftIsolationMap: ParsableCommand {
             )
         case .xcodeproj, .xcworkspace:
             return LiveXcodeCompilerArgumentsProvider(
-                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
+                skipMacroValidation: skipMacroValidation
             )
         }
     }
@@ -501,7 +516,11 @@ struct SwiftIsolationMap: ParsableCommand {
             return storePath
 
         case .xcodeproj, .xcworkspace:
-            var arguments = ["-scheme", scheme]
+            var arguments: [String] = []
+            if skipMacroValidation {
+                arguments.append("-skipMacroValidation")
+            }
+            arguments += ["-scheme", scheme]
             switch container {
             case .xcodeproj(let url): arguments += ["-project", url.path]
             case .xcworkspace(let url): arguments += ["-workspace", url.path]
@@ -509,7 +528,12 @@ struct SwiftIsolationMap: ParsableCommand {
             }
             // Shared with `LiveXcodeCompilerArgumentsProvider.runVerboseBuild` -- see
             // `xcodeIndexingBuildSettings`'s own doc comment for why each setting is here (in
-            // particular, why code signing must be disabled).
+            // particular, why code signing must be disabled), and
+            // `resolveDeterministicSimulatorDestination`'s for why the destination itself must
+            // also be pinned down explicitly.
+            if let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning) {
+                arguments += ["-destination", destination]
+            }
             arguments += xcodeIndexingBuildSettings + ["build"]
             let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
             guard result.exitCode == 0 else {

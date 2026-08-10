@@ -214,7 +214,8 @@ enum ExternalIsolationBackfill {
                 workerCount: oracleWorkerCount,
                 compilerArguments: compilerArguments,
                 workerExecutablePath: oracleWorkerExecutablePath,
-                processRunning: processRunning
+                processRunning: processRunning,
+                knownGlobalActorNames: linked.globalActorNames
             )
             for (usr, outcome) in parallelOutcomes {
                 outcomes[usr] = outcome
@@ -223,7 +224,8 @@ enum ExternalIsolationBackfill {
             for item in merged {
                 outcomes[item.targetUSR] = await query(
                     targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
-                    compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+                    compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
+                    knownGlobalActorNames: linked.globalActorNames
                 )
             }
         }
@@ -605,12 +607,26 @@ enum ExternalIsolationBackfill {
             // own entry, or a member without witness-context locality for this specific protocol --
             // is deferred to the fallback pass below, which only lets a non-witness declaration
             // claim a pair if no witness-context declaration ever does.
+            //
+            // A witness-context member is *also* rejected as a representative (deferred exactly
+            // like a non-witness one) when it's structurally ineligible for isolation at all
+            // (`isEligibleForModuleDefaultIsolation`'s own SE-0466 exclusion list: typealiases,
+            // enum cases, accessors) -- confirmed a real, reproduced regression on `Swiftfin`:
+            // `struct SelectUserView: View { typealias UserItem = (...); ... var body: some View
+            // { ... } }` picked `UserItem` (declared earlier in the file, hence first in
+            // `orderedDeclarations`) as the (SelectUserView, View) pair's representative. A
+            // `typealias` can never carry actor isolation, so its own live-queried isolation
+            // correctly comes back `.nonisolated` -- but that's a fact about the *typealias*, not
+            // about whether `View` (a real, whole-protocol `@MainActor` conformance, confirmed
+            // directly against `SwiftUICore`'s own `.swiftinterface`) applies to the type. Skipping
+            // ineligible candidates lets a later, eligible witness-context member (`body`, here)
+            // claim the pair instead.
             var ownedPairKeys: [ConformancePairKey] = []
             var deferredIndices: [Int] = []
             for index in unresolvedConformanceIndices {
                 let key = ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR)
                 guard !claimedPairs.contains(key) else { continue }
-                guard declaration.conformances[index].declaredInSameContextAsWitness else {
+                guard declaration.conformances[index].declaredInSameContextAsWitness, declaration.isEligibleForModuleDefaultIsolation else {
                     deferredIndices.append(index)
                     continue
                 }
@@ -707,7 +723,8 @@ enum ExternalIsolationBackfill {
 
             let outcome = await query(
                 targetUSR: need.declarationUSR, file: need.location.file, line: need.location.line, utf8Column: need.location.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
+                knownGlobalActorNames: linked.globalActorNames
             )
             switch outcome {
             case .resolved(let isolation):
@@ -847,7 +864,8 @@ enum ExternalIsolationBackfill {
         compilerArguments: CompilerArgumentsProviding,
         sourceKitD: SourceKitDQuerying,
         fileSystem: FileSystemQuerying,
-        bulkCache: [String: IsolationKind]
+        bulkCache: [String: IsolationKind],
+        knownGlobalActorNames: Set<String>
     ) async -> QueryOutcome {
         // The primary win for the edge-level trigger: a direct call into a bulk-covered SDK
         // module (e.g. `someUIView.someMethod()`) resolves from an in-memory dictionary, no
@@ -865,10 +883,12 @@ enum ExternalIsolationBackfill {
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
-            if let symbolGraphJSON = symbol.symbolGraphJSON, let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON) {
+            if let symbolGraphJSON = symbol.symbolGraphJSON,
+               let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)
             }
-            if let xml = symbol.fullyAnnotatedDeclXML, let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml) {
+            if let xml = symbol.fullyAnnotatedDeclXML,
+               let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)
             }
             return .unknown

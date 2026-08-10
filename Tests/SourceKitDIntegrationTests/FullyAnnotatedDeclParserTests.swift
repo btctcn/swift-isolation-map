@@ -28,35 +28,35 @@ private let realCustomGlobalActorXML =
 
 @Test
 func parsesMainActorRefClassIntoGlobalActor() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realMainActorXML) == .globalActor(name: "MainActor"))
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realMainActorXML, knownGlobalActorNames: []) == .globalActor(name: "MainActor"))
 }
 
 @Test
 func aStateObjectPropertyWrapperRefIsNotMistakenForAGlobalActor() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realStateObjectPropertyXML) == .nonisolated)
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realStateObjectPropertyXML, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
 func aCustomGlobalActorOtherThanMainActorIsStillRecognizedInXML() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realCustomGlobalActorXML) == .globalActor(name: "MyActor"))
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realCustomGlobalActorXML, knownGlobalActorNames: ["MyActor"]) == .globalActor(name: "MyActor"))
 }
 
 @Test
 func parsesPlainNonisolatedText() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realNonisolatedXML) == .nonisolated)
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realNonisolatedXML, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
 func aDeclarationWithNoAttributeElementIsAGenuinePositiveNonisolatedFact() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realNoAttributeXML) == .nonisolated)
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: realNoAttributeXML, knownGlobalActorNames: []) == .nonisolated)
 }
 
 @Test
 func malformedXMLReturnsNilSoTheCallerCanTreatItAsUnknown() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: "<decl.class not even closed") == nil)
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: "<decl.class not even closed", knownGlobalActorNames: []) == nil)
 }
 
 @Test
 func emptyXMLStringReturnsNil() {
-    #expect(FullyAnnotatedDeclParser.isolation(fromXML: "") == nil)
+    #expect(FullyAnnotatedDeclParser.isolation(fromXML: "", knownGlobalActorNames: []) == nil)
 }
