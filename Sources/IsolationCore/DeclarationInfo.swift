@@ -34,6 +34,16 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// convention and point at the *same* position for the same real symbol -- see
     /// docs/priority-2-phase-3-linking.md.
     public let location: SymbolLocation?
+    /// A `let`-bound stored property -- always immutable, single-assignment, and (unlike a `var`)
+    /// never computed in Swift (a `let` cannot carry a getter/accessor block). Reading an
+    /// immutable stored property from a *different* isolation domain than the one it's isolated to
+    /// is real, compiler-permitted, race-free Swift -- confirmed empirically (`nonisolated`
+    /// synchronous code reading a `let` stored property of an unrelated `@MainActor` struct
+    /// compiles with zero diagnostics, no `await` needed) -- so a cross-isolation edge whose
+    /// *callee* is one is never a real risk, regardless of which two isolation domains are
+    /// involved. Consumed by `AnalysisReportBuilder`'s risk suppression, mirroring its existing
+    /// "isolated caller reaching a confirmed `.nonisolated` callee" carve-out.
+    public let isImmutableStoredProperty: Bool
 
     public init(
         usr: String,
@@ -47,7 +57,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         isEligibleForModuleDefaultIsolation: Bool = true,
         enclosingExtensionIsolation: IsolationKind? = nil,
         isNestedType: Bool = false,
-        location: SymbolLocation? = nil
+        location: SymbolLocation? = nil,
+        isImmutableStoredProperty: Bool = false
     ) {
         self.usr = usr
         self.name = name
@@ -61,6 +72,7 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.enclosingExtensionIsolation = enclosingExtensionIsolation
         self.isNestedType = isNestedType
         self.location = location
+        self.isImmutableStoredProperty = isImmutableStoredProperty
     }
 }
 

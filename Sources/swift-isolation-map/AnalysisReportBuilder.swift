@@ -80,6 +80,17 @@ enum AnalysisReportBuilder {
             if isIsolated(callerIsolation), case .nonisolated = calleeIsolation, !isUnknown {
                 return nil
             }
+            // A callee that's a `let`-bound (always-immutable, never-computed) stored property is
+            // never a real risk either, regardless of which two isolation domains are involved:
+            // reading immutable state can't race. Confirmed directly by compilation -- a
+            // `nonisolated` synchronous function reading a `let` stored property of an unrelated
+            // `@MainActor` struct compiles with zero diagnostics, no `await` needed (found
+            // auditing a real project's own high-risk edges, `IceCubesApp`'s `Language.isoCode`).
+            // Suppressed entirely, mirroring the carve-out immediately above -- not ambiguous, so
+            // it doesn't belong in the report at all. Left alone when `isUnknown`, same reasoning.
+            if declarations[edge.calleeUSR]?.isImmutableStoredProperty == true, !isUnknown {
+                return nil
+            }
             return AnalysisEdge(
                 callerUSR: edge.callerUSR,
                 calleeUSR: edge.calleeUSR,
