@@ -8,6 +8,10 @@ public struct FileAnalysisResult: Equatable, Sendable {
     /// files' results (`IndexStoreIntegration.DeclarationLinker`) has what it needs for cross-file
     /// `protocolGlobalActorName` backfill, without a second parse of the same source.
     public let protocolGlobalActorNames: [String: String]
+    /// Threaded through the same way, for the same reason -- a protocol with no overall attribute
+    /// but one or more individually `@GlobalActor`-attributed requirements (e.g. Swiftfin's own
+    /// `PlatformView`). See `SyntaxAnalysis.TypeIndexBuilder.buildIndex`'s own doc comment.
+    public let protocolRequirementGlobalActorNames: [String: [String: String]]
     /// This file's own `@globalActor`-declared names, threaded through for the same reason --
     /// `DeclarationLinker` unions every file's set into one project-wide closure-attribute
     /// accept-list (`docs/task-closure-isolation-attribution.md` §7.3.1).
@@ -45,6 +49,7 @@ public struct FileAnalyzer {
         return FileAnalysisResult(
             declarations: extraction.declarations,
             protocolGlobalActorNames: extraction.protocolGlobalActorNames,
+            protocolRequirementGlobalActorNames: extraction.protocolRequirementGlobalActorNames,
             globalActorNames: extraction.globalActorNames,
             closureLiteralRecords: extraction.closureLiteralRecords,
             awaitedRanges: extraction.awaitedRanges,

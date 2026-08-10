@@ -200,6 +200,7 @@ struct SwiftIsolationMap: ParsableCommand {
             currentHashes[file.path] = result.contentHash
             extractionResults.append(ExtractionResult(
                 declarations: result.declarations, protocolGlobalActorNames: result.protocolGlobalActorNames,
+                protocolRequirementGlobalActorNames: result.protocolRequirementGlobalActorNames,
                 globalActorNames: result.globalActorNames, closureLiteralRecords: result.closureLiteralRecords,
                 awaitedRanges: result.awaitedRanges
             ))

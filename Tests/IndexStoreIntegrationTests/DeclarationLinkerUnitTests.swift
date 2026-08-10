@@ -271,6 +271,40 @@ func conformanceBackfillsGlobalActorNameFromMergedMap() throws {
     #expect(linkedWitness.conformances.first?.protocolGlobalActorName == "MainActor")
 }
 
+@Test("link(_:) backfills a per-requirement (not whole-protocol) global-actor attribute across files, matched by the witness's own name (PlatformView/Swiftfin shape)")
+func conformanceBackfillsPerRequirementGlobalActorNameAcrossFiles() throws {
+    let fake = FakeIndexStoreQuerying()
+    // Simulates: PlatformView.swift declares `protocol PlatformView: View { @MainActor var
+    // iOSView: ... { get } }` -- no attribute on the protocol itself, only on this one
+    // requirement -- contributing "PlatformView" -> "iOSView" -> "MainActor" to its own
+    // ExtractionResult's protocolRequirementGlobalActorNames. LetterPickerBar.swift's own
+    // extraction (a different file) never saw that protocol declaration at all.
+    let matchingConformance = ProtocolConformance(
+        protocolUSR: "syntactic:PlatformView", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    let matchingWitness = makeDeclaration(usr: "syntactic:LetterPickerBar.iOSView#0", name: "iOSView", location: nil, conformances: [matchingConformance])
+    // A different requirement's own copy of the same conformance, on a differently-named member
+    // -- must not pick up "iOSView"'s own per-requirement attribute.
+    let nonMatchingConformance = ProtocolConformance(
+        protocolUSR: "syntactic:PlatformView", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    let nonMatchingWitness = makeDeclaration(usr: "syntactic:LetterPickerBar.someOtherMember#1", name: "someOtherMember", location: nil, conformances: [nonMatchingConformance])
+
+    let extractionResults = [
+        ExtractionResult(declarations: [matchingWitness, nonMatchingWitness], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolRequirementGlobalActorNames: ["PlatformView": ["iOSView": "MainActor"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedMatching = try #require(linked.declarations.values.first { $0.name == "iOSView" })
+    #expect(linkedMatching.conformances.first?.protocolGlobalActorName == "MainActor")
+
+    let linkedNonMatching = try #require(linked.declarations.values.first { $0.name == "someOtherMember" })
+    #expect(linkedNonMatching.conformances.first?.protocolGlobalActorName == nil)
+}
+
 @Test("callGraphEdges are fetched for every real USR that was successfully linked")
 func callGraphEdgesFetchedForLinkedUSRs() {
     let fake = FakeIndexStoreQuerying()

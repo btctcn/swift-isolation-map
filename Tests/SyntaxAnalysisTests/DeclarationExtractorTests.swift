@@ -281,6 +281,29 @@ func witnessMethodGetsSameContextConformance() {
     #expect(conformance?.declaredInSameContextAsWitness == true)
 }
 
+@Test("A protocol with no overall attribute but an individually @MainActor-attributed requirement still attaches that isolation to the witness matching that requirement's own name (PlatformView/Swiftfin shape)")
+func perRequirementGlobalActorAttributeAttachesToMatchingWitnessOnly() {
+    let decls = declarations("""
+    protocol PlatformView: View {
+        @MainActor
+        var iOSView: Self.Body { get }
+        var unattributedRequirement: Int { get }
+    }
+
+    struct Concrete: PlatformView {
+        var iOSView: some View { EmptyView() }
+        var unattributedRequirement: Int { 0 }
+    }
+    """)
+    let iOSView = find(decls, name: "iOSView", inType: "Concrete")
+    #expect(iOSView?.conformances.first?.protocolGlobalActorName == "MainActor")
+
+    // A *different* requirement of the same protocol, with no attribute of its own, must not
+    // pick up the per-requirement attribute meant for a differently-named requirement.
+    let unattributed = find(decls, name: "unattributedRequirement", inType: "Concrete")
+    #expect(unattributed?.conformances.first?.protocolGlobalActorName == nil)
+}
+
 @Test("An unrelated method in the primary body does not inherit the extension's conformance context")
 func unrelatedPrimaryBodyMethodHasNoWitnessConformance() {
     let decls = declarations("""

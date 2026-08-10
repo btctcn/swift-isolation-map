@@ -117,9 +117,13 @@ public struct DeclarationLinker {
         let allDeclarations = extractionResults.flatMap(\.declarations)
 
         var mergedProtocolGlobalActorNames: [String: String] = [:]
+        var mergedProtocolRequirementGlobalActorNames: [String: [String: String]] = [:]
         var mergedGlobalActorNames: Set<String> = []
         for result in extractionResults {
             mergedProtocolGlobalActorNames.merge(result.protocolGlobalActorNames) { existing, _ in existing }
+            for (protocolName, requirementNames) in result.protocolRequirementGlobalActorNames {
+                mergedProtocolRequirementGlobalActorNames[protocolName, default: [:]].merge(requirementNames) { existing, _ in existing }
+            }
             mergedGlobalActorNames.formUnion(result.globalActorNames)
         }
 
@@ -224,7 +228,11 @@ public struct DeclarationLinker {
         for declaration in allDeclarations {
             let referringFile = declaration.location?.file
             let relinkedConformances = declaration.conformances.map { conformance in
-                relink(conformance, referringFile: referringFile, rewrittenReference: rewrittenReference, mergedProtocolGlobalActorNames: mergedProtocolGlobalActorNames)
+                relink(
+                    conformance, witnessName: declaration.name, referringFile: referringFile, rewrittenReference: rewrittenReference,
+                    mergedProtocolGlobalActorNames: mergedProtocolGlobalActorNames,
+                    mergedProtocolRequirementGlobalActorNames: mergedProtocolRequirementGlobalActorNames
+                )
             }
             let linked = DeclarationInfo(
                 usr: rewritten(declaration.usr),
@@ -483,14 +491,19 @@ public struct DeclarationLinker {
 
     private func relink(
         _ conformance: ProtocolConformance,
+        witnessName: String,
         referringFile: String?,
         rewrittenReference: (String, String?) -> String,
-        mergedProtocolGlobalActorNames: [String: String]
+        mergedProtocolGlobalActorNames: [String: String],
+        mergedProtocolRequirementGlobalActorNames: [String: [String: String]]
     ) -> ProtocolConformance {
         var globalActorName = conformance.protocolGlobalActorName
         if globalActorName == nil, conformance.protocolUSR.hasPrefix("syntactic:") {
             let protocolName = String(conformance.protocolUSR.dropFirst("syntactic:".count))
-            globalActorName = mergedProtocolGlobalActorNames[protocolName]
+            // Whole-protocol attribute first, exactly like the same-file case in
+            // `DeclarationExtractor.emitMember` -- a per-requirement attribute only ever applies
+            // to the witness whose own name matches that specific requirement.
+            globalActorName = mergedProtocolGlobalActorNames[protocolName] ?? mergedProtocolRequirementGlobalActorNames[protocolName]?[witnessName]
         }
         return ProtocolConformance(
             protocolUSR: rewrittenReference(conformance.protocolUSR, referringFile),
