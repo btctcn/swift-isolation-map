@@ -507,7 +507,10 @@ struct SwiftIsolationMap: ParsableCommand {
             case .xcworkspace(let url): arguments += ["-workspace", url.path]
             case .swiftPackage: break
             }
-            arguments += ["COMPILER_INDEX_STORE_ENABLE=YES", "build"]
+            // Shared with `LiveXcodeCompilerArgumentsProvider.runVerboseBuild` -- see
+            // `xcodeIndexingBuildSettings`'s own doc comment for why each setting is here (in
+            // particular, why code signing must be disabled).
+            arguments += xcodeIndexingBuildSettings + ["build"]
             let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
             guard result.exitCode == 0 else {
                 throw ProcessFailure(command: "xcodebuild", exitCode: result.exitCode, standardError: result.standardError)

@@ -15,6 +15,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     private let fileSystem: FileSystemQuerying
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
+    private var cachedError: Error?
 
     public init(
         container: ProjectContainer,
@@ -42,23 +43,41 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         if let cachedArguments {
             return cachedArguments
         }
-
-        // An already-fully-built target (the common case for a repeated analysis run, or any CI
-        // pipeline that just built the app before invoking this tool) makes Xcode's incremental
-        // build system skip re-emitting `builtin-Swift-Compilation --` lines entirely -- `-verbose`
-        // only echoes commands the build system actually decides to run, and "nothing needs
-        // rebuilding" means zero such lines, confirmed empirically against `Project Iris` (`docs/
-        // priority-3-compiled-dependency-isolation.md`: a real `xcodebuild -verbose build` against
-        // an up-to-date project produced zero compile invocations, silently starving every
-        // external-isolation query downstream). The only reliable fix is forcing every file to be
-        // considered dirty, which only a real `clean build` guarantees -- so an empty first attempt
-        // triggers exactly one retry with `clean` prepended, never a silent empty result.
-        var parsed = try runVerboseBuild(extraActions: [])
-        if parsed.isEmpty {
-            parsed = try runVerboseBuild(extraActions: ["clean"])
+        // A thrown failure must be memoized exactly like a successful result -- `compilerArguments
+        // (forFile:)`'s only caller, `detectConfiguredDefaultIsolation`, walks every source file in
+        // a loop and swallows this method's throw via `try?` to move on to the next file. Without
+        // caching the failure too, a build that's genuinely, persistently unbuildable (confirmed
+        // against a real project once its provisioning-profile bug was still unfixed: every single
+        // attempt threw `buildLogParseFailed`) reran the full, expensive double-`xcodebuild`
+        // (plain + `clean`) cycle from scratch for *every remaining source file* -- observed as
+        // dozens of independent `xcodebuild` invocations firing every few seconds against a real,
+        // ~424-file project, instead of failing once and letting every subsequent file's lookup
+        // fail cheaply from the cache.
+        if let cachedError {
+            throw cachedError
         }
-        cachedArguments = parsed
-        return parsed
+
+        do {
+            // An already-fully-built target (the common case for a repeated analysis run, or any CI
+            // pipeline that just built the app before invoking this tool) makes Xcode's incremental
+            // build system skip re-emitting `builtin-Swift-Compilation --` lines entirely -- `-verbose`
+            // only echoes commands the build system actually decides to run, and "nothing needs
+            // rebuilding" means zero such lines, confirmed empirically against `Project Iris` (`docs/
+            // priority-3-compiled-dependency-isolation.md`: a real `xcodebuild -verbose build` against
+            // an up-to-date project produced zero compile invocations, silently starving every
+            // external-isolation query downstream). The only reliable fix is forcing every file to be
+            // considered dirty, which only a real `clean build` guarantees -- so an empty first attempt
+            // triggers exactly one retry with `clean` prepended, never a silent empty result.
+            var parsed = try runVerboseBuild(extraActions: [])
+            if parsed.isEmpty {
+                parsed = try runVerboseBuild(extraActions: ["clean"])
+            }
+            cachedArguments = parsed
+            return parsed
+        } catch {
+            cachedError = error
+            throw error
+        }
     }
 
     private func runVerboseBuild(extraActions: [String]) throws -> [String: [String]] {
@@ -71,10 +90,10 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         case .swiftPackage:
             preconditionFailure("LiveXcodeCompilerArgumentsProvider is only valid for .xcodeproj/.xcworkspace containers")
         }
-        // Same real, empirically-confirmed build setting as SwiftIsolationMap.build's existing
-        // --auto-build path (a bare KEY=VALUE argument, not a `-flag` -- see
-        // docs/priority-2-phase-4-cli-wiring.md for the flag-form bug this already caught once).
-        arguments += ["COMPILER_INDEX_STORE_ENABLE=YES"] + extraActions + ["build"]
+        // Shared with SwiftIsolationMap.build's --auto-build path -- see
+        // `xcodeIndexingBuildSettings`'s own doc comment for why each setting is here (in
+        // particular, why code signing must be disabled).
+        arguments += xcodeIndexingBuildSettings + extraActions + ["build"]
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
 
