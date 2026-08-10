@@ -517,6 +517,59 @@ func linkMergesCrossFileTypeEntriesRegardlessOfOrder() throws {
     }
 }
 
+@Test("link(_:) never rewrites a member's containingTypeUSR/protocolUSR to an unrelated, same-named real type declared in a file that was never compiled (GestureView/Swiftfin shape)")
+func linkNeverBleedsAcrossTwoUnrelatedSameNamedTypesInDifferentUncompiledFiles() throws {
+    // Real shape confirmed on `Swiftfin`: `GestureView` is declared once for iOS
+    // (`Swiftfin/Components/GestureView.swift`, compiled/indexed) and once, completely
+    // independently, for tvOS (`Swiftfin tvOS/Components/GestureView.swift`, never compiled when
+    // only the iOS scheme is analyzed) -- two wholly unrelated types sharing a bare name.
+    let iosLocation = SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 14, column: 8)
+    let tvOSMemberLocation = SymbolLocation(file: "/Swiftfin tvOS/GestureView.swift", line: 16, column: 10)
+
+    let iosType = makeDeclaration(usr: "syntactic:GestureView", name: "GestureView", location: iosLocation)
+    let iosMember = makeDeclaration(
+        usr: "syntactic:GestureView.makeUIView#40", name: "makeUIView", location: SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 16, column: 10),
+        containingTypeUSR: "syntactic:GestureView", conformances: [placeholderConformance("syntactic:PlatformViewRepresentable")]
+    )
+    // The tvOS-only file's own member: a *different* byte offset in its own placeholder `usr`
+    // (an unrelated file's own body is never byte-for-byte identical) but the identical bare
+    // `containingTypeUSR`/`protocolUSR` strings -- neither file's own syntactic extraction has any
+    // notion of the other file at all -- and its own file has zero real indexed symbols: it was
+    // never compiled for this analysis.
+    let tvOSMember = makeDeclaration(
+        usr: "syntactic:GestureView.makeUIView#99", name: "makeUIView", location: tvOSMemberLocation,
+        containingTypeUSR: "syntactic:GestureView", conformances: [placeholderConformance("syntactic:PlatformViewRepresentable")]
+    )
+
+    let fake = FakeIndexStoreQuerying()
+    // Only the iOS file has any real indexed symbols -- the tvOS file is entirely absent from the
+    // index, exactly as it would be when only the iOS scheme was built/indexed.
+    fake.symbolsByFile["/Swiftfin/GestureView.swift"] = [
+        IndexedSymbol(usr: "s:realGestureView", name: "GestureView", location: iosLocation),
+        IndexedSymbol(usr: "s:realGestureView.makeUIView", name: "makeUIView", location: SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 16, column: 10)),
+    ]
+
+    let linked = DeclarationLinker(indexStore: fake).link([
+        ExtractionResult(declarations: [iosType, iosMember], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [tvOSMember], protocolGlobalActorNames: [:]),
+    ])
+
+    let linkedIOSMember = try #require(linked.declarations["s:realGestureView.makeUIView"])
+    #expect(linkedIOSMember.containingTypeUSR == "s:realGestureView", "the real iOS member's own containingTypeUSR must still resolve normally")
+
+    // The tvOS member's own `usr` never matched anything real (its file has no indexed symbols),
+    // so it's still keyed by its original placeholder -- find it that way.
+    let linkedTVOSMember = try #require(linked.declarations["syntactic:GestureView.makeUIView#99"])
+    #expect(
+        linkedTVOSMember.containingTypeUSR == "syntactic:GestureView",
+        "an uncompiled file's own member must never inherit an unrelated, same-named real type's USR"
+    )
+    #expect(
+        linkedTVOSMember.conformances.first?.protocolUSR == "syntactic:PlatformViewRepresentable",
+        "an uncompiled file's own conformance reference must never resolve through an unrelated real type either"
+    )
+}
+
 // MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)
 
 @Test("unresolvedPlaceholders(for:) returns a declaration whose location-based match found nothing, paired with its real location")

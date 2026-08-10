@@ -99,7 +99,7 @@ public struct DeclarationLinker {
     /// usrRewriteMapOverrides:)`.
     public func unresolvedPlaceholders(for extractionResults: [ExtractionResult]) -> [(placeholder: String, location: SymbolLocation)] {
         let allDeclarations = extractionResults.flatMap(\.declarations)
-        let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
+        let usrRewriteMap = buildUSRRewriteMap(for: allDeclarations).map
         return allDeclarations.compactMap { declaration in
             guard declaration.usr.hasPrefix("syntactic:"), usrRewriteMap[declaration.usr] == nil,
                   let location = declaration.location else {
@@ -146,7 +146,8 @@ public struct DeclarationLinker {
             }
         }
 
-        var usrRewriteMap = buildUSRRewriteMap(for: allDeclarations)
+        let (builtUSRRewriteMap, filesWithIndexedSymbols) = buildUSRRewriteMap(for: allDeclarations)
+        var usrRewriteMap = builtUSRRewriteMap
         for (placeholder, realUSR) in usrRewriteMapOverrides {
             usrRewriteMap[placeholder] = realUSR
         }
@@ -181,19 +182,58 @@ public struct DeclarationLinker {
             return real
         }
 
+        // A cross-reference (`containingTypeUSR`/`superclassUSR`/a conformance's `protocolUSR`) is
+        // a *bare name*, resolved through the same project-wide, purely string-keyed
+        // `usrRewriteMap` as `rewritten(_:)` above -- with no notion of which file is asking.
+        // Confirmed a real, reproduced bug on `Swiftfin`: `GestureView` and `SliderContainer` are
+        // each declared *twice*, once under `Swiftfin/` (the iOS target) and once under
+        // `Swiftfin tvOS/` (the tvOS target) -- two wholly unrelated types that happen to share a
+        // name. Analyzing only the iOS scheme means the tvOS file is never compiled, so it has no
+        // real indexed symbols of its own -- but its members' `containingTypeUSR` is still the
+        // bare `"syntactic:GestureView"` placeholder, and `usrRewriteMap["syntactic:GestureView"]`
+        // *does* resolve (to the iOS type's own real USR, via the iOS declaration's own location
+        // match). The tvOS members silently inherited the iOS type's real USR as their own
+        // `containingTypeUSR`, making `ExternalIsolationBackfill`'s conformance-pair claim loop
+        // treat them as extra, competing "members of `GestureView`" -- one of them (sorted first:
+        // `"Swiftfin tvOS/..."` < `"Swiftfin/..."` by plain string comparison) claimed the
+        // (GestureView, PlatformViewRepresentable) pair and dispatched its live query at the
+        // *tvOS* file's location, which the compiler-arguments provider can't resolve (that file
+        // isn't part of the analyzed target at all) -- so the query failed, the pair's outcome
+        // stayed unresolved, and the *real* iOS `GestureView.makeUIView` (genuinely
+        // `@MainActor`, confirmed against `UIViewRepresentable`'s real `.swiftinterface` and a
+        // real `swiftc` repro) never got a chance to claim it, coming out `nonisolated` instead.
+        // A legitimate multi-file reference to the same real type (the already-supported "primary
+        // declaration in one file, conformance added via an extension in another" shape) always
+        // requires that other file to itself be part of the compiled target, hence have *some*
+        // real indexed symbols -- so gating the fallback on the referring declaration's own file
+        // having any real indexed symbols at all rejects exactly the coincidental-same-name case
+        // without touching the legitimate one.
+        func rewrittenReference(_ usr: String, referringFile: String?) -> String {
+            // No location info at all (synthetic/fixture-only declarations, never a real
+            // extracted one -- `DeclarationExtractor.emitMember`/`emitTypeDeclarationIfNeeded`
+            // always set a real location) is not evidence of being from an uncompiled file, so it
+            // falls through to the unrestricted rewrite exactly as before this fix -- only a
+            // *known*, definitely-uncompiled file withholds the rewrite.
+            if let referringFile, !filesWithIndexedSymbols.contains(referringFile) {
+                return usr
+            }
+            return rewritten(usr)
+        }
+
         var byUSR: [String: DeclarationInfo] = [:]
         for declaration in allDeclarations {
+            let referringFile = declaration.location?.file
             let relinkedConformances = declaration.conformances.map { conformance in
-                relink(conformance, rewritten: rewritten, mergedProtocolGlobalActorNames: mergedProtocolGlobalActorNames)
+                relink(conformance, referringFile: referringFile, rewrittenReference: rewrittenReference, mergedProtocolGlobalActorNames: mergedProtocolGlobalActorNames)
             }
             let linked = DeclarationInfo(
                 usr: rewritten(declaration.usr),
                 name: declaration.name,
                 explicitIsolation: declaration.explicitIsolation,
                 isActorType: declaration.isActorType,
-                containingTypeUSR: declaration.containingTypeUSR.map(rewritten),
+                containingTypeUSR: declaration.containingTypeUSR.map { rewrittenReference($0, referringFile: referringFile) },
                 isStaticMember: declaration.isStaticMember,
-                superclassUSR: declaration.superclassUSR.map(rewritten),
+                superclassUSR: declaration.superclassUSR.map { rewrittenReference($0, referringFile: referringFile) },
                 conformances: relinkedConformances,
                 isEligibleForModuleDefaultIsolation: declaration.isEligibleForModuleDefaultIsolation,
                 enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
@@ -443,7 +483,8 @@ public struct DeclarationLinker {
 
     private func relink(
         _ conformance: ProtocolConformance,
-        rewritten: (String) -> String,
+        referringFile: String?,
+        rewrittenReference: (String, String?) -> String,
         mergedProtocolGlobalActorNames: [String: String]
     ) -> ProtocolConformance {
         var globalActorName = conformance.protocolGlobalActorName
@@ -452,18 +493,28 @@ public struct DeclarationLinker {
             globalActorName = mergedProtocolGlobalActorNames[protocolName]
         }
         return ProtocolConformance(
-            protocolUSR: rewritten(conformance.protocolUSR),
+            protocolUSR: rewrittenReference(conformance.protocolUSR, referringFile),
             protocolGlobalActorName: globalActorName,
             declaredInSameFileAsPrimaryDefinition: conformance.declaredInSameFileAsPrimaryDefinition,
             declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness
         )
     }
 
-    private func buildUSRRewriteMap(for declarations: [DeclarationInfo]) -> [String: String] {
+    /// `filesWithIndexedSymbols` -- every file the real index actually has *any* symbol for --
+    /// exists purely to let `link()` refuse to trust a bare-name cross-reference
+    /// (`containingTypeUSR`/`superclassUSR`/`protocolUSR`) coming from a file that isn't one of
+    /// them. See `link()`'s own `rewrittenReference` doc comment for the real, confirmed bug this
+    /// guards against.
+    private func buildUSRRewriteMap(for declarations: [DeclarationInfo]) -> (map: [String: String], filesWithIndexedSymbols: Set<String>) {
         let filesToQuery = Set(declarations.compactMap { $0.location?.file })
         var candidatesByLocation: [LocationKey: [IndexedSymbol]] = [:]
+        var filesWithIndexedSymbols: Set<String> = []
         for file in filesToQuery {
-            for symbol in indexStore.definedSymbols(inFile: file) {
+            let symbols = indexStore.definedSymbols(inFile: file)
+            if !symbols.isEmpty {
+                filesWithIndexedSymbols.insert(file)
+            }
+            for symbol in symbols {
                 candidatesByLocation[LocationKey(location: symbol.location), default: []].append(symbol)
             }
         }
@@ -477,7 +528,7 @@ public struct DeclarationLinker {
             }
             usrRewriteMap[declaration.usr] = match.usr
         }
-        return usrRewriteMap
+        return (usrRewriteMap, filesWithIndexedSymbols)
     }
 
     /// Multiple real symbols can share the exact same (line, column) -- confirmed empirically: a
