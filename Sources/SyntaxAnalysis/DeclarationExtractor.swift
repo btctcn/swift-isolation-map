@@ -341,9 +341,25 @@ enum TypeIndexBuilder {
         override func visit(_ node: ExtensionDeclSyntax) -> SyntaxVisitorContinueKind {
             let extendedName = node.extendedType.trimmedDescription
             var entry = index[extendedName] ?? TypeIndexEntry()
-            if let attrName = recognizedGlobalActorAttribute(in: node.attributes, known: fileWideNames.globalActorNames) {
-                entry.explicitGlobalActorAttributeName = entry.explicitGlobalActorAttributeName ?? attrName
-            }
+            // A global actor attribute on an *extension* is deliberately never recorded here as
+            // `explicitGlobalActorAttributeName` -- that field means "the type's own primary
+            // declaration carries this attribute," which then propagates to every member of the
+            // type from every file (`resolveIsolation`'s `explicitIsolation` check, checked before
+            // any per-file/per-extension scoping). SE-0316's real rule for an extension's own
+            // attribute is narrower: it isolates only the members physically declared inside *that*
+            // extension (`enclosingExtensionIsolation`, set correctly and separately by
+            // `DeclarationVisitor.visit(_ node: ExtensionDeclSyntax)` below). Conflating the two was
+            // a real, confirmed bug: a real project (`IceCubesApp`) had a type (`MastodonClient`,
+            // declared with no isolation of its own in `NetworkClient.swift`) with a *separate* file
+            // stating `@MainActor extension MastodonClient: StatusEditor.PostingService.Client { }`
+            // -- this extension's own `@MainActor` was leaking into `explicitGlobalActorAttributeName`
+            // for the bare name "MastodonClient", which then became this type's `explicitIsolation`
+            // and incorrectly propagated `@MainActor` to *every* member of `MastodonClient`
+            // project-wide, including ones in completely unrelated files/extensions with no
+            // isolation of their own -- confirmed wrong by direct compilation (`MastodonClient.init`/
+            // `.get`, declared in `NetworkClient.swift` with no relation to this extension, are
+            // genuinely `nonisolated` in real compiled code: converting a bound reference to a
+            // `@Sendable` function type raises no "loses global actor" diagnostic).
             if let inheritance = node.inheritanceClause {
                 for inherited in inheritance.inheritedTypes {
                     if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
@@ -486,7 +502,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
         namePosition: AbsolutePosition,
         attributes: AttributeListSyntax,
         modifiers: DeclModifierListSyntax,
-        kind: SyntacticDeclarationKind
+        kind: SyntacticDeclarationKind,
+        isImmutableStoredProperty: Bool = false
     ) {
         let qualifiedTypeName = SyntacticIdentity.qualifiedName(path)
         // Protocol requirements have no enclosing type scope to qualify against --
@@ -545,7 +562,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
             isEligibleForModuleDefaultIsolation: isEligible,
             enclosingExtensionIsolation: currentEnclosingExtensionIsolation,
             isNestedType: false,
-            location: memberLocation
+            location: memberLocation,
+            isImmutableStoredProperty: isImmutableStoredProperty
         ))
     }
 
@@ -663,9 +681,17 @@ private final class DeclarationVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
+        // A `let` binding is always a stored property in Swift -- unlike `var`, it can never carry
+        // a computed getter/accessor block -- so `bindingSpecifier == .keyword(.let)` alone fully
+        // identifies "immutable stored property," no accessor-block check needed.
+        let isImmutableStoredProperty = node.bindingSpecifier.tokenKind == .keyword(.let)
         for binding in node.bindings {
             let name = binding.pattern.trimmedDescription
-            emitMember(name: name, node: binding, namePosition: binding.pattern.positionAfterSkippingLeadingTrivia, attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty)
+            emitMember(
+                name: name, node: binding, namePosition: binding.pattern.positionAfterSkippingLeadingTrivia,
+                attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty,
+                isImmutableStoredProperty: isImmutableStoredProperty
+            )
         }
         return .visitChildren
     }

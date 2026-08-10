@@ -425,6 +425,38 @@ enum ExternalIsolationBackfill {
         let indices: [Int]
     }
 
+    /// `Swift.Sendable` and `Swift.SendableMetatype` -- `@_marker` protocols (the compiler's own
+    /// designation for a protocol with no runtime representation/witness table), both declared
+    /// with an empty body, zero requirements, in `stdlib/public/core/Sendable.swift`:
+    /// `@_marker public protocol SendableMetatype: ~Copyable, ~Escapable { }` and
+    /// `@_marker public protocol Sendable: SendableMetatype, ~Copyable, ~Escapable { }`
+    /// (confirmed directly against `swiftlang/swift`'s real source, not assumed) -- structurally
+    /// incapable of ever being `@GlobalActor`-qualified by anyone. Excluded from the declaration-level conformance-pair
+    /// trigger below entirely: that trigger's live-query fallback infers a conformed protocol's own
+    /// global-actor status from *the conforming declaration's own effective isolation* (see its own
+    /// doc comment, "more precise than the live query's fallback, which infers a shared actor name
+    /// from the conforming type's single effective isolation, not each individual protocol's own")
+    /// -- an approximation that is not just imprecise but flatly *wrong* whenever the conforming
+    /// declaration's own isolation comes from a source unrelated to this specific conformance, most
+    /// concretely a project's module-wide default isolation (SE-0466). Confirmed as a real,
+    /// reproduced false positive against a real project (`IceCubesApp`, `StatusEditor.
+    /// MediaUploadService.UploadPolicy: Sendable`, `NetworkClient.MastodonClient: ...Sendable`):
+    /// both types have no explicit isolation of their own and live in files with no reason to be
+    /// `@MainActor`, yet `struct UploadPolicy: Sendable`'s own live-queried isolation still comes
+    /// back `@MainActor` (`StatusKit`'s package manifest sets `.defaultIsolation(MainActor.self)`,
+    /// and `UploadPolicy` itself was empirically confirmed real-`nonisolated` -- a `nonisolated`
+    /// synchronous function reading `policy.maxBytes`, a mutable `var`, compiles with no actor-
+    /// isolation error at all) -- so this mechanism concluded "conforming to `Sendable` makes you
+    /// `@MainActor`", corrupting the well-known SE-0466 exclusion (`isEligibleForModuleDefaultIsolation`
+    /// already correctly excludes `Sendable`/`SendableMetatype`-conforming declarations from the
+    /// module default) via `IsolationInferenceEngine.resolveInheritedIsolation`'s *higher-priority*
+    /// same-context-as-witness rule, which runs before the correctly-implemented default-isolation
+    /// exclusion is ever consulted. `Sendable`/`SendableMetatype` conformances can never legitimately
+    /// answer "yes" here, so the safe, narrow fix is to never treat them as worth asking at all.
+    private static let wellKnownNeverGlobalActorProtocolUSRs: Set<String> = [
+        "s:s8SendableP", "s:s16SendableMetatypeP",
+    ]
+
     private static func collectDeclarationLevelWorkItems(
         linked: LinkedAnalysis,
         bulkCache: [String: IsolationKind],
@@ -477,7 +509,8 @@ enum ExternalIsolationBackfill {
                 let conformance = declaration.conformances[index]
                 guard conformance.protocolGlobalActorName == nil,
                       conformance.declaredInSameFileAsPrimaryDefinition || conformance.declaredInSameContextAsWitness,
-                      linked.declarations[conformance.protocolUSR] == nil else { return false }
+                      linked.declarations[conformance.protocolUSR] == nil,
+                      !wellKnownNeverGlobalActorProtocolUSRs.contains(conformance.protocolUSR) else { return false }
                 return true
             }
             guard unresolvedSuperclassUSR != nil || unresolvedContainingTypeUSR != nil || !unresolvedConformanceIndices.isEmpty else { continue }
@@ -789,7 +822,8 @@ enum ExternalIsolationBackfill {
             isEligibleForModuleDefaultIsolation: declaration.isEligibleForModuleDefaultIsolation,
             enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
             isNestedType: declaration.isNestedType,
-            location: declaration.location
+            location: declaration.location,
+            isImmutableStoredProperty: declaration.isImmutableStoredProperty
         )
     }
 

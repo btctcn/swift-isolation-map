@@ -215,10 +215,16 @@ func extensionAttributeSetsEnclosingExtensionIsolation() {
         func extensionMethod() {}
     }
     """)
+    let widget = find(decls, name: "Widget")
     let primaryMethod = find(decls, name: "primaryMethod")
     let extensionMethod = find(decls, name: "extensionMethod")
     #expect(primaryMethod?.enclosingExtensionIsolation == nil)
     #expect(extensionMethod?.enclosingExtensionIsolation == .globalActor(name: "MainActor"))
+    // Real, confirmed regression (IceCubesApp's `MastodonClient`): an extension's own global
+    // actor attribute must never leak into the *type's* `explicitIsolation` -- that would
+    // propagate `@MainActor` to every member of the type from every file, not just the members
+    // physically declared inside this one extension.
+    #expect(widget?.explicitIsolation == nil)
 }
 
 @Test("A nonisolated extension sets enclosingExtensionIsolation to nonisolated on its members")
