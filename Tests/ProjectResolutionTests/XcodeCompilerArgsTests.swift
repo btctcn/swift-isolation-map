@@ -44,7 +44,7 @@ func liveXcodeProviderUnescapesSpaceInFileListPath() throws {
     fileSystem.addFile(at: fileListURL, contents: sampleFileListContentsWithEscapedSpace)
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(
             exitCode: 0,
             standardOutput: realSQLumenCompileLine.replacingOccurrences(
@@ -101,7 +101,7 @@ func liveXcodeProviderExpandsFileListAndMapsEveryFileToTheSameArguments() throws
     fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(
             exitCode: 0,
             standardOutput: realSQLumenCompileLine.replacingOccurrences(
@@ -142,12 +142,12 @@ func liveXcodeProviderFallsBackToCleanBuildWhenTheFirstAttemptYieldsNoInvocation
     // empty/irrelevant log, not a failure.
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(exitCode: 0, standardOutput: "** BUILD SUCCEEDED **\n", standardError: "")
     )
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "clean", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "clean", "build"],
         result: ProcessResult(
             exitCode: 0,
             standardOutput: realSQLumenCompileLine.replacingOccurrences(
@@ -183,7 +183,7 @@ func liveXcodeProviderUsesPartialResultsWhenBuildFailsButSomeInvocationsWerePars
     // broken notification-extension targets sharing no dependency with the main app).
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(
             exitCode: 1,
             standardOutput: realSQLumenCompileLine.replacingOccurrences(
@@ -214,14 +214,14 @@ func liveXcodeProviderThrowsWhenBuildFailsAndNothingWasParsed() throws {
     let fileSystem = FakeFileSystem()
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
     )
     // The "empty means up-to-date, retry with clean" fallback also gets a chance, and also fails
     // to produce anything usable.
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "clean", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "clean", "build"],
         result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
     )
 
@@ -237,6 +237,45 @@ func liveXcodeProviderThrowsWhenBuildFailsAndNothingWasParsed() throws {
     }
 }
 
+@Test("A build failure is memoized like a success -- a second lookup after the first throw does not re-invoke xcodebuild")
+func liveXcodeProviderCachesAFailureAndDoesNotRetryOnASubsequentLookup() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    // A build that fails outright (non-zero exit, nothing parseable) throws straight out of the
+    // *first* `runVerboseBuild(extraActions: [])` call -- the `clean` retry is reached only when
+    // the first attempt returns an empty-but-successful result, never when it throws -- so exactly
+    // one `xcodebuild` invocation happens per call to `compilerArguments(forFile:)` here.
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
+        result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
+    )
+
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    // Real shape: `detectConfiguredDefaultIsolation` walks every source file in a loop, calling
+    // `compilerArguments(forFile:)` again for each one via `try?` after the previous file's
+    // lookup threw -- confirmed as a real, reproduced problem against a genuinely unbuildable
+    // real project (424 source files, dozens of independent `xcodebuild` invocations fired every
+    // few seconds) before this caching fix: without it, every one of those files would repeat the
+    // full, expensive `xcodebuild` invocation from scratch.
+    #expect(throws: CompilerArgumentsError.self) {
+        try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/App/ContentView.swift")
+    }
+    #expect(throws: CompilerArgumentsError.self) {
+        try provider.compilerArguments(forFile: "/Users/dev/SQLumen/SQLumen/Core/DDLService.swift")
+    }
+    // Only the first call's invocation ever happened -- the second call's failure came straight
+    // from the cache, matching the `FakeProcessRunner` stub count of 1 (a second, unstubbed
+    // invocation would have thrown a *different*, "no stubbed response" error instead).
+    #expect(runner.invocations.count == 1)
+}
+
 @Test
 func liveXcodeProviderThrowsForAFileNotInAnyTargetsFileList() throws {
     let runner = FakeProcessRunner()
@@ -245,7 +284,7 @@ func liveXcodeProviderThrowsForAFileNotInAnyTargetsFileList() throws {
     fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
     runner.stub(
         executable: "xcodebuild",
-        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "build"],
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
         result: ProcessResult(
             exitCode: 0,
             standardOutput: realSQLumenCompileLine.replacingOccurrences(
