@@ -266,7 +266,14 @@ struct SwiftIsolationMap: ParsableCommand {
         for (usr, info) in externalResolution.updatedDeclarations {
             mergedDeclarations[usr] = info
         }
-        for (usr, info) in externalResolution.backfilledDeclarations where mergedDeclarations[usr] == nil {
+        // A `mergedDeclarations[usr]` entry with no `location` at all has no primary declaration
+        // anywhere among the analyzed files (`DeclarationLinker.merged`'s own documented
+        // limitation: only an `extension` of that bare name ever contributed to it) -- a phantom,
+        // isolation-less placeholder, not a real answer, so a real externally-backfilled isolation
+        // must still win over it. See `ExternalIsolationBackfill.collectDeclarationLevelWorkItems`'s
+        // own `isGenuinelyResolvedProjectLocalDeclaration` doc comment for the real, reproduced bug
+        // (Swiftfin's own `extension UIViewController` in a helper file) this guards against.
+        for (usr, info) in externalResolution.backfilledDeclarations where mergedDeclarations[usr]?.location == nil {
             mergedDeclarations[usr] = info
         }
 

@@ -162,6 +162,58 @@ func declarationLevelTriggerBackfillsSuperclass() async {
     #expect(resolution.backfilledDeclarations["s:external.Base"]?.explicitIsolation == .globalActor(name: "MainActor"))
 }
 
+@Test("A declaration with a bare-name (\"syntactic:\") external superclass -- UIViewController, never resolved to a real USR since it's never defined in any analyzed file -- still gets the superclass backfilled (UIVideoPlayerContainerViewController/Swiftfin shape)")
+func declarationLevelTriggerBackfillsBareNameSyntacticSuperclass() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let declaration = DeclarationInfo(usr: "s:Sub", name: "Sub", superclassUSR: "syntactic:UIViewController", location: location)
+    let linked = LinkedAnalysis(declarations: ["s:Sub": declaration], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Sub", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Sub")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["syntactic:UIViewController"]?.explicitIsolation == .globalActor(name: "MainActor"))
+}
+
+@Test("A superclass USR that already has a *phantom*, location-less linked.declarations entry (an extension of that external type elsewhere in the project, with no primary declaration anywhere among the analyzed files) is still treated as unresolved and gets backfilled (UIViewController+Swizzling/Swiftfin shape)")
+func declarationLevelTriggerBackfillsSuperclassEvenWhenAnUnrelatedExtensionCreatedAPhantomEntry() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    // Real shape confirmed on Swiftfin: `PreferencesView/Sources/PreferencesView/UIViewController
+    // +Swizzling.swift` extends the real, external `UIViewController` -- `DeclarationExtractor`
+    // emits a type-level entry for "UIViewController" purely because of that extension, with no
+    // primary declaration (hence no location) anywhere among the analyzed files, and no isolation
+    // information of its own.
+    let phantomExtensionOnlyEntry = DeclarationInfo(
+        usr: "syntactic:UIViewController", name: "UIViewController", location: nil
+    )
+    let subclass = DeclarationInfo(usr: "s:Sub", name: "Sub", superclassUSR: "syntactic:UIViewController", location: location)
+    let linked = LinkedAnalysis(declarations: ["syntactic:UIViewController": phantomExtensionOnlyEntry, "s:Sub": subclass], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Sub", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Sub")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["syntactic:UIViewController"]?.explicitIsolation == .globalActor(name: "MainActor"))
+}
+
 @Test("A declaration with its own explicit isolation is never queried -- it's not a safe representative for its superclass")
 func declarationWithOwnExplicitIsolationIsSkipped() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
