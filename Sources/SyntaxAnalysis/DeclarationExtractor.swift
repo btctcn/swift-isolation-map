@@ -231,6 +231,22 @@ struct TypeIndexEntry {
     var isExplicitlyNonisolated = false
     var superclassCandidateName: String?
     var conformedProtocolNames: Set<String> = []
+    /// The subset of `conformedProtocolNames` stated directly on the *primary* declaration's own
+    /// inheritance clause -- distinct from ones added by a same-file `extension`. Confirmed a
+    /// real, reproduced gap: SE-0316 rule 7 (whole-type inference) and SE-0466's
+    /// `SendableMetatype` exclusion both require the conformance to be part of the primary
+    /// definition itself ("primary definition directly conforms to..."), not merely present
+    /// *somewhere* in the same file -- a real `swiftc` repro confirms it precisely:
+    /// `class C: NSObject { static func f() {} }` + a separate, same-file `extension C:
+    /// UITextFieldDelegate {}` produces **zero** diagnostics calling `C.f()` from a `nonisolated`
+    /// context under `-strict-concurrency=complete`, while stating the exact same conformance
+    /// directly on the primary line (`class C: NSObject, UITextFieldDelegate`) does warn --
+    /// "main actor isolation inferred from conformance to protocol 'UITextFieldDelegate'".
+    /// `conformedProtocolNames` itself is deliberately left as the *merged* set (primary +ext) --
+    /// it still backs the type-level entry's own existence as a conformance-pair representative
+    /// for the "no eligible witness member anywhere" fallback (an empty marker extension has
+    /// nothing else to claim the pair), which needs no "primary line only" restriction.
+    var primaryDeclarationConformedProtocolNames: Set<String> = []
     var containingTypeQualifiedName: String?
     var isNestedType = false
     /// The *primary* (non-extension) declaration's name-token location -- never overwritten by
@@ -375,6 +391,11 @@ enum TypeIndexBuilder {
                     entry.superclassCandidateName = name
                 } else {
                     entry.conformedProtocolNames.insert(name)
+                    // `applyInheritance` is only ever called from `recordPrimaryDeclaration` (the
+                    // primary-declaration path) -- never from the extension visitor below, which
+                    // populates `conformedProtocolNames` directly instead. So every name reaching
+                    // here is, by construction, stated on the primary declaration itself.
+                    entry.primaryDeclarationConformedProtocolNames.insert(name)
                 }
             }
         }
@@ -544,7 +565,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
             ProtocolConformance(
                 protocolUSR: SyntacticIdentity.typeUSR(named: name),
                 protocolGlobalActorName: protocolGlobalActorNames[name],
-                declaredInSameFileAsPrimaryDefinition: entry.hasPrimaryDeclarationInFile,
+                declaredInSameFileAsPrimaryDefinition: entry.hasPrimaryDeclarationInFile
+                    && entry.primaryDeclarationConformedProtocolNames.contains(name),
                 declaredInSameContextAsWitness: false
             )
         }
@@ -552,7 +574,7 @@ private final class DeclarationVisitor: SyntaxVisitor {
         let isEligible = isEligibleForModuleDefaultIsolation(
             kind: entry.isActor ? .actorType : .classType,
             isMemberOfActorType: false,
-            directlyConformsToSendableMetatype: directlyConformsToSendableMetatype(entry.conformedProtocolNames)
+            directlyConformsToSendableMetatype: directlyConformsToSendableMetatype(entry.primaryDeclarationConformedProtocolNames)
         )
 
         declarations.append(DeclarationInfo(
