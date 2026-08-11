@@ -17,6 +17,14 @@ public enum CompilerArgumentsSanitizing {
     /// the flag takes a following value argument that must be dropped along with it.
     private static let frontendOnlyFlags: [String: Bool] = [
         "-frontend": false,
+        // Not frontend-only, the reverse: a **driver**-only flag real Xcode incremental builds
+        // put in the captured build log, that `sourcekitd`'s own ASTInvocation builder rejects --
+        // confirmed empirically against real WordPress-iOS/Swiftfin live-oracle runs, both showing
+        // `error creating ASTInvocation: warning: option '-incremental' is only supported in
+        // swift-driver` on effectively every cursor-info request. Meaningless for a single
+        // `key.compilerargs` query anyway (it only affects caching across repeated whole-build
+        // invocations), so dropping it is strictly correct, not just a workaround.
+        "-incremental": false,
         // `-primary-file <file>` is dropped, but `<file>` itself is deliberately *not* --
         // real captured `swift build -v` output shows the primary file as this flag's own value,
         // with every *sibling* file already listed as a separate bare positional right after it,

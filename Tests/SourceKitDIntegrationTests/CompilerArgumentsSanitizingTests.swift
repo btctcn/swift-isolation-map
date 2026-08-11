@@ -38,6 +38,7 @@ func dropsAllKnownFrontendOnlyFlags() {
         "-target-sdk-name", "macosx26.4",
         "-index-system-modules",
         "-serialize-diagnostics-path", "/out/A.dia",
+        "-incremental",
         "-sdk", "/SDK",
         "-target", "arm64-apple-macosx13.0",
         "-module-name", "Demo"
