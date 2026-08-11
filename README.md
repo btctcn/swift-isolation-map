@@ -91,6 +91,14 @@ OPTIONS:
                               included). An edge with unresolved/unknown isolation on either
                               side is always included regardless of this setting -- filtering
                               to a stricter severity never hides genuine uncertainty.
+  --skip-macro-validation     Pass -skipMacroValidation to every internal xcodebuild invocation
+                              (live-fallback/cursor-info compiler-args resolution, --auto-build's
+                              rebuild). Needed for projects using SPM macro plugins (e.g.
+                              swift-case-paths) -- without it, those internal builds fail with
+                              "Macro ... must be enabled before it can be used", silently
+                              starving the live-oracle phase. Off by default: this bypasses a
+                              real Xcode security gate (arbitrary code execution during macro
+                              expansion), so only enable it for a project you trust.
   --verbose                   What was searched, where the index store was found, how many
                               types were processed.
 ```

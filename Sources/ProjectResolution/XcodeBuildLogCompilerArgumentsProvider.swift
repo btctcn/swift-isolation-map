@@ -16,17 +16,24 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
     private var cachedError: Error?
+    private let skipMacroValidation: Bool
+    // Resolved once per provider instance, not once per `runVerboseBuild` attempt -- the plain-vs-
+    // clean retry in `loadArgumentsIfNeeded` would otherwise re-run the `-showdestinations` probe a
+    // second time for no reason; the destination doesn't change between the two attempts.
+    private var cachedDestination: String??
 
     public init(
         container: ProjectContainer,
         scheme: String,
         processRunning: ProcessRunning = LiveProcessRunner(),
-        fileSystem: FileSystemQuerying = LiveFileSystem()
+        fileSystem: FileSystemQuerying = LiveFileSystem(),
+        skipMacroValidation: Bool = false
     ) {
         self.container = container
         self.scheme = scheme
         self.processRunning = processRunning
         self.fileSystem = fileSystem
+        self.skipMacroValidation = skipMacroValidation
     }
 
     public func compilerArguments(forFile path: String) throws -> [String] {
@@ -68,9 +75,16 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             // external-isolation query downstream). The only reliable fix is forcing every file to be
             // considered dirty, which only a real `clean build` guarantees -- so an empty first attempt
             // triggers exactly one retry with `clean` prepended, never a silent empty result.
-            var parsed = try runVerboseBuild(extraActions: [])
+            let destination: String?
+            if let cachedDestination {
+                destination = cachedDestination
+            } else {
+                destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning)
+                cachedDestination = destination
+            }
+            var parsed = try runVerboseBuild(extraActions: [], destination: destination)
             if parsed.isEmpty {
-                parsed = try runVerboseBuild(extraActions: ["clean"])
+                parsed = try runVerboseBuild(extraActions: ["clean"], destination: destination)
             }
             cachedArguments = parsed
             return parsed
@@ -80,8 +94,12 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         }
     }
 
-    private func runVerboseBuild(extraActions: [String]) throws -> [String: [String]] {
-        var arguments = ["-verbose", "-scheme", scheme]
+    private func runVerboseBuild(extraActions: [String], destination: String?) throws -> [String: [String]] {
+        var arguments = ["-verbose"]
+        if skipMacroValidation {
+            arguments.append("-skipMacroValidation")
+        }
+        arguments += ["-scheme", scheme]
         switch container {
         case .xcodeproj(let url):
             arguments += ["-project", url.path]
@@ -92,7 +110,13 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         }
         // Shared with SwiftIsolationMap.build's --auto-build path -- see
         // `xcodeIndexingBuildSettings`'s own doc comment for why each setting is here (in
-        // particular, why code signing must be disabled).
+        // particular, why code signing must be disabled), and
+        // `resolveDeterministicSimulatorDestination`'s for why the destination itself must also be
+        // pinned down explicitly. Resolved once by the caller, not per attempt -- see
+        // `cachedDestination`'s own comment.
+        if let destination {
+            arguments += ["-destination", destination]
+        }
         arguments += xcodeIndexingBuildSettings + extraActions + ["build"]
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)

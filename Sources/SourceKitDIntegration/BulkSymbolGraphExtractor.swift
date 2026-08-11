@@ -163,6 +163,18 @@ public enum BulkSymbolGraphExtractor {
                 }
             }
 
+            // `GlobalActorNameValidation`'s allowlist needs the *project's own* real
+            // `@globalActor`-declared names -- meaningless here: this scans bulk-extracted SDK/
+            // dependency modules (UIKit, AppKit, ...), never the analyzed project's own source, so
+            // there is no project-local set to check against. Left empty deliberately: only the
+            // fixed `MainActor` fast path applies to bulk-extracted data. A real custom global
+            // actor declared *inside* a bulk-extracted SDK module's own symbols is vanishingly
+            // rare in practice (Apple's own frameworks essentially never define one), so this
+            // trades a theoretical, unobserved false negative for immunity to the exact
+            // fabricated-isolation failure mode (arbitrary property wrappers/result builders on
+            // SDK types) this validation exists to prevent.
+            let bulkKnownGlobalActorNames: Set<String> = []
+
             // A type's own isolation, resolved via its superclass chain when its own fragments
             // carry no confirmed signal -- mirrors `IsolationInferenceEngine.resolveInheritedIsolation`'s
             // "a class mandatorily inherits its superclass's global actor isolation" rule (SE-0316),
@@ -176,8 +188,8 @@ public enum BulkSymbolGraphExtractor {
                 defer { visiting.remove(usr) }
                 let fragments = fragmentsByUSR[usr] ?? []
                 let result: IsolationKind
-                if SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) {
-                    result = SymbolGraphIsolationParser.isolation(fromFragments: fragments)
+                if SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: bulkKnownGlobalActorNames) {
+                    result = SymbolGraphIsolationParser.isolation(fromFragments: fragments, knownGlobalActorNames: bulkKnownGlobalActorNames)
                 } else if let superclassUSR = superclassOfType[usr] {
                     result = resolvedTypeIsolation(superclassUSR, visiting: &visiting)
                 } else {
@@ -189,8 +201,8 @@ public enum BulkSymbolGraphExtractor {
 
             var resolved: [String: IsolationKind] = [:]
             for (usr, fragments) in fragmentsByUSR {
-                if SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments) {
-                    resolved[usr] = SymbolGraphIsolationParser.isolation(fromFragments: fragments)
+                if SymbolGraphIsolationParser.hasConfirmedIsolationSignal(fragments, knownGlobalActorNames: bulkKnownGlobalActorNames) {
+                    resolved[usr] = SymbolGraphIsolationParser.isolation(fromFragments: fragments, knownGlobalActorNames: bulkKnownGlobalActorNames)
                     continue
                 }
                 // No confirmed signal on this symbol's own fragments. For a *member*, that's

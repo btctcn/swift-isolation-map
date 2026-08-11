@@ -26,6 +26,11 @@ struct OracleWorkItemWire: Codable {
 struct OracleWorkerInput: Codable {
     let items: [OracleWorkItemWire]
     let compilerArgsByFile: [String: [String]]
+    /// The root process's own `linked.globalActorNames` -- a worker has no project files or
+    /// syntax analysis of its own (see this type's own doc comment), so it can't compute this
+    /// itself; handed down the same way `compilerArgsByFile` already is. See
+    /// `GlobalActorNameValidation`'s own doc comment for what this is used to validate against.
+    let knownGlobalActorNames: Set<String>
 }
 
 /// `ExternalIsolationBackfill.QueryOutcome`, serializable -- kept as its own wire type rather than
@@ -78,7 +83,8 @@ enum OracleWorker {
         for item in input.items {
             let outcome = await ExternalIsolationBackfill.query(
                 targetUSR: item.targetUSR, file: item.file, line: item.line, utf8Column: item.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:]
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:],
+                knownGlobalActorNames: input.knownGlobalActorNames
             )
             outcomesByTargetUSR[item.targetUSR] = OracleQueryOutcomeWire(outcome)
         }
@@ -100,10 +106,11 @@ enum OracleWorker {
         workerCount: Int,
         compilerArguments: CompilerArgumentsProviding,
         workerExecutablePath: String,
-        processRunning: ProcessRunning
+        processRunning: ProcessRunning,
+        knownGlobalActorNames: Set<String>
     ) async -> [String: ExternalIsolationBackfill.QueryOutcome] {
         guard workerCount > 1, items.count >= workerCount else {
-            return await sequentialFallback(items: items, compilerArguments: compilerArguments)
+            return await sequentialFallback(items: items, compilerArguments: compilerArguments, knownGlobalActorNames: knownGlobalActorNames)
         }
 
         let chunks = balancedChunks(items: items, workerCount: workerCount)
@@ -119,7 +126,8 @@ enum OracleWorker {
                 group.addTask {
                     let output = await Self.runWorker(
                         chunk: chunk, index: index, tempDirectory: tempDirectory,
-                        compilerArguments: compilerArguments, workerExecutablePath: workerExecutablePath, processRunning: processRunning
+                        compilerArguments: compilerArguments, workerExecutablePath: workerExecutablePath, processRunning: processRunning,
+                        knownGlobalActorNames: knownGlobalActorNames
                     )
                     return (chunk, output)
                 }
@@ -182,7 +190,8 @@ enum OracleWorker {
         tempDirectory: URL,
         compilerArguments: CompilerArgumentsProviding,
         workerExecutablePath: String,
-        processRunning: ProcessRunning
+        processRunning: ProcessRunning,
+        knownGlobalActorNames: Set<String>
     ) async -> OracleWorkerOutput? {
         var compilerArgsByFile: [String: [String]] = [:]
         for file in Set(chunk.map(\.file)) {
@@ -193,7 +202,8 @@ enum OracleWorker {
 
         let input = OracleWorkerInput(
             items: chunk.map { OracleWorkItemWire(targetUSR: $0.targetUSR, file: $0.file, line: $0.line, column: $0.column) },
-            compilerArgsByFile: compilerArgsByFile
+            compilerArgsByFile: compilerArgsByFile,
+            knownGlobalActorNames: knownGlobalActorNames
         )
         let inputPath = tempDirectory.appendingPathComponent("worker-\(index)-input.json").path
         let outputPath = tempDirectory.appendingPathComponent("worker-\(index)-output.json").path
@@ -215,7 +225,8 @@ enum OracleWorker {
 
     private static func sequentialFallback(
         items: [(targetUSR: String, file: String, line: Int, column: Int)],
-        compilerArguments: CompilerArgumentsProviding
+        compilerArguments: CompilerArgumentsProviding,
+        knownGlobalActorNames: Set<String>
     ) async -> [String: ExternalIsolationBackfill.QueryOutcome] {
         let fileSystem = LiveFileSystem()
         guard let sourceKitD = try? SourceKitDClient() else {
@@ -225,7 +236,8 @@ enum OracleWorker {
         for item in items {
             results[item.targetUSR] = await ExternalIsolationBackfill.query(
                 targetUSR: item.targetUSR, file: item.file, line: item.line, utf8Column: item.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:]
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:],
+                knownGlobalActorNames: knownGlobalActorNames
             )
         }
         return results

@@ -271,6 +271,40 @@ func conformanceBackfillsGlobalActorNameFromMergedMap() throws {
     #expect(linkedWitness.conformances.first?.protocolGlobalActorName == "MainActor")
 }
 
+@Test("link(_:) backfills a per-requirement (not whole-protocol) global-actor attribute across files, matched by the witness's own name (PlatformView/Swiftfin shape)")
+func conformanceBackfillsPerRequirementGlobalActorNameAcrossFiles() throws {
+    let fake = FakeIndexStoreQuerying()
+    // Simulates: PlatformView.swift declares `protocol PlatformView: View { @MainActor var
+    // iOSView: ... { get } }` -- no attribute on the protocol itself, only on this one
+    // requirement -- contributing "PlatformView" -> "iOSView" -> "MainActor" to its own
+    // ExtractionResult's protocolRequirementGlobalActorNames. LetterPickerBar.swift's own
+    // extraction (a different file) never saw that protocol declaration at all.
+    let matchingConformance = ProtocolConformance(
+        protocolUSR: "syntactic:PlatformView", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    let matchingWitness = makeDeclaration(usr: "syntactic:LetterPickerBar.iOSView#0", name: "iOSView", location: nil, conformances: [matchingConformance])
+    // A different requirement's own copy of the same conformance, on a differently-named member
+    // -- must not pick up "iOSView"'s own per-requirement attribute.
+    let nonMatchingConformance = ProtocolConformance(
+        protocolUSR: "syntactic:PlatformView", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    let nonMatchingWitness = makeDeclaration(usr: "syntactic:LetterPickerBar.someOtherMember#1", name: "someOtherMember", location: nil, conformances: [nonMatchingConformance])
+
+    let extractionResults = [
+        ExtractionResult(declarations: [matchingWitness, nonMatchingWitness], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolRequirementGlobalActorNames: ["PlatformView": ["iOSView": "MainActor"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedMatching = try #require(linked.declarations.values.first { $0.name == "iOSView" })
+    #expect(linkedMatching.conformances.first?.protocolGlobalActorName == "MainActor")
+
+    let linkedNonMatching = try #require(linked.declarations.values.first { $0.name == "someOtherMember" })
+    #expect(linkedNonMatching.conformances.first?.protocolGlobalActorName == nil)
+}
+
 @Test("callGraphEdges are fetched for every real USR that was successfully linked")
 func callGraphEdgesFetchedForLinkedUSRs() {
     let fake = FakeIndexStoreQuerying()
@@ -515,6 +549,136 @@ func linkMergesCrossFileTypeEntriesRegardlessOfOrder() throws {
             "both files' conformances must be present regardless of processing order"
         )
     }
+}
+
+@Test("link(_:) never rewrites a member's containingTypeUSR/protocolUSR to an unrelated, same-named real type declared in a file that was never compiled (GestureView/Swiftfin shape)")
+func linkNeverBleedsAcrossTwoUnrelatedSameNamedTypesInDifferentUncompiledFiles() throws {
+    // Real shape confirmed on `Swiftfin`: `GestureView` is declared once for iOS
+    // (`Swiftfin/Components/GestureView.swift`, compiled/indexed) and once, completely
+    // independently, for tvOS (`Swiftfin tvOS/Components/GestureView.swift`, never compiled when
+    // only the iOS scheme is analyzed) -- two wholly unrelated types sharing a bare name.
+    let iosLocation = SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 14, column: 8)
+    let tvOSMemberLocation = SymbolLocation(file: "/Swiftfin tvOS/GestureView.swift", line: 16, column: 10)
+
+    let iosType = makeDeclaration(usr: "syntactic:GestureView", name: "GestureView", location: iosLocation)
+    let iosMember = makeDeclaration(
+        usr: "syntactic:GestureView.makeUIView#40", name: "makeUIView", location: SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 16, column: 10),
+        containingTypeUSR: "syntactic:GestureView", conformances: [placeholderConformance("syntactic:PlatformViewRepresentable")]
+    )
+    // The tvOS-only file's own member: a *different* byte offset in its own placeholder `usr`
+    // (an unrelated file's own body is never byte-for-byte identical) but the identical bare
+    // `containingTypeUSR`/`protocolUSR` strings -- neither file's own syntactic extraction has any
+    // notion of the other file at all -- and its own file has zero real indexed symbols: it was
+    // never compiled for this analysis.
+    let tvOSMember = makeDeclaration(
+        usr: "syntactic:GestureView.makeUIView#99", name: "makeUIView", location: tvOSMemberLocation,
+        containingTypeUSR: "syntactic:GestureView", conformances: [placeholderConformance("syntactic:PlatformViewRepresentable")]
+    )
+
+    let fake = FakeIndexStoreQuerying()
+    // Only the iOS file has any real indexed symbols -- the tvOS file is entirely absent from the
+    // index, exactly as it would be when only the iOS scheme was built/indexed.
+    fake.symbolsByFile["/Swiftfin/GestureView.swift"] = [
+        IndexedSymbol(usr: "s:realGestureView", name: "GestureView", location: iosLocation),
+        IndexedSymbol(usr: "s:realGestureView.makeUIView", name: "makeUIView", location: SymbolLocation(file: "/Swiftfin/GestureView.swift", line: 16, column: 10)),
+    ]
+
+    let linked = DeclarationLinker(indexStore: fake).link([
+        ExtractionResult(declarations: [iosType, iosMember], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [tvOSMember], protocolGlobalActorNames: [:]),
+    ])
+
+    let linkedIOSMember = try #require(linked.declarations["s:realGestureView.makeUIView"])
+    #expect(linkedIOSMember.containingTypeUSR == "s:realGestureView", "the real iOS member's own containingTypeUSR must still resolve normally")
+
+    // The tvOS member's own `usr` never matched anything real (its file has no indexed symbols),
+    // so it's still keyed by its original placeholder -- find it that way.
+    let linkedTVOSMember = try #require(linked.declarations["syntactic:GestureView.makeUIView#99"])
+    #expect(
+        linkedTVOSMember.containingTypeUSR == "syntactic:GestureView",
+        "an uncompiled file's own member must never inherit an unrelated, same-named real type's USR"
+    )
+    #expect(
+        linkedTVOSMember.conformances.first?.protocolUSR == "syntactic:PlatformViewRepresentable",
+        "an uncompiled file's own conformance reference must never resolve through an unrelated real type either"
+    )
+}
+
+// MARK: - Transitive protocol-inheritance expansion (docs/task-transitive-protocol-conformance.md)
+
+@Test("link(_:) expands a type's conformance to a project-local protocol to also include that protocol's own external ancestor, letting the existing external-backfill machinery resolve it (PlatformView/Swiftfin shape)")
+func linkExpandsConformanceThroughProtocolInheritanceChain() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/LetterPickerBar.swift", line: 12, column: 8)
+    fake.symbolsByFile["/LetterPickerBar.swift"] = [IndexedSymbol(usr: "s:realLetterPickerBar", name: "LetterPickerBar", location: location)]
+
+    // Real shape: `struct LetterPickerBar: PlatformView { ... }`, and completely separately,
+    // `protocol PlatformView: View { ... }` (PlatformView.swift, a different file, never
+    // contributes a `helper`/`letterBar`-shaped member of its own -- only its own inheritance
+    // clause matters here).
+    let conformance = placeholderConformance("syntactic:PlatformView")
+    let helper = makeDeclaration(
+        usr: "syntactic:LetterPickerBar.helper#0", name: "helper", location: nil,
+        containingTypeUSR: "syntactic:LetterPickerBar", conformances: [conformance]
+    )
+    let type = makeDeclaration(usr: "syntactic:LetterPickerBar", name: "LetterPickerBar", location: location, conformances: [conformance])
+
+    let extractionResults = [
+        ExtractionResult(declarations: [type, helper], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolInheritedProtocolNames: ["PlatformView": ["View"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedHelper = try #require(linked.declarations.values.first { $0.name == "helper" })
+    let protocolUSRs = Set(linkedHelper.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:PlatformView", "syntactic:View"], "the transitively-inherited ancestor must be added, not substituted for the original")
+
+    let addedConformance = try #require(linkedHelper.conformances.first { $0.protocolUSR == "syntactic:View" })
+    #expect(
+        addedConformance.declaredInSameContextAsWitness == conformance.declaredInSameContextAsWitness,
+        "the synthetic ancestor entry must carry the same locality flags as the conformance that introduced it"
+    )
+}
+
+@Test("link(_:) walks a multi-hop protocol-inheritance chain to its end, not just one level")
+func linkExpandsConformanceThroughMultiHopChain() throws {
+    let fake = FakeIndexStoreQuerying()
+    let conformance = placeholderConformance("syntactic:A")
+    let declaration = makeDeclaration(usr: "syntactic:Widget", name: "Widget", location: nil, conformances: [conformance])
+
+    // A -> B -> C -> View: the ancestor three hops away must still be found.
+    let extractionResults = [
+        ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:]),
+        ExtractionResult(
+            declarations: [], protocolGlobalActorNames: [:],
+            protocolInheritedProtocolNames: ["A": ["B"], "B": ["C"], "C": ["View"]]
+        ),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedWidget = try #require(linked.declarations.values.first { $0.name == "Widget" })
+    let protocolUSRs = Set(linkedWidget.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:A", "syntactic:B", "syntactic:C", "syntactic:View"])
+}
+
+@Test("link(_:) never infinite-loops on a protocol-inheritance cycle")
+func linkToleratesAProtocolInheritanceCycleWithoutHanging() throws {
+    let fake = FakeIndexStoreQuerying()
+    let conformance = placeholderConformance("syntactic:A")
+    let declaration = makeDeclaration(usr: "syntactic:Widget", name: "Widget", location: nil, conformances: [conformance])
+
+    // A -> B -> A: not valid Swift, but the graph walk must not hang if it ever occurred (e.g. a
+    // tool/data inconsistency), matching the "never guess, never crash" philosophy elsewhere in
+    // this file.
+    let extractionResults = [
+        ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolInheritedProtocolNames: ["A": ["B"], "B": ["A"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedWidget = try #require(linked.declarations.values.first { $0.name == "Widget" })
+    let protocolUSRs = Set(linkedWidget.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:A", "syntactic:B"])
 }
 
 // MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)

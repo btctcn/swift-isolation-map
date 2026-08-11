@@ -30,6 +30,16 @@ import IsolationCore
 public struct ExtractionResult: Equatable, Sendable {
     public let declarations: [DeclarationInfo]
     public let protocolGlobalActorNames: [String: String]
+    /// `protocolName -> requirementName -> globalActorName` -- see
+    /// `TypeIndexBuilder.buildIndex`'s own doc comment for why this exists separately from
+    /// `protocolGlobalActorNames` (a protocol with no overall attribute but individually
+    /// `@GlobalActor`-attributed requirements, e.g. Swiftfin's own `PlatformView`).
+    public let protocolRequirementGlobalActorNames: [String: [String: String]]
+    /// `protocolName -> superProtocolNames` -- this protocol's own directly-written inheritance
+    /// clause (e.g. `protocol PlatformView: View` -> `"PlatformView": ["View"]`). Used by
+    /// `IndexStoreIntegration.DeclarationLinker` to transitively expand a *conforming type's* own
+    /// conformance list -- see that type's own doc comment for the real gap this closes.
+    public let protocolInheritedProtocolNames: [String: Set<String>]
     /// This file's own global-actor names (`FileWideNames.globalActorNames`) -- file-local, like
     /// `protocolGlobalActorNames`. A multi-file caller (`IndexStoreIntegration.DeclarationLinker`)
     /// unions every file's set into one project-wide accept-list for closure-attribute recognition
@@ -46,11 +56,15 @@ public struct ExtractionResult: Equatable, Sendable {
 
     public init(
         declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String],
+        protocolRequirementGlobalActorNames: [String: [String: String]] = [:],
+        protocolInheritedProtocolNames: [String: Set<String>] = [:],
         globalActorNames: Set<String> = [], closureLiteralRecords: [ClosureLiteralRecord] = [],
         awaitedRanges: [AwaitedRange] = []
     ) {
         self.declarations = declarations
         self.protocolGlobalActorNames = protocolGlobalActorNames
+        self.protocolRequirementGlobalActorNames = protocolRequirementGlobalActorNames
+        self.protocolInheritedProtocolNames = protocolInheritedProtocolNames
         self.globalActorNames = globalActorNames
         self.closureLiteralRecords = closureLiteralRecords
         self.awaitedRanges = awaitedRanges
@@ -67,20 +81,25 @@ public enum DeclarationExtractor {
         let converter = SourceLocationConverter(fileName: fileName, tree: tree)
 
         let fileWideNames = FileWideNameCollector.collect(from: tree)
-        let (index, protocolGlobalActorNames) = TypeIndexBuilder.buildIndex(from: tree, fileWideNames: fileWideNames, fileName: fileName, converter: converter)
+        let (index, protocolGlobalActorNames, protocolRequirementGlobalActorNames, protocolInheritedProtocolNames) = TypeIndexBuilder.buildIndex(
+            from: tree, fileWideNames: fileWideNames, fileName: fileName, converter: converter
+        )
 
         let visitor = DeclarationVisitor(
             fileName: fileName,
             converter: converter,
             knownGlobalActorNames: fileWideNames.globalActorNames,
             typeIndex: index,
-            protocolGlobalActorNames: protocolGlobalActorNames
+            protocolGlobalActorNames: protocolGlobalActorNames,
+            protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames
         )
         visitor.walk(tree)
         let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter)
         let awaitedRanges = AwaitedCallSiteExtractor.extract(from: tree, fileName: fileName, converter: converter)
         return ExtractionResult(
             declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames,
+            protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames,
+            protocolInheritedProtocolNames: protocolInheritedProtocolNames,
             globalActorNames: fileWideNames.globalActorNames, closureLiteralRecords: closureLiteralRecords,
             awaitedRanges: awaitedRanges
         )
@@ -222,14 +241,33 @@ struct TypeIndexEntry {
 }
 
 enum TypeIndexBuilder {
-    /// Returns the per-type index plus a separate `protocolName -> globalActorName` map (SE-0316:
-    /// a protocol declared with a global actor attribute, e.g. `@MainActor protocol Refreshable`,
-    /// qualifies conformance to it as isolation-relevant) -- needed so `ProtocolConformance`
-    /// entries built later know which conformed-to names actually carry isolation meaning.
-    static func buildIndex(from tree: SourceFileSyntax, fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter) -> (index: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String]) {
+    /// Returns the per-type index plus two separate maps SE-0316 conformance resolution needs:
+    /// - `protocolGlobalActorNames`: `protocolName -> globalActorName` for a *whole* protocol
+    ///   declared with a global actor attribute (e.g. `@MainActor protocol Refreshable`) --
+    ///   qualifies conformance to it as isolation-relevant for every member alike.
+    /// - `protocolRequirementGlobalActorNames`: `protocolName -> requirementName -> globalActorName`
+    ///   for a protocol that carries *no* overall attribute but individually attributes one or
+    ///   more of its own requirements -- confirmed a real, reproduced gap on `Swiftfin`:
+    ///   `protocol PlatformView: View { @MainActor var iOSView: ... { get }; @MainActor var
+    ///   tvOSView: ... { get } }` carries no attribute on the `protocol` line itself, only on its
+    ///   two requirements, so the whole-protocol scan alone never populates
+    ///   `protocolGlobalActorNames["PlatformView"]` at all -- every conforming type's own
+    ///   `iOSView`/`tvOSView` witness (confirmed `@MainActor` via a real `swiftc` repro: "main
+    ///   actor-isolated property... can not be referenced from a nonisolated context") silently
+    ///   came out `nonisolated` instead, across every "Overlay"/platform-split view in the
+    ///   project (`LetterPickerBar`, `EditItemMenu`, `SeasonSelector`, and dozens more). Matched to
+    ///   a witness member purely by *name* (a requirement has no body to match structurally), the
+    ///   same "no enclosing type scope" reality `emitMember`'s own placeholder-USR discriminator
+    ///   comment already documents for protocol requirements.
+    static func buildIndex(
+        from tree: SourceFileSyntax, fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter
+    ) -> (
+        index: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String],
+        protocolRequirementGlobalActorNames: [String: [String: String]], protocolInheritedProtocolNames: [String: Set<String>]
+    ) {
         let visitor = Visitor(fileWideNames: fileWideNames, fileName: fileName, converter: converter)
         visitor.walk(tree)
-        return (visitor.index, visitor.protocolGlobalActorNames)
+        return (visitor.index, visitor.protocolGlobalActorNames, visitor.protocolRequirementGlobalActorNames, visitor.protocolInheritedProtocolNames)
     }
 
     private final class Visitor: SyntaxVisitor {
@@ -238,6 +276,8 @@ enum TypeIndexBuilder {
         let converter: SourceLocationConverter
         var index: [String: TypeIndexEntry] = [:]
         var protocolGlobalActorNames: [String: String] = [:]
+        var protocolRequirementGlobalActorNames: [String: [String: String]] = [:]
+        var protocolInheritedProtocolNames: [String: Set<String>] = [:]
         private var path: [String] = []
 
         init(fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter) {
@@ -255,6 +295,35 @@ enum TypeIndexBuilder {
         override func visit(_ node: ProtocolDeclSyntax) -> SyntaxVisitorContinueKind {
             if let actorName = recognizedGlobalActorAttribute(in: node.attributes, known: fileWideNames.globalActorNames) {
                 protocolGlobalActorNames[node.name.text] = actorName
+            }
+            // This protocol's own super-protocol names (e.g. `protocol PlatformView: View`) --
+            // used by `DeclarationLinker.link()` to transitively expand a *conforming type's* own
+            // conformance list, so a type written as `LetterPickerBar: PlatformView` is also
+            // treated as conforming to `View` for isolation purposes, exactly as if it had written
+            // `: View` directly. See that function's own doc comment for the real, reproduced gap
+            // this closes (Swiftfin's `LetterPickerBar`: confirmed via a real `swiftc` repro that
+            // an *entirely unrelated*, unattributed member of a type conforming to `PlatformView`
+            // is still real `@MainActor` -- "main actor-isolated property... can not be
+            // referenced" -- because `PlatformView` itself transitively conforms to `View`, a
+            // real, external, whole-protocol `@MainActor` protocol, regardless of the fact that
+            // `PlatformView` carries no attribute of its own).
+            if let inheritance = node.inheritanceClause {
+                for inherited in inheritance.inheritedTypes {
+                    if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
+                        protocolInheritedProtocolNames[node.name.text, default: []].insert(name)
+                    }
+                }
+            }
+            for member in node.memberBlock.members {
+                if let function = member.decl.as(FunctionDeclSyntax.self),
+                   let actorName = recognizedGlobalActorAttribute(in: function.attributes, known: fileWideNames.globalActorNames) {
+                    protocolRequirementGlobalActorNames[node.name.text, default: [:]][function.name.text] = actorName
+                } else if let variable = member.decl.as(VariableDeclSyntax.self),
+                          let actorName = recognizedGlobalActorAttribute(in: variable.attributes, known: fileWideNames.globalActorNames) {
+                    for binding in variable.bindings {
+                        protocolRequirementGlobalActorNames[node.name.text, default: [:]][binding.pattern.trimmedDescription] = actorName
+                    }
+                }
             }
             // A protocol can't be nested inside another type in Swift, so unlike
             // actor/class/struct/enum there's no `path` to push/pop here. Recording this as a
@@ -404,6 +473,7 @@ private final class DeclarationVisitor: SyntaxVisitor {
     let knownGlobalActorNames: Set<String>
     let typeIndex: [String: TypeIndexEntry]
     let protocolGlobalActorNames: [String: String]
+    let protocolRequirementGlobalActorNames: [String: [String: String]]
     var declarations: [DeclarationInfo] = []
 
     private var path: [String] = []
@@ -415,12 +485,17 @@ private final class DeclarationVisitor: SyntaxVisitor {
     /// currently open -- used for rule 8's declaredInSameContextAsWitness.
     private var currentBodyConformedProtocolNamesStack: [Set<String>] = []
 
-    init(fileName: String, converter: SourceLocationConverter, knownGlobalActorNames: Set<String>, typeIndex: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String]) {
+    init(
+        fileName: String, converter: SourceLocationConverter, knownGlobalActorNames: Set<String>,
+        typeIndex: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String],
+        protocolRequirementGlobalActorNames: [String: [String: String]] = [:]
+    ) {
         self.fileName = fileName
         self.converter = converter
         self.knownGlobalActorNames = knownGlobalActorNames
         self.typeIndex = typeIndex
         self.protocolGlobalActorNames = protocolGlobalActorNames
+        self.protocolRequirementGlobalActorNames = protocolRequirementGlobalActorNames
         super.init(viewMode: .sourceAccurate)
     }
 
@@ -538,7 +613,12 @@ private final class DeclarationVisitor: SyntaxVisitor {
         let conformances = currentBodyConformedProtocolNames.map { protocolName in
             ProtocolConformance(
                 protocolUSR: SyntacticIdentity.typeUSR(named: protocolName),
-                protocolGlobalActorName: protocolGlobalActorNames[protocolName],
+                // Whole-protocol attribute first; a per-requirement attribute (matched by this
+                // witness's own name -- see `TypeIndexBuilder.buildIndex`'s doc comment) only ever
+                // applies to the specific member satisfying that one requirement, never the type
+                // as a whole, so it's deliberately not consulted in `emitTypeDeclarationIfNeeded`'s
+                // own, type-level conformance construction above.
+                protocolGlobalActorName: protocolGlobalActorNames[protocolName] ?? protocolRequirementGlobalActorNames[protocolName]?[name],
                 declaredInSameFileAsPrimaryDefinition: false,
                 declaredInSameContextAsWitness: true
             )

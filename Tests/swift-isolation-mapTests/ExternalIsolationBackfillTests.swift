@@ -162,6 +162,58 @@ func declarationLevelTriggerBackfillsSuperclass() async {
     #expect(resolution.backfilledDeclarations["s:external.Base"]?.explicitIsolation == .globalActor(name: "MainActor"))
 }
 
+@Test("A declaration with a bare-name (\"syntactic:\") external superclass -- UIViewController, never resolved to a real USR since it's never defined in any analyzed file -- still gets the superclass backfilled (UIVideoPlayerContainerViewController/Swiftfin shape)")
+func declarationLevelTriggerBackfillsBareNameSyntacticSuperclass() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let declaration = DeclarationInfo(usr: "s:Sub", name: "Sub", superclassUSR: "syntactic:UIViewController", location: location)
+    let linked = LinkedAnalysis(declarations: ["s:Sub": declaration], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Sub", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Sub")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["syntactic:UIViewController"]?.explicitIsolation == .globalActor(name: "MainActor"))
+}
+
+@Test("A superclass USR that already has a *phantom*, location-less linked.declarations entry (an extension of that external type elsewhere in the project, with no primary declaration anywhere among the analyzed files) is still treated as unresolved and gets backfilled (UIViewController+Swizzling/Swiftfin shape)")
+func declarationLevelTriggerBackfillsSuperclassEvenWhenAnUnrelatedExtensionCreatedAPhantomEntry() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    // Real shape confirmed on Swiftfin: `PreferencesView/Sources/PreferencesView/UIViewController
+    // +Swizzling.swift` extends the real, external `UIViewController` -- `DeclarationExtractor`
+    // emits a type-level entry for "UIViewController" purely because of that extension, with no
+    // primary declaration (hence no location) anywhere among the analyzed files, and no isolation
+    // information of its own.
+    let phantomExtensionOnlyEntry = DeclarationInfo(
+        usr: "syntactic:UIViewController", name: "UIViewController", location: nil
+    )
+    let subclass = DeclarationInfo(usr: "s:Sub", name: "Sub", superclassUSR: "syntactic:UIViewController", location: location)
+    let linked = LinkedAnalysis(declarations: ["syntactic:UIViewController": phantomExtensionOnlyEntry, "s:Sub": subclass], callGraph: [])
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:Sub", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:Sub")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations["syntactic:UIViewController"]?.explicitIsolation == .globalActor(name: "MainActor"))
+}
+
 @Test("A declaration with its own explicit isolation is never queried -- it's not a safe representative for its superclass")
 func declarationWithOwnExplicitIsolationIsSkipped() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
@@ -342,6 +394,64 @@ func declarationLevelTriggerPrefersWitnessMemberInPrimaryBody() async {
 
     #expect(resolution.updatedDeclarations["s:Renderer"]?.conformances.first?.protocolGlobalActorName == "MainActor")
     #expect(resolution.updatedDeclarations["s:Renderer.binder"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(sourceKitD.callCount == 1)
+}
+
+@Test("A structurally ineligible witness-context member (a typealias) is skipped as a representative in favor of a later, eligible one (SelectUserView shape)")
+func declarationLevelTriggerSkipsIneligibleWitnessMemberInFavorOfALaterEligibleOne() async {
+    let typealiasLocation = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let bodyLocation = SymbolLocation(file: "/f.swift", line: 2, column: 1)
+    let witnessConformance = ProtocolConformance(
+        protocolUSR: "s:external.View", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true
+    )
+    // A typealias can never carry actor isolation (SE-0466's own exclusion list) --
+    // `isEligibleForModuleDefaultIsolation: false` mirrors how `emitMember` actually computes it
+    // for a real `.typealiasDecl`.
+    let typealiasMember = DeclarationInfo(
+        usr: "s:SelectUserView.UserItem", name: "UserItem", containingTypeUSR: "s:SelectUserView",
+        conformances: [witnessConformance], isEligibleForModuleDefaultIsolation: false, location: typealiasLocation
+    )
+    let bodyMember = DeclarationInfo(
+        usr: "s:SelectUserView.body", name: "body", containingTypeUSR: "s:SelectUserView",
+        conformances: [witnessConformance], location: bodyLocation
+    )
+    // The containing type itself must already be a resolved, project-local declaration -- omitting
+    // it would *also* trigger the unrelated "unresolved containingTypeUSR" need/placeholder
+    // mechanism, an entirely separate live-query dispatch that would confound this test's actual
+    // focus (conformance-pair representative selection) with a spurious extra query.
+    let typeDeclaration = DeclarationInfo(usr: "s:SelectUserView", name: "SelectUserView", conformances: [], location: typealiasLocation)
+    let linked = LinkedAnalysis(
+        declarations: [
+            "s:SelectUserView": typeDeclaration,
+            "s:SelectUserView.UserItem": typealiasMember, "s:SelectUserView.body": bodyMember,
+        ], callGraph: []
+    )
+    let fileSystem = makeFixture(contents: "first\nsecond\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Deliberately different answers at the two locations: if the typealias (ordered first in the
+    // file) were queried instead of `body`, this test would observe the WRONG answer below --
+    // exactly the real `SelectUserView`/`UserItem` failure mode this guards against. A typealias's
+    // own real isolation is always `.nonisolated` -- that's a genuine, correct fact about the
+    // typealias, but not evidence about whether `View` itself is `@MainActor`.
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:SelectUserView.UserItem", fullyAnnotatedDeclXML: nil, symbolGraphJSON: noAttributeSymbolGraph(usr: "s:SelectUserView.UserItem")),
+        secondary: []
+    ))
+    sourceKitD.responsesByOffset[6] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:SelectUserView.body", fullyAnnotatedDeclXML: nil, symbolGraphJSON: mainActorSymbolGraph(usr: "s:SelectUserView.body")),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.updatedDeclarations["s:SelectUserView.UserItem"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(resolution.updatedDeclarations["s:SelectUserView.body"]?.conformances.first?.protocolGlobalActorName == "MainActor")
     #expect(sourceKitD.callCount == 1)
 }
 

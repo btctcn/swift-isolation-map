@@ -214,7 +214,8 @@ enum ExternalIsolationBackfill {
                 workerCount: oracleWorkerCount,
                 compilerArguments: compilerArguments,
                 workerExecutablePath: oracleWorkerExecutablePath,
-                processRunning: processRunning
+                processRunning: processRunning,
+                knownGlobalActorNames: linked.globalActorNames
             )
             for (usr, outcome) in parallelOutcomes {
                 outcomes[usr] = outcome
@@ -223,7 +224,8 @@ enum ExternalIsolationBackfill {
             for item in merged {
                 outcomes[item.targetUSR] = await query(
                     targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
-                    compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+                    compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
+                    knownGlobalActorNames: linked.globalActorNames
                 )
             }
         }
@@ -489,11 +491,33 @@ enum ExternalIsolationBackfill {
             return lhs.usr < rhs.usr
         }
 
+        // A `linked.declarations[usr]` entry with no `location` at all has no primary declaration
+        // anywhere among the analyzed files -- `DeclarationLinker.merged`'s own "known, documented
+        // limitation" doc comment (only extensions ever contributed to it, e.g. `extension
+        // UIViewController { ... }` in a project's own helper file, extending a real SDK type that
+        // itself is never declared in the analyzed project) -- so it carries no real isolation
+        // information (`explicitIsolation: nil`, and `resolveDefaultIsolation` would just fall
+        // through to `.nonisolated`). Confirmed a real, reproduced bug on `Swiftfin`:
+        // `PreferencesView/Sources/PreferencesView/UIViewController+Swizzling.swift` extends the
+        // real `UIViewController`, which creates exactly this phantom, isolation-less
+        // `"syntactic:UIViewController"` entry -- and since `linked.declarations[superclassUSR] ==
+        // nil` was the *only* signal this claim loop used to decide "already resolved, no backfill
+        // needed," every *other*, unrelated declaration in the whole project whose own superclass
+        // is genuinely `UIViewController` (`UIVideoPlayerContainerViewController`, a real, direct
+        // subclass, confirmed `@MainActor` via a real `swiftc` repro: "main actor isolation
+        // inferred from inheritance from class 'UIViewController'") silently inherited that
+        // phantom's `.nonisolated` default instead of ever triggering a live-query backfill.
+        // Treating a location-less entry as "not really resolved" here routes it into the exact
+        // same external-backfill path a plain unresolved placeholder already gets.
+        func isGenuinelyResolvedProjectLocalDeclaration(_ usr: String) -> Bool {
+            linked.declarations[usr]?.location != nil
+        }
+
         for declaration in orderedDeclarations {
             guard declaration.explicitIsolation == nil, declaration.enclosingExtensionIsolation == nil else { continue }
 
             var unresolvedSuperclassUSR = declaration.superclassUSR.flatMap { superclassUSR in
-                linked.declarations[superclassUSR] == nil && backfilled[superclassUSR] == nil ? superclassUSR : nil
+                !isGenuinelyResolvedProjectLocalDeclaration(superclassUSR) && backfilled[superclassUSR] == nil ? superclassUSR : nil
             }
             // Extension-of-an-external-type fix (docs/task-external-type-extension-isolation.md):
             // a member whose `containingTypeUSR` `DeclarationLinker`'s own `.childOf`/`.extendedBy`
@@ -503,13 +527,13 @@ enum ExternalIsolationBackfill {
             // lookup `IsolationInferenceEngine.resolveInheritedIsolation`'s containing-type-
             // propagation branch already performs, no engine change needed.
             var unresolvedContainingTypeUSR = declaration.containingTypeUSR.flatMap { containingTypeUSR in
-                linked.declarations[containingTypeUSR] == nil && backfilled[containingTypeUSR] == nil ? containingTypeUSR : nil
+                !isGenuinelyResolvedProjectLocalDeclaration(containingTypeUSR) && backfilled[containingTypeUSR] == nil ? containingTypeUSR : nil
             }
             var unresolvedConformanceIndices = declaration.conformances.indices.filter { index in
                 let conformance = declaration.conformances[index]
                 guard conformance.protocolGlobalActorName == nil,
                       conformance.declaredInSameFileAsPrimaryDefinition || conformance.declaredInSameContextAsWitness,
-                      linked.declarations[conformance.protocolUSR] == nil,
+                      !isGenuinelyResolvedProjectLocalDeclaration(conformance.protocolUSR),
                       !wellKnownNeverGlobalActorProtocolUSRs.contains(conformance.protocolUSR) else { return false }
                 return true
             }
@@ -605,12 +629,26 @@ enum ExternalIsolationBackfill {
             // own entry, or a member without witness-context locality for this specific protocol --
             // is deferred to the fallback pass below, which only lets a non-witness declaration
             // claim a pair if no witness-context declaration ever does.
+            //
+            // A witness-context member is *also* rejected as a representative (deferred exactly
+            // like a non-witness one) when it's structurally ineligible for isolation at all
+            // (`isEligibleForModuleDefaultIsolation`'s own SE-0466 exclusion list: typealiases,
+            // enum cases, accessors) -- confirmed a real, reproduced regression on `Swiftfin`:
+            // `struct SelectUserView: View { typealias UserItem = (...); ... var body: some View
+            // { ... } }` picked `UserItem` (declared earlier in the file, hence first in
+            // `orderedDeclarations`) as the (SelectUserView, View) pair's representative. A
+            // `typealias` can never carry actor isolation, so its own live-queried isolation
+            // correctly comes back `.nonisolated` -- but that's a fact about the *typealias*, not
+            // about whether `View` (a real, whole-protocol `@MainActor` conformance, confirmed
+            // directly against `SwiftUICore`'s own `.swiftinterface`) applies to the type. Skipping
+            // ineligible candidates lets a later, eligible witness-context member (`body`, here)
+            // claim the pair instead.
             var ownedPairKeys: [ConformancePairKey] = []
             var deferredIndices: [Int] = []
             for index in unresolvedConformanceIndices {
                 let key = ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR)
                 guard !claimedPairs.contains(key) else { continue }
-                guard declaration.conformances[index].declaredInSameContextAsWitness else {
+                guard declaration.conformances[index].declaredInSameContextAsWitness, declaration.isEligibleForModuleDefaultIsolation else {
                     deferredIndices.append(index)
                     continue
                 }
@@ -707,7 +745,8 @@ enum ExternalIsolationBackfill {
 
             let outcome = await query(
                 targetUSR: need.declarationUSR, file: need.location.file, line: need.location.line, utf8Column: need.location.column,
-                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache
+                compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
+                knownGlobalActorNames: linked.globalActorNames
             )
             switch outcome {
             case .resolved(let isolation):
@@ -847,7 +886,8 @@ enum ExternalIsolationBackfill {
         compilerArguments: CompilerArgumentsProviding,
         sourceKitD: SourceKitDQuerying,
         fileSystem: FileSystemQuerying,
-        bulkCache: [String: IsolationKind]
+        bulkCache: [String: IsolationKind],
+        knownGlobalActorNames: Set<String>
     ) async -> QueryOutcome {
         // The primary win for the edge-level trigger: a direct call into a bulk-covered SDK
         // module (e.g. `someUIView.someMethod()`) resolves from an in-memory dictionary, no
@@ -865,10 +905,12 @@ enum ExternalIsolationBackfill {
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
-            if let symbolGraphJSON = symbol.symbolGraphJSON, let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON) {
+            if let symbolGraphJSON = symbol.symbolGraphJSON,
+               let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)
             }
-            if let xml = symbol.fullyAnnotatedDeclXML, let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml) {
+            if let xml = symbol.fullyAnnotatedDeclXML,
+               let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)
             }
             return .unknown
