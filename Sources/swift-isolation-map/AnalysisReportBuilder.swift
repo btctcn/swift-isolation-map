@@ -91,6 +91,19 @@ enum AnalysisReportBuilder {
             if declarations[edge.calleeUSR]?.isImmutableStoredProperty == true, !isUnknown {
                 return nil
             }
+            // A callee that's an actor's *own* initializer is never a real risk either, regardless
+            // of caller isolation: SE-0306's own text (`docs/isolation-rules.md` rule 3) grants an
+            // isolated `self` to an actor's instance methods, properties, and subscripts --
+            // initializers are conspicuously absent, and real Swift confirms it: constructing a
+            // new actor instance never requires prior access to that (not-yet-existing) instance,
+            // so no `await` is needed from any caller. Confirmed directly by compilation (`actor A
+            // { init() {} }`, a `nonisolated` caller constructing `A()`: zero diagnostics under
+            // `-strict-concurrency=complete`) -- found auditing a real project's own high-risk
+            // edges, `WordPress-iOS`'s `StatsService`/`WordPressClient`/... initializers. Suppressed
+            // entirely, mirroring the two carve-outs immediately above.
+            if declarations[edge.calleeUSR]?.isActorInitializer == true, !isUnknown {
+                return nil
+            }
             return AnalysisEdge(
                 callerUSR: edge.callerUSR,
                 calleeUSR: edge.calleeUSR,

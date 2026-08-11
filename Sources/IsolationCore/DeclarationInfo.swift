@@ -44,6 +44,21 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// involved. Consumed by `AnalysisReportBuilder`'s risk suppression, mirroring its existing
     /// "isolated caller reaching a confirmed `.nonisolated` callee" carve-out.
     public let isImmutableStoredProperty: Bool
+    /// An actor's *own* initializer -- structurally distinct from its instance methods,
+    /// properties, and subscripts. SE-0306's own text (quoted in `docs/isolation-rules.md`'s rule
+    /// 3) says only "the instance methods, properties, and subscripts of an actor have an
+    /// isolated `self` parameter" -- initializers are conspicuously absent, and real Swift
+    /// confirms it: `actor A { init() {} }; nonisolated func f() { A() }` compiles with zero
+    /// diagnostics under `-strict-concurrency=complete`, no `await` needed, since constructing a
+    /// new actor instance doesn't require prior access to that (not-yet-existing) instance.
+    /// Confirmed a real, reproduced gap on `WordPress-iOS`: calling an actor's own initializer
+    /// from `nonisolated` code (`StatsService(...)`, `WordPressClient(...)`, ...) was reported as
+    /// a `high`-risk `nonisolated -> actor(...)` boundary. Consumed by `AnalysisReportBuilder`'s
+    /// risk suppression, mirroring `isImmutableStoredProperty`'s own carve-out immediately above --
+    /// `IsolationInferenceEngine` itself stays untouched; the init's own resolved isolation is
+    /// still (correctly, structurally) `.actor(name)` for anything that legitimately needs it
+    /// (e.g. a call from *within* the same actor), only the edge-level risk report changes.
+    public let isActorInitializer: Bool
 
     public init(
         usr: String,
@@ -58,7 +73,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         enclosingExtensionIsolation: IsolationKind? = nil,
         isNestedType: Bool = false,
         location: SymbolLocation? = nil,
-        isImmutableStoredProperty: Bool = false
+        isImmutableStoredProperty: Bool = false,
+        isActorInitializer: Bool = false
     ) {
         self.usr = usr
         self.name = name
@@ -73,6 +89,7 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.isNestedType = isNestedType
         self.location = location
         self.isImmutableStoredProperty = isImmutableStoredProperty
+        self.isActorInitializer = isActorInitializer
     }
 }
 

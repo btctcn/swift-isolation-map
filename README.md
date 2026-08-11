@@ -244,6 +244,14 @@ making an incorrect claim about which shapes are risk-free; distinguishing the `
 escape hatch specifically is a separate, named, tracked gap — see
 `docs/task-compiled-dependency-isolation-integration.md` §5 — not a silent limitation.
 
+In practice, `await`-protected crossings are a small minority of `high` findings, not the bulk of
+them — confirmed against a real, independent corpus (`WordPress-iOS`, `WordPress` scheme, 3208
+Swift files): of 1486 `high` boundaries, only 42 (2.8%) have `isAwaited: true`. The other 97.2% are
+exactly the unguarded crossings a migration effort needs to see first. If your own project's split
+looks very different — `await`-protected crossings dominating the `high` count — that's a signal
+worth acting on with `isAwaited`-based filtering downstream (a spreadsheet pivot, a jq query against
+the JSON output), not a reason to distrust the classification itself.
+
 ## Why this is useful
 
 The compiler already enforces every one of these boundaries correctly, one error at a time, as you

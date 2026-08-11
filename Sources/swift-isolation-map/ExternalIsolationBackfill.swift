@@ -862,7 +862,8 @@ enum ExternalIsolationBackfill {
             enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
             isNestedType: declaration.isNestedType,
             location: declaration.location,
-            isImmutableStoredProperty: declaration.isImmutableStoredProperty
+            isImmutableStoredProperty: declaration.isImmutableStoredProperty,
+            isActorInitializer: declaration.isActorInitializer
         )
     }
 

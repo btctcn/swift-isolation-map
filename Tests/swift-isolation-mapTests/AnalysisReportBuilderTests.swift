@@ -282,6 +282,56 @@ struct AnalysisReportBuilderTests {
         #expect(edge.isUnknown)
     }
 
+    // MARK: - Actor-own-initializer callee suppression (WordPress-iOS audit finding)
+
+    @Test("A callee that's an actor's own initializer is suppressed entirely, not reported as high risk, regardless of caller isolation")
+    func actorOwnInitializerCalleeIsSuppressed() {
+        // Real shape confirmed against WordPress-iOS: `nonisolated` code constructing a new
+        // instance of a custom actor (`StatsService(...)`, `WordPressClient(...)`) was reported as
+        // a high-risk `nonisolated -> actor(...)` boundary -- but SE-0306's own text (quoted in
+        // docs/isolation-rules.md rule 3) grants an isolated `self` only to an actor's instance
+        // methods, properties, and subscripts, never its initializer. Confirmed directly by
+        // compilation: `actor A { init() {} }` constructed from a `nonisolated` function compiles
+        // with zero diagnostics under `-strict-concurrency=complete`, no `await` needed.
+        let actorType = DeclarationInfo(usr: "usr:actor", name: "StatsService", isActorType: true)
+        let actorInit = DeclarationInfo(
+            usr: "usr:actor.init", name: "init", containingTypeUSR: "usr:actor", isActorInitializer: true
+        )
+        let nonisolatedCaller = DeclarationInfo(usr: "usr:caller", name: "makeService", explicitIsolation: .nonisolated)
+        let declarations: [String: DeclarationInfo] = [
+            "usr:actor": actorType,
+            "usr:actor.init": actorInit,
+            "usr:caller": nonisolatedCaller
+        ]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:actor.init", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        #expect(report.edges.isEmpty, "constructing a new actor instance is never a risk from any caller isolation -- must not appear in the report at all")
+        #expect(report.summary.crossActorBoundaries == 0)
+    }
+
+    @Test("The actor-initializer suppression does not apply when the callee resolution is only an oracle-failure fallback (isUnknown)")
+    func actorInitializerSuppressionDoesNotApplyWhenCalleeIsolationIsUnknown() throws {
+        let actorType = DeclarationInfo(usr: "usr:actor", name: "StatsService", isActorType: true)
+        let actorInit = DeclarationInfo(
+            usr: "usr:actor.init", name: "init", containingTypeUSR: "usr:actor", isActorInitializer: true
+        )
+        let nonisolatedCaller = DeclarationInfo(usr: "usr:caller", name: "makeService", explicitIsolation: .nonisolated)
+        let declarations: [String: DeclarationInfo] = ["usr:actor": actorType, "usr:actor.init": actorInit, "usr:caller": nonisolatedCaller]
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:actor.init", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            unknownUSRs: ["usr:actor.init"]
+        )
+
+        let edge = try #require(report.edges.first, "an oracle-failure fallback is not a confirmed fact -- must still surface, not be silently treated as proven-safe")
+        #expect(edge.isUnknown)
+    }
+
     // MARK: - Low-risk explanation text accuracy (issue #47)
 
     @Test("Low risk, same global actor on both sides: explanation says 'same isolation domain', not 'compiler-enforced via await'")
