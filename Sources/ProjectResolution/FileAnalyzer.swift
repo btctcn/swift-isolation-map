@@ -12,6 +12,9 @@ public struct FileAnalysisResult: Equatable, Sendable {
     /// but one or more individually `@GlobalActor`-attributed requirements (e.g. Swiftfin's own
     /// `PlatformView`). See `SyntaxAnalysis.TypeIndexBuilder.buildIndex`'s own doc comment.
     public let protocolRequirementGlobalActorNames: [String: [String: String]]
+    /// Threaded through the same way -- see `SyntaxAnalysis.ExtractionResult`'s own field of the
+    /// same name.
+    public let protocolInheritedProtocolNames: [String: Set<String>]
     /// This file's own `@globalActor`-declared names, threaded through for the same reason --
     /// `DeclarationLinker` unions every file's set into one project-wide closure-attribute
     /// accept-list (`docs/task-closure-isolation-attribution.md` §7.3.1).
@@ -50,6 +53,7 @@ public struct FileAnalyzer {
             declarations: extraction.declarations,
             protocolGlobalActorNames: extraction.protocolGlobalActorNames,
             protocolRequirementGlobalActorNames: extraction.protocolRequirementGlobalActorNames,
+            protocolInheritedProtocolNames: extraction.protocolInheritedProtocolNames,
             globalActorNames: extraction.globalActorNames,
             closureLiteralRecords: extraction.closureLiteralRecords,
             awaitedRanges: extraction.awaitedRanges,

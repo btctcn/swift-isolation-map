@@ -604,6 +604,83 @@ func linkNeverBleedsAcrossTwoUnrelatedSameNamedTypesInDifferentUncompiledFiles()
     )
 }
 
+// MARK: - Transitive protocol-inheritance expansion (docs/task-transitive-protocol-conformance.md)
+
+@Test("link(_:) expands a type's conformance to a project-local protocol to also include that protocol's own external ancestor, letting the existing external-backfill machinery resolve it (PlatformView/Swiftfin shape)")
+func linkExpandsConformanceThroughProtocolInheritanceChain() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/LetterPickerBar.swift", line: 12, column: 8)
+    fake.symbolsByFile["/LetterPickerBar.swift"] = [IndexedSymbol(usr: "s:realLetterPickerBar", name: "LetterPickerBar", location: location)]
+
+    // Real shape: `struct LetterPickerBar: PlatformView { ... }`, and completely separately,
+    // `protocol PlatformView: View { ... }` (PlatformView.swift, a different file, never
+    // contributes a `helper`/`letterBar`-shaped member of its own -- only its own inheritance
+    // clause matters here).
+    let conformance = placeholderConformance("syntactic:PlatformView")
+    let helper = makeDeclaration(
+        usr: "syntactic:LetterPickerBar.helper#0", name: "helper", location: nil,
+        containingTypeUSR: "syntactic:LetterPickerBar", conformances: [conformance]
+    )
+    let type = makeDeclaration(usr: "syntactic:LetterPickerBar", name: "LetterPickerBar", location: location, conformances: [conformance])
+
+    let extractionResults = [
+        ExtractionResult(declarations: [type, helper], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolInheritedProtocolNames: ["PlatformView": ["View"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedHelper = try #require(linked.declarations.values.first { $0.name == "helper" })
+    let protocolUSRs = Set(linkedHelper.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:PlatformView", "syntactic:View"], "the transitively-inherited ancestor must be added, not substituted for the original")
+
+    let addedConformance = try #require(linkedHelper.conformances.first { $0.protocolUSR == "syntactic:View" })
+    #expect(
+        addedConformance.declaredInSameContextAsWitness == conformance.declaredInSameContextAsWitness,
+        "the synthetic ancestor entry must carry the same locality flags as the conformance that introduced it"
+    )
+}
+
+@Test("link(_:) walks a multi-hop protocol-inheritance chain to its end, not just one level")
+func linkExpandsConformanceThroughMultiHopChain() throws {
+    let fake = FakeIndexStoreQuerying()
+    let conformance = placeholderConformance("syntactic:A")
+    let declaration = makeDeclaration(usr: "syntactic:Widget", name: "Widget", location: nil, conformances: [conformance])
+
+    // A -> B -> C -> View: the ancestor three hops away must still be found.
+    let extractionResults = [
+        ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:]),
+        ExtractionResult(
+            declarations: [], protocolGlobalActorNames: [:],
+            protocolInheritedProtocolNames: ["A": ["B"], "B": ["C"], "C": ["View"]]
+        ),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedWidget = try #require(linked.declarations.values.first { $0.name == "Widget" })
+    let protocolUSRs = Set(linkedWidget.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:A", "syntactic:B", "syntactic:C", "syntactic:View"])
+}
+
+@Test("link(_:) never infinite-loops on a protocol-inheritance cycle")
+func linkToleratesAProtocolInheritanceCycleWithoutHanging() throws {
+    let fake = FakeIndexStoreQuerying()
+    let conformance = placeholderConformance("syntactic:A")
+    let declaration = makeDeclaration(usr: "syntactic:Widget", name: "Widget", location: nil, conformances: [conformance])
+
+    // A -> B -> A: not valid Swift, but the graph walk must not hang if it ever occurred (e.g. a
+    // tool/data inconsistency), matching the "never guess, never crash" philosophy elsewhere in
+    // this file.
+    let extractionResults = [
+        ExtractionResult(declarations: [declaration], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [], protocolGlobalActorNames: [:], protocolInheritedProtocolNames: ["A": ["B"], "B": ["A"]]),
+    ]
+    let linked = DeclarationLinker(indexStore: fake).link(extractionResults)
+
+    let linkedWidget = try #require(linked.declarations.values.first { $0.name == "Widget" })
+    let protocolUSRs = Set(linkedWidget.conformances.map(\.protocolUSR))
+    #expect(protocolUSRs == ["syntactic:A", "syntactic:B"])
+}
+
 // MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)
 
 @Test("unresolvedPlaceholders(for:) returns a declaration whose location-based match found nothing, paired with its real location")

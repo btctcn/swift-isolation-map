@@ -118,13 +118,68 @@ public struct DeclarationLinker {
 
         var mergedProtocolGlobalActorNames: [String: String] = [:]
         var mergedProtocolRequirementGlobalActorNames: [String: [String: String]] = [:]
+        var mergedProtocolInheritedProtocolNames: [String: Set<String>] = [:]
         var mergedGlobalActorNames: Set<String> = []
         for result in extractionResults {
             mergedProtocolGlobalActorNames.merge(result.protocolGlobalActorNames) { existing, _ in existing }
             for (protocolName, requirementNames) in result.protocolRequirementGlobalActorNames {
                 mergedProtocolRequirementGlobalActorNames[protocolName, default: [:]].merge(requirementNames) { existing, _ in existing }
             }
+            for (protocolName, superNames) in result.protocolInheritedProtocolNames {
+                mergedProtocolInheritedProtocolNames[protocolName, default: []].formUnion(superNames)
+            }
             mergedGlobalActorNames.formUnion(result.globalActorNames)
+        }
+
+        // Transitive protocol-inheritance expansion (docs/task-transitive-protocol-conformance.md):
+        // a *conforming type's* own conformance list only ever names the protocol it directly
+        // wrote (`LetterPickerBar: PlatformView`), never that protocol's own ancestry
+        // (`PlatformView: View`) -- confirmed a real, reproduced gap on Swiftfin via a real
+        // `swiftc` repro: an entirely unrelated, unattributed member of a type conforming to
+        // `PlatformView` is still real `@MainActor` ("main actor-isolated property... can not be
+        // referenced from a nonisolated context"), because `PlatformView` itself transitively
+        // conforms to `View` -- a real, external, whole-protocol `@MainActor` protocol -- and
+        // SE-0316 whole-type inference doesn't care how many protocol-inheritance hops separate
+        // the conforming type from the actor-isolated ancestor. Expanding every declaration's own
+        // conformance list to include every transitive ancestor (walked here, once, project-wide,
+        // over `mergedProtocolInheritedProtocolNames` -- a real protocol-inheritance graph, so a
+        // cycle guard is required even though Swift itself forbids a *directly* circular one) lets
+        // every existing mechanism downstream (`relink`'s same-name backfill,
+        // `ExternalIsolationBackfill`'s live-query dispatch for a same-file/same-context external
+        // conformance, `IsolationInferenceEngine`'s unmodified rule 7/8) pick the new entry up
+        // exactly as if the type had written `: View` directly -- no other code needs to change.
+        func transitiveAncestorNames(of protocolName: String) -> Set<String> {
+            var visited: Set<String> = []
+            var frontier = [protocolName]
+            while let current = frontier.popLast() {
+                guard let superNames = mergedProtocolInheritedProtocolNames[current] else { continue }
+                for superName in superNames where !visited.contains(superName) {
+                    visited.insert(superName)
+                    frontier.append(superName)
+                }
+            }
+            return visited
+        }
+        func transitivelyExpanded(_ conformances: [ProtocolConformance]) -> [ProtocolConformance] {
+            var expanded = conformances
+            var seenBareNames = Set(conformances.compactMap { conformance -> String? in
+                guard conformance.protocolUSR.hasPrefix("syntactic:") else { return nil }
+                return String(conformance.protocolUSR.dropFirst("syntactic:".count))
+            })
+            for conformance in conformances {
+                guard conformance.protocolUSR.hasPrefix("syntactic:") else { continue }
+                let bareName = String(conformance.protocolUSR.dropFirst("syntactic:".count))
+                for ancestorName in transitiveAncestorNames(of: bareName) where !seenBareNames.contains(ancestorName) {
+                    seenBareNames.insert(ancestorName)
+                    expanded.append(ProtocolConformance(
+                        protocolUSR: "syntactic:\(ancestorName)",
+                        protocolGlobalActorName: nil,
+                        declaredInSameFileAsPrimaryDefinition: conformance.declaredInSameFileAsPrimaryDefinition,
+                        declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness
+                    ))
+                }
+            }
+            return expanded
         }
 
         // Rule A/B classification (docs/task-closure-isolation-attribution.md §7.1 step 2): can
@@ -227,7 +282,7 @@ public struct DeclarationLinker {
         var byUSR: [String: DeclarationInfo] = [:]
         for declaration in allDeclarations {
             let referringFile = declaration.location?.file
-            let relinkedConformances = declaration.conformances.map { conformance in
+            let relinkedConformances = transitivelyExpanded(declaration.conformances).map { conformance in
                 relink(
                     conformance, witnessName: declaration.name, referringFile: referringFile, rewrittenReference: rewrittenReference,
                     mergedProtocolGlobalActorNames: mergedProtocolGlobalActorNames,
