@@ -261,6 +261,39 @@ func sameFileConformanceIsAttachedToTypeDeclaration() {
     #expect(conformance?.declaredInSameFileAsPrimaryDefinition == true)
 }
 
+@Test("A conformance stated via a separate same-file extension (not the primary declaration itself) is NOT marked declaredInSameFileAsPrimaryDefinition on the type's own entry -- SE-0316 rule 7 requires the conformance on the primary line itself")
+func extensionDeclaredConformanceIsNotMarkedAsPrimaryDefinitionConformance() {
+    // Real shape confirmed against WordPress-iOS via a real `swiftc -strict-concurrency=complete`
+    // repro: `class C: NSObject { static func f() {} }` + a *separate*, same-file `extension C:
+    // UITextFieldDelegate {}` produces zero diagnostics calling `C.f()` from a `nonisolated`
+    // context -- stating the identical conformance directly on the primary line instead
+    // (`class C: NSObject, UITextFieldDelegate`) does warn ("main actor isolation inferred from
+    // conformance to protocol 'UITextFieldDelegate'"). `ZendeskUtils`/`UITextFieldDelegate` is the
+    // real pair this was found on; `Refreshable`/`SyncCoordinator` (already used by the sibling
+    // same-file test above) is reused here for a direct, minimal contrast.
+    let decls = declarations("""
+    @MainActor
+    protocol Refreshable {
+        func refresh()
+    }
+
+    class SyncCoordinator {
+        static func unrelatedHelper() {}
+    }
+
+    extension SyncCoordinator: Refreshable {
+        func refresh() {}
+    }
+    """)
+    let coordinator = find(decls, name: "SyncCoordinator")
+    let conformance = coordinator?.conformances.first { $0.protocolUSR.hasSuffix("Refreshable") }
+    #expect(conformance?.protocolGlobalActorName == "MainActor", "the type-level entry must still know about the conformance at all -- needed for the 'no eligible witness' fallback")
+    #expect(
+        conformance?.declaredInSameFileAsPrimaryDefinition == false,
+        "the conformance is stated on a separate extension, not SyncCoordinator's own primary declaration -- rule 7 (whole-type inference) must not apply"
+    )
+}
+
 @Test("A witness method inside the conforming type/extension gets a conformance entry marked declaredInSameContextAsWitness")
 func witnessMethodGetsSameContextConformance() {
     let decls = declarations("""
