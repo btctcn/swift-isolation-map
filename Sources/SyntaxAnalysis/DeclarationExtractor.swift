@@ -643,7 +643,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
             enclosingExtensionIsolation: currentEnclosingExtensionIsolation,
             isNestedType: false,
             location: memberLocation,
-            isImmutableStoredProperty: isImmutableStoredProperty
+            isImmutableStoredProperty: isImmutableStoredProperty,
+            isActorInitializer: kind == .initializerDecl && isMemberOfActorType
         ))
     }
 

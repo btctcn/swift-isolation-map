@@ -302,7 +302,8 @@ public struct DeclarationLinker {
                 enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
-                isImmutableStoredProperty: declaration.isImmutableStoredProperty
+                isImmutableStoredProperty: declaration.isImmutableStoredProperty,
+                isActorInitializer: declaration.isActorInitializer
             )
             if let existing = byUSR[linked.usr] {
                 byUSR[linked.usr] = Self.merged(existing, linked)
@@ -475,7 +476,8 @@ public struct DeclarationLinker {
                 enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
-                isImmutableStoredProperty: declaration.isImmutableStoredProperty
+                isImmutableStoredProperty: declaration.isImmutableStoredProperty,
+                isActorInitializer: declaration.isActorInitializer
             )
         }
     }
@@ -539,7 +541,8 @@ public struct DeclarationLinker {
                 enclosingExtensionIsolation: declaration.enclosingExtensionIsolation,
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
-                isImmutableStoredProperty: declaration.isImmutableStoredProperty
+                isImmutableStoredProperty: declaration.isImmutableStoredProperty,
+                isActorInitializer: declaration.isActorInitializer
             )
         }
     }
@@ -657,7 +660,8 @@ public struct DeclarationLinker {
             enclosingExtensionIsolation: existing.enclosingExtensionIsolation ?? incoming.enclosingExtensionIsolation,
             isNestedType: existing.isNestedType || incoming.isNestedType,
             location: existing.location ?? incoming.location,
-            isImmutableStoredProperty: existing.isImmutableStoredProperty || incoming.isImmutableStoredProperty
+            isImmutableStoredProperty: existing.isImmutableStoredProperty || incoming.isImmutableStoredProperty,
+            isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer
         )
     }
 }

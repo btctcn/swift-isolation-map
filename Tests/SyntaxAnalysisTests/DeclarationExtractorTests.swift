@@ -456,6 +456,34 @@ func actorTypeMembersAreNotEligible() {
     #expect(currentUserProp?.isEligibleForModuleDefaultIsolation == false)
 }
 
+@Test("An actor's own initializer is marked isActorInitializer; its other instance/static members are not")
+func actorOwnInitializerIsMarkedDistinctlyFromOtherMembers() {
+    let decls = declarations("""
+    actor StatsService {
+        init(siteID: Int) {}
+        func refresh() {}
+        static var shared: StatsService?
+    }
+    """)
+    let initDecl = find(decls, name: "init", inType: "StatsService")
+    let refreshMethod = find(decls, name: "refresh")
+    let sharedProp = find(decls, name: "shared")
+    #expect(initDecl?.isActorInitializer == true)
+    #expect(refreshMethod?.isActorInitializer == false)
+    #expect(sharedProp?.isActorInitializer == false)
+}
+
+@Test("An ordinary class's own initializer is not mistaken for an actor's own initializer")
+func nonActorTypeInitializerIsNotMarkedActorInitializer() {
+    let decls = declarations("""
+    class Widget {
+        init() {}
+    }
+    """)
+    let initDecl = find(decls, name: "init", inType: "Widget")
+    #expect(initDecl?.isActorInitializer == false)
+}
+
 @Test("A type directly conforming to SendableMetatype is not eligible for the module default")
 func directSendableMetatypeConformanceIsNotEligible() {
     let decls = declarations("struct Value: SendableMetatype {}")
