@@ -15,9 +15,22 @@ private let realSQLumenCompileLine = """
     builtin-Swift-Compilation-Requirements -- /Applications/Xcode-26.4.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name SQLumen -Onone -DDEBUG -incremental
     """
 
+// Padded to clear `LiveXcodeCompilerArgumentsProvider.minimumUsableFileCount` (10) -- otherwise
+// every test below using this fixture would trip the same low-file-count clean-rebuild retry the
+// real `docs/task-sourcekitd-cooperative-pool-starvation.md` bug fix added, which none of these
+// tests stub for (they're testing unrelated behavior). The padding files are never referenced by
+// name in any assertion; the two originally-named files stay first for readability.
 private let sampleFileListContents = """
 /Users/dev/SQLumen/SQLumen/App/ContentView.swift
 /Users/dev/SQLumen/SQLumen/Core/DDLService.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding1.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding2.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding3.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding4.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding5.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding6.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding7.swift
+/Users/dev/SQLumen/SQLumen/Core/Padding8.swift
 """
 
 /// Real line shape captured this session from a real `SwiftFileList` produced by a real Xcode
@@ -26,8 +39,20 @@ private let sampleFileListContents = """
 /// per-line split alone (no unescaping) leaves the literal backslash in the resulting path,
 /// which then never matches the real filesystem entry: every single live `cursorinfo` query
 /// against that project separately failed to `stat` ~130 sibling files each time as a direct
-/// result, not merely cosmetic stderr noise as first assumed.
-private let sampleFileListContentsWithEscapedSpace = "/Users/dev/Project/UI/News\\ List/NewsController.swift\n"
+/// result, not merely cosmetic stderr noise as first assumed. Padded with plain (non-escaped)
+/// entries for the same `minimumUsableFileCount` reason as `sampleFileListContents` above.
+private let sampleFileListContentsWithEscapedSpace = """
+/Users/dev/Project/UI/News\\ List/NewsController.swift
+/Users/dev/Project/UI/Padding1.swift
+/Users/dev/Project/UI/Padding2.swift
+/Users/dev/Project/UI/Padding3.swift
+/Users/dev/Project/UI/Padding4.swift
+/Users/dev/Project/UI/Padding5.swift
+/Users/dev/Project/UI/Padding6.swift
+/Users/dev/Project/UI/Padding7.swift
+/Users/dev/Project/UI/Padding8.swift
+/Users/dev/Project/UI/Padding9.swift
+"""
 
 @Test("unescaped(_:) drops a backslash escape character, keeping whatever it precedes literally")
 func unescapedDropsBackslashKeepsEscapedCharacter() {
