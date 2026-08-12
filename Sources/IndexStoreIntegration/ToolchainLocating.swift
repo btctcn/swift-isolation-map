@@ -1,9 +1,18 @@
 import Foundation
 import ProjectResolution
 
-public enum ToolchainLocatingError: Error, Equatable {
+public enum ToolchainLocatingError: Error, Equatable, CustomStringConvertible {
     case xcrunFailed(exitCode: Int32, standardError: String)
     case dylibNotFound(String)
+
+    public var description: String {
+        switch self {
+        case .xcrunFailed(let exitCode, let standardError):
+            return "`xcrun --find swift` failed (exit \(exitCode)): \(standardError.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .dylibNotFound(let path):
+            return "libIndexStore.dylib not found at the expected path in the active toolchain: \(path)"
+        }
+    }
 }
 
 /// Resolves the path to the active toolchain's `libIndexStore.dylib` -- kept behind a protocol

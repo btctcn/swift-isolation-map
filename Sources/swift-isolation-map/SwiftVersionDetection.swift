@@ -1,11 +1,32 @@
 import Foundation
 import ProjectResolution
 
-enum SwiftVersionDetectionError: Error, Equatable {
+enum SwiftVersionDetectionError: Error, Equatable, CustomStringConvertible {
     case xcodebuildFailed(exitCode: Int32, standardError: String)
     case swiftVersionSettingNotFound
     case swiftVersionCommandFailed(exitCode: Int32, standardError: String)
     case unrecognizedCompilerVersionOutput(String)
+
+    public var description: String {
+        switch self {
+        case .xcodebuildFailed(let exitCode, let standardError):
+            let trimmed = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+            // The single most common real-world cause of this specific failure: `xcode-select`
+            // points at the Command Line Tools only, not a full Xcode install -- `xcodebuild`
+            // exists and runs, but refuses every real command with this exact message. Worth its
+            // own remediation hint since the raw message alone doesn't say what to *do* about it.
+            if trimmed.contains("requires Xcode") || trimmed.contains("command line tools instance") {
+                return "xcodebuild requires a full Xcode install, but the active developer directory is Command Line Tools only. Run `sudo xcode-select -s /Applications/Xcode.app` (adjust the path if Xcode is installed elsewhere), then try again.\n\(trimmed)"
+            }
+            return "xcodebuild failed (exit \(exitCode)): \(trimmed)"
+        case .swiftVersionSettingNotFound:
+            return "Could not find a SWIFT_VERSION build setting in `xcodebuild -showBuildSettings`'s output."
+        case .swiftVersionCommandFailed(let exitCode, let standardError):
+            return "`swift --version` failed (exit \(exitCode)): \(standardError.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .unrecognizedCompilerVersionOutput(let output):
+            return "Could not parse a Swift version out of `swift --version`'s output:\n\(output)"
+        }
+    }
 }
 
 /// Two independent axes, not one -- verified empirically against a real project (SQLumen) before
