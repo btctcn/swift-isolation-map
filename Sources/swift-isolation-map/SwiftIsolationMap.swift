@@ -173,6 +173,20 @@ struct SwiftIsolationMap: ParsableCommand {
         let container = try resolveContainer(fromPath: path)
         let projectRoot = StalenessOrchestration.projectRoot(for: container)
 
+        let prerequisiteFailures = PrerequisiteChecking.check(
+            container: container, processRunning: processRunning,
+            toolchainLocator: LiveToolchainLocator(processRunning: processRunning, fileSystem: fileSystem),
+            sourceKitDLocator: LiveSourceKitDLocator(processRunning: processRunning, fileSystem: fileSystem)
+        )
+        guard prerequisiteFailures.isEmpty else {
+            eprint("swift-isolation-map can't run in this environment:")
+            for failure in prerequisiteFailures {
+                eprint("")
+                eprint(failure)
+            }
+            throw ExitCode(2)
+        }
+
         let languageMode = try resolveLanguageMode(container: container, fileSystem: fileSystem, processRunning: processRunning)
         let compilerVersion = try SwiftVersionDetection.compilerVersion(processRunning: processRunning)
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
