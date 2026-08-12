@@ -769,7 +769,7 @@ private final class DeclarationVisitor: SyntaxVisitor {
     // `deinit` in the whole codebase -- not just the `@objc`-visible-override subset the issue
     // was found auditing -- never became a `DeclarationInfo` in the first place. Confirmed
     // directly against Project Iris's real index store (not IndexStoreDB USR ambiguity, the
-    // issue's own original hypothesis): `IndexStoreClient.definedSymbols(inFile:)` and
+    // issue's own original hypothesis): `RawIndexStoreClient.definedSymbols(inFile:)` and
     // `callSites(inFile:)` agree on the *exact same* USR for a real `deinit`
     // (`c:@M@Ls_net_ru@objc(cs)MaskTextField(im)dealloc`) at both its definition and its call
     // site -- there is no USR to reconcile. The gap was purely this file's own missing visitor.

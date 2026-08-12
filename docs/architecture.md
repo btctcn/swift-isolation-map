@@ -40,10 +40,10 @@ below as current:
    read directly (`RawIndexStoreClient`, `Sources/CIndexStoreRaw/` + `Sources/IndexStoreIntegration/
    RawIndexStoreClient.swift`) — this is the default index reader today, not the `IndexStoreDB`
    package this section's own sample code shows. See `docs/task-raw-indexstore-spike.md` for the
-   full decision record. The `IndexStoreDB` package dependency itself is still present (kept for
-   `IndexStoreClient`, retained specifically as an A/B correctness comparison against
-   `RawIndexStoreClient` in the test suite), so don't read its continued presence in `Package.swift`
-   as evidence it's still the production path.
+   full decision record. **Update:** the `IndexStoreDB` package dependency (and the `IndexStoreClient`
+   type wrapping it, kept for a while afterward as an A/B correctness comparison against
+   `RawIndexStoreClient` in the test suite) has since been removed from `Package.swift` entirely
+   — `RawIndexStoreClient` is now the project's only index reader, not just its default one.
 
 ## ⚠️ IMPORTANT: This is a reputation-sensitive tool
 

@@ -25,9 +25,7 @@ func crossFileProtocolWitnessResolvesCorrectly() throws {
         .appendingPathComponent("Fixtures/cross-file-witness")
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-cross-file-witness-store"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-cross-file-witness-db"
     try? FileManager.default.removeItem(atPath: indexStorePath)
-    try? FileManager.default.removeItem(atPath: databasePath)
     // Found the hard way (flaky on repeated runs): SwiftPM's incremental build sees unchanged
     // sources and skips recompilation entirely on a second run, which means it never actually
     // invokes the compiler to (re)populate the *new* -index-store-path -- silently leaving the
@@ -54,7 +52,7 @@ func crossFileProtocolWitnessResolvesCorrectly() throws {
     }
 
     // 3. Link via real IndexStoreDB data (Phase 3, this PR).
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link(extractionResults)
 
@@ -105,9 +103,7 @@ func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
         .appendingPathComponent("Fixtures/cross-file-witness")
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-store"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-db"
     try? FileManager.default.removeItem(atPath: indexStorePath)
-    try? FileManager.default.removeItem(atPath: databasePath)
     try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
 
     let processRunner = LiveProcessRunner()
@@ -118,7 +114,7 @@ func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
 
     // Real symbols reported by IndexStoreDB at `counter`'s own declaration location -- per
     // `DeclarationLinker.disambiguate`'s own established, already-verified finding, a stored
@@ -151,9 +147,7 @@ func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
         .appendingPathComponent("Fixtures/cross-file-witness")
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-store"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-db"
     try? FileManager.default.removeItem(atPath: indexStorePath)
-    try? FileManager.default.removeItem(atPath: databasePath)
     try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
 
     let processRunner = LiveProcessRunner()
@@ -164,7 +158,7 @@ func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
 
     let coordinatorFile = sourcesDirectory.appendingPathComponent("SyncCoordinator.swift").path
     let coordinator = try #require(indexStoreClient.definedSymbols(inFile: coordinatorFile).first { $0.name == "SyncCoordinator" })
@@ -248,7 +242,6 @@ func extensionChainResolvesExternalNestedAndGenericExtendedTypes() throws {
     let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extchain-store-\(UUID().uuidString)"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extchain-db-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
@@ -258,7 +251,7 @@ func extensionChainResolvesExternalNestedAndGenericExtendedTypes() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
     let extensionFile = sourcesDirectory.appendingPathComponent("ExtensionOfExternalType.swift").path
     let symbols = indexStoreClient.definedSymbols(inFile: extensionFile)
 
@@ -293,7 +286,6 @@ func linkRewritesExtensionMemberContainingTypeUSR() throws {
     let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extlink-store-\(UUID().uuidString)"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extlink-db-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
@@ -307,7 +299,7 @@ func linkRewritesExtensionMemberContainingTypeUSR() throws {
     let source = try String(contentsOf: extensionFile, encoding: .utf8)
     let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link([extractionResult])
 
@@ -329,7 +321,6 @@ func linkMergesRealCrossFileTypeAndExtensionRegardlessOfOrder() throws {
     let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-multifile-store-\(UUID().uuidString)"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-multifile-db-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
@@ -339,7 +330,7 @@ func linkMergesRealCrossFileTypeAndExtensionRegardlessOfOrder() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
 
     func extract(_ fileName: String) throws -> ExtractionResult {
         let fileURL = sourcesDirectory.appendingPathComponent(fileName)

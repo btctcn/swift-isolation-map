@@ -32,8 +32,7 @@ import IsolationCore
 /// converts to `@convention(c)`.
 ///
 /// `@unchecked Sendable`: every index below is built once, synchronously, in `init`, and never
-/// mutated afterward; concurrent reads of already-built, immutable storage are safe (same
-/// reasoning `IndexStoreClient` itself already documents).
+/// mutated afterward; concurrent reads of already-built, immutable storage are safe.
 public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable {
     fileprivate var definedSymbolsByFile: [String: [IndexedSymbol]] = [:]
     fileprivate var callEdgesByCallee: [String: [CallGraphEdge]] = [:]

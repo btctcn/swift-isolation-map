@@ -323,7 +323,7 @@ public struct DeclarationLinker {
 
         // `callGraphEdges(forUSR:)` above is a reverse lookup keyed by a USR this project already
         // knows about, so it can never surface an edge whose *callee* is external -- see
-        // `IndexStoreClient.callSites(inFile:)`'s own doc comment for the full explanation. Scan
+        // `RawIndexStoreClient.callSites(inFile:)`'s own doc comment for the full explanation. Scan
         // every analyzed file's call sites too and fold in only the ones `callGraphEdges` couldn't
         // have found (callee not already known), so the combined `callGraph` can, for the first
         // time, contain edges into compiled-dependency code -- exactly what the compiled-
