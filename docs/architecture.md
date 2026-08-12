@@ -32,6 +32,18 @@ below as current:
 6. **§4's "regression baseline against real open-source code" isn't an automated nightly job** —
    in practice this has been manual, ad-hoc validation against two real projects
    (`docs/reference-project-corpora.md`) at the end of each work session, not a scheduled CI run.
+7. **§2.2's `IndexStoreDB` is no longer the index reader item 1 above's `callGraph` actually comes
+   from.** A real, reproduced `IndexStoreDB` gap (`symbolOccurrences(inFilePath:)` silently
+   dropping occurrences for a file compiled into more than one target — filed upstream as
+   [swiftlang/indexstore-db#292](https://github.com/swiftlang/indexstore-db/issues/292)) motivated
+   bypassing `IndexStoreDB`'s async/LMDB layer entirely in favor of `libIndexStore`'s raw C API,
+   read directly (`RawIndexStoreClient`, `Sources/CIndexStoreRaw/` + `Sources/IndexStoreIntegration/
+   RawIndexStoreClient.swift`) — this is the default index reader today, not the `IndexStoreDB`
+   package this section's own sample code shows. See `docs/task-raw-indexstore-spike.md` for the
+   full decision record. The `IndexStoreDB` package dependency itself is still present (kept for
+   `IndexStoreClient`, retained specifically as an A/B correctness comparison against
+   `RawIndexStoreClient` in the test suite), so don't read its continued presence in `Package.swift`
+   as evidence it's still the production path.
 
 ## ⚠️ IMPORTANT: This is a reputation-sensitive tool
 

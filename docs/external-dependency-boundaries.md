@@ -69,7 +69,10 @@ the compiled framework:
 - **As the caller** (a closure *inside* the framework's own implementation calls back into
   something, and that closure's real isolation should protect the call): this can only ever be a
   problem for code this tool actually parses with `SyntaxAnalysis` — i.e., Mechanism 1's territory.
-  `IndexStoreDB`'s call graph is built from the *analyzed project's own* index store; a genuinely
+  The call graph -- read via `RawIndexStoreClient`'s raw `libIndexStore` API today
+  (`docs/task-raw-indexstore-spike.md`; the same argument held for `IndexStoreDB` before that
+  migration too, since both read the identical on-disk index) -- is built from the *analyzed
+  project's own* index store; a genuinely
   precompiled dependency was never compiled as part of this workspace's own indexed build, so no
   call-graph edge with a caller inside it can exist in the graph in the first place. There's
   nothing to fix here because the bug's precondition (a real call-graph edge whose caller is a
