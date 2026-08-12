@@ -30,7 +30,7 @@ flowchart TD
     B["StalenessOrchestration<br/>find every Swift source file, check content-hash manifest"] --> C
     C["FileAnalyzer + SyntaxAnalysis<br/>per file: extract declarations, conformances,<br/>protocolGlobalActorNames, content hash"] --> E
     B --> D["IndexStoreLocator<br/>discover/build the real index store<br/>(xcodebuild / swift build under the hood)"]
-    D --> DB["IndexStoreClient<br/>wraps libIndexStore over the built index"]
+    D --> DB["RawIndexStoreClient<br/>reads libIndexStore's raw C API directly over the built index"]
     DB --> E["DeclarationLinker (IndexStoreIntegration)<br/>links syntax facts to real USRs + builds the call graph"]
     E --> F["ExternalIsolationBackfill — 'the oracle'<br/>(see diagram below)"]
     F --> G["Merge: oracle results folded into the linked declarations"]
