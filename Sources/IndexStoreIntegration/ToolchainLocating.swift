@@ -7,8 +7,8 @@ public enum ToolchainLocatingError: Error, Equatable {
 }
 
 /// Resolves the path to the active toolchain's `libIndexStore.dylib` -- kept behind a protocol
-/// so `IndexStoreClient` can be tested without a real toolchain on disk (a fake returns a canned
-/// path). Real resolution: `xcrun --find swift` -> strip `usr/bin/swift` -> append
+/// so `RawIndexStoreClient` can be tested without a real toolchain on disk (a fake returns a
+/// canned path). Real resolution: `xcrun --find swift` -> strip `usr/bin/swift` -> append
 /// `usr/lib/libIndexStore.dylib`. This mechanism, and the fact that `libIndexStore` is `dlopen`'d
 /// at runtime rather than linked at build time, was verified empirically in the Phase 0 spike --
 /// see docs/priority-2-phase-0-spike.md.

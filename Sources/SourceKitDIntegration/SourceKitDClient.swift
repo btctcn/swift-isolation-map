@@ -10,9 +10,10 @@ private struct UnsafeSendableBox<Value>: @unchecked Sendable {
 }
 
 /// `sourcekitd` cursor-info queries, one in-process session per analysis run. An `actor`, not a
-/// `final class` + lock -- unlike `IndexStoreClient`, whose `@unchecked Sendable` + construction-
-/// only lock rests on `IndexStoreDB`'s own documented concurrent-read safety, raw
-/// `sourcekitd_send_request_sync` concurrency safety has not been independently verified (the
+/// `final class` + lock -- unlike `RawIndexStoreClient`, whose `@unchecked Sendable` rests on its
+/// index being built once in `init` and never mutated afterward (safe concurrent reads of
+/// immutable storage), raw `sourcekitd_send_request_sync` concurrency safety has not been
+/// independently verified (the
 /// research spike ran every query single-threaded). An `actor` serializes every call
 /// unconditionally -- the simpler, safer default, and consistent with "one in-process session per
 /// analysis run" already implying serial usage. See docs/priority-3-phase-b-sourcekitd-client.md

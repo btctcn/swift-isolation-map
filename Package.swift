@@ -11,12 +11,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.2"),
-        // Pinned by exact revision, not branch -- indexstore-db has no semver releases, only
-        // per-Swift-version release/6.x branches that continue to receive patches. Re-verified
-        // current (still release/6.3's and release/6.3.1's HEAD) before re-adding this for real;
-        // see docs/priority-2-phase-0-spike.md for the full decision record and de-risking spike.
-        .package(url: "https://github.com/swiftlang/indexstore-db.git", revision: "003ac41513ba291f10ff1a0147ae68588914668d")
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.2")
     ],
     targets: [
         .executableTarget(
@@ -50,18 +45,19 @@ let package = Package(
             dependencies: [
                 "IsolationCore",
                 "ProjectResolution",
-                .product(name: "IndexStoreDB", package: "indexstore-db"),
                 "CIndexStoreRaw"
             ]
         ),
-        // Spike/investigation target (issue #51, docs/task-raw-indexstore-spike.md): a plain C
-        // shim over `libIndexStore`'s own raw C API, `dlopen`'d at runtime like `CSourceKitD` --
-        // not for the same ABI reason (this API's own signatures are already fully
-        // `@convention(c)`-representable in Swift; see the header's own doc comment), but for the
-        // same "never hard-link one specific toolchain's dylib" reason. Backs
-        // `RawIndexStoreClient`, an experimental second `IndexStoreQuerying` conformer bypassing
-        // `IndexStoreDB`'s own async/persistent layer entirely, to test whether issue #51's
-        // declaration-loss is rooted in that layer specifically.
+        // `libIndexStore`'s own raw C API, `dlopen`'d at runtime like `CSourceKitD` -- not for the
+        // same ABI reason (this API's own signatures are already fully `@convention(c)`-
+        // representable in Swift; see the header's own doc comment), but for the same "never
+        // hard-link one specific toolchain's dylib" reason. Backs `RawIndexStoreClient`, the sole
+        // `IndexStoreQuerying` conformer today -- originally built (issue #51,
+        // docs/task-raw-indexstore-spike.md) as a second implementation to test whether a real
+        // `IndexStoreDB` declaration-loss bug was rooted in its async/persistent layer, confirmed
+        // real and more correct there, and has since fully replaced `IndexStoreDB`/`IndexStoreClient`
+        // as the project's only index reader -- the `indexstore-db` package dependency itself was
+        // removed once nothing else depended on it.
         .target(name: "CIndexStoreRaw"),
         // A plain C target, not a systemLibrary -- `sourcekitd_variant_t` (24 bytes, passed/
         // returned by value) is passed indirectly per the platform ABI once it exceeds 16 bytes,

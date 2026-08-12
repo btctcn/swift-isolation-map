@@ -606,7 +606,6 @@ func extensionOfExternalTypeResolvesEndToEndWithRealAppKit() async throws {
     }
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
     let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-extend2end-store-\(UUID().uuidString)"
-    let databasePath = NSTemporaryDirectory() + "swift-isolation-map-test-extend2end-db-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
@@ -620,7 +619,7 @@ func extensionOfExternalTypeResolvesEndToEndWithRealAppKit() async throws {
     let source = try String(contentsOf: extensionFile, encoding: .utf8)
     let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
 
-    let indexStoreClient = try IndexStoreClient(storePath: indexStorePath, databasePath: databasePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link([extractionResult])
 

@@ -7,7 +7,7 @@ public enum SourceKitDQueryError: Error, Equatable {
 }
 
 /// Narrow protocol over raw `sourcekitd` cursor-info -- mirrors `IndexStoreQuerying`'s shape
-/// (`IndexStoreIntegration/IndexStoreClient.swift`), so downstream orchestration can be tested
+/// (`IndexStoreIntegration/RawIndexStoreClient.swift`), so downstream orchestration can be tested
 /// against a fake without a real toolchain, same precedent.
 public protocol SourceKitDQuerying: Sendable {
     func cursorInfo(_ request: CursorInfoRequest) async throws -> CursorInfoResult
