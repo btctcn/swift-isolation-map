@@ -3,6 +3,8 @@
 A static analysis CLI for Swift actor isolation and data-race risk — a whole-project isolation
 map, not a single runtime trace.
 
+Latest release: [0.1.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.1.0).
+
 > **Status: working.** The full pipeline is implemented and tested — project/scheme resolution,
 > index-store discovery and staleness detection, a hybrid `libIndexStore` + `SwiftSyntax`
 > inference engine, and an external-isolation oracle that resolves compiled-dependency symbols
