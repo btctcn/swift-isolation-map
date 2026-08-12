@@ -12,6 +12,21 @@ map, not a single runtime trace.
 > one public), not just fixtures. `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.2`
 > items below (`diff` subcommand, GitHub Action, migration-debt map).
 
+## Requirements
+
+- **macOS 13+.**
+- **A full Xcode install — not just the Command Line Tools.** This tool `dlopen`s two toolchain
+  dylibs directly at runtime — `libIndexStore.dylib` (the semantic call graph) and `sourcekitdInProc`
+  (the external-isolation oracle) — and, for `.xcodeproj`/`.xcworkspace` projects, also shells out to
+  `xcodebuild`. Neither dylib ships with the standalone Command Line Tools package, so if
+  `xcode-select` is currently pointed at `/Library/Developer/CommandLineTools`, point it at a full
+  Xcode install instead: `sudo xcode-select -s /Applications/Xcode.app`.
+- **The `swift` toolchain** — for `Package.swift` (SPM) targets, checked in addition to the above.
+
+All of this is checked automatically at startup: if anything's missing, `swift-isolation-map` fails
+fast with a specific diagnostic (which binary or dylib, where it looked, how to fix it) instead of
+failing deep inside the pipeline with a cryptic error.
+
 ## Quick start
 
 No packaged distribution yet (Homebrew/SPM-plugin are `v0.2`+, see Roadmap below) — build from
