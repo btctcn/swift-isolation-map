@@ -22,6 +22,11 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     // second time for no reason; the destination doesn't change between the two attempts.
     private var cachedDestination: String??
 
+    /// See `loadArgumentsIfNeeded`'s own doc comment for the real failure this guards against --
+    /// a plain build result covering fewer files than this is treated the same as an empty one,
+    /// triggering the clean-rebuild retry.
+    private static let minimumUsableFileCount = 10
+
     public init(
         container: ProjectContainer,
         scheme: String,
@@ -73,8 +78,29 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             // priority-3-compiled-dependency-isolation.md`: a real `xcodebuild -verbose build` against
             // an up-to-date project produced zero compile invocations, silently starving every
             // external-isolation query downstream). The only reliable fix is forcing every file to be
-            // considered dirty, which only a real `clean build` guarantees -- so an empty first attempt
-            // triggers exactly one retry with `clean` prepended, never a silent empty result.
+            // considered dirty, which only a real `clean build` guarantees.
+            //
+            // A literal `parsed.isEmpty` check isn't enough, though -- confirmed the hard way against
+            // a real, repeatedly-analyzed Swiftfin checkout (docs/task-sourcekitd-cooperative-pool-
+            // starvation.md's real root cause, despite that doc's own title: chasing a `sourcekitd`
+            // theory for this exact symptom was a dead end, this was the actual bug). On an otherwise
+            // fully-built 773-file project, Xcode's incremental build system sometimes decides only
+            // one small, unrelated target needs rebuilding (a single-digit file count from 1-2
+            // `builtin-Swift-Compilation` invocations, not the whole app target) -- non-empty, so the
+            // old check silently accepted and cached this near-useless map for the rest of the run,
+            // starving *every* other file's lookup with `argumentsNotFound`. `minimumUsableFileCount`
+            // is a deliberately conservative heuristic threshold (not zero, not the real project's
+            // full file count, which this provider doesn't know) -- high enough to reliably catch
+            // "only a stray unrelated target rebuilt" the same way the real failure did. **Not a free
+            // lunch**: a genuinely tiny real project (fewer real Swift files than the threshold)
+            // triggers this same retry every single run, unconditionally -- one harmless but
+            // unnecessary extra `clean` rebuild (this whole method only runs once per process,
+            // memoized below, so the cost is a one-time constant, not per-file). And the retry is
+            // exactly one attempt, not a loop: whatever the `clean` rebuild returns -- even if *it*
+            // also comes back under the threshold, whether from a genuinely tiny project or from this
+            // same bug somehow surviving a clean build too -- is accepted as final and cached; any
+            // file missing from that map still fails soft, one `argumentsNotFound` throw at a time,
+            // exactly like before this fix.
             let destination: String?
             if let cachedDestination {
                 destination = cachedDestination
@@ -83,7 +109,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
                 cachedDestination = destination
             }
             var parsed = try runVerboseBuild(extraActions: [], destination: destination)
-            if parsed.isEmpty {
+            if parsed.count < Self.minimumUsableFileCount {
                 parsed = try runVerboseBuild(extraActions: ["clean"], destination: destination)
             }
             cachedArguments = parsed
