@@ -290,6 +290,20 @@ touch each file. What it doesn't give you:
   someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
   watch move.
 
+## Typical use cases
+
+- **CI gate.** Fail the build on any high-risk boundary — exit code `1` already does this on its
+  own; add `--severity` if a stricter or looser threshold fits your pipeline better than the
+  default (see [Usage](#usage) above).
+- **A one-time audit before a Swift 6 migration.** Run it once against the whole project to get
+  every `nonisolated` → `actor`/`@MainActor` boundary at once, instead of discovering them one
+  compile error at a time — including boundaries that only exist through a compiled dependency
+  (CocoaPods, an XCFramework, an SDK type) that nobody would trace by hand.
+- **Tracking migration debt over time.** Run with `--output json --out-file report.json`
+  periodically (a scheduled CI job, or once per release), commit the report, and watch
+  `summary.highRiskBoundaries` move release to release — a real number for a dashboard or
+  spreadsheet instead of "we should really finish this someday."
+
 ## Known limitations
 
 **Compiler-synthesized declarations (default `init()`, `deinit`, `rawValue`/`allCases` accessors,
@@ -354,7 +368,7 @@ boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
-- **v0.2 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin).
+- **v0.2 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin), per-call-site suppression comments (design: `docs/task-suppression-comments.md`).
 - **v0.3 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
 
 ## Contributing
