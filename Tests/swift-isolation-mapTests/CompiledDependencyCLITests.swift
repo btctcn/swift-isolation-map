@@ -250,24 +250,23 @@ struct CompiledDependencyCLITests {
             """, extraArguments: ["-I", coreBuildDir])
         #expect(negativeControlExit == 0, "the negative control must genuinely compile clean -- no false positive")
 
-        // --- unknown, not silently miscounted: a real, naturally-occurring USR-granularity miss ---
-        // `cell.title = "x"` desugars to a call into NSCell's ObjC-bridged property setter, whose
-        // USR `sourcekitd` cursor-info cannot match at that source position (same class of
-        // granularity mismatch as the `Counter.value` accessor case found in `CapstoneCLITests`,
-        // see docs/priority-3-phase-c-oracle-triggers.md) -- correctly `unknown`, not a confirmed
-        // risk, never silently dropped or miscounted either.
-        let setterEdges = report.edges.filter { $0.calleeUSR.contains("NSCell") && $0.calleeUSR.contains("setTitle") }
-        let setterEdge = try #require(setterEdges.first)
-        #expect(setterEdge.isUnknown)
-        // The callee resolves to `.unspecified` (never backfilled), which the *existing*,
-        // unmodified risk formula already keys off of, so this edge reads `medium`, not `high`
-        // (`riskLevel`'s `.high` branch requires the callee to resolve `isIsolated`, which
-        // `.unspecified` never does). The formula-level guarantee that an `isUnknown` edge whose
-        // *raw* risk would be `.high` is still excluded from `highRiskBoundaries` is verified
-        // directly, with hand-constructed data, in `AnalysisReportBuilderTests.swift` -- not
-        // naturally reproducible from this real fixture, since every edge-level unknown here
-        // structurally resolves through `.unspecified`.
-        #expect(setterEdge.risk == .medium)
+        // --- formerly a USR-granularity miss, now correctly resolved and correctly absent ---
+        // `cell.title = "x"` desugars to a call into NSCell's ObjC-bridged property setter
+        // (`c:objc(cs)NSCell(im)setTitle:`). This used to be an unmatchable USR-granularity miss
+        // (same class of gap as the `Counter.value` accessor case in `CapstoneCLITests`, see
+        // docs/priority-3-phase-c-oracle-triggers.md) -- fixed by
+        // docs/task-external-property-accessor-usr-mismatch.md's `owningPropertyUSR` canonicalization,
+        // which now correctly maps the setter to `NSCell`'s own `title` property and resolves it to
+        // `globalActor(MainActor)`, inherited the same way `ProjectCell.touch()` (the caller) already
+        // is. Both sides now resolve to the *same* isolation domain, which is not a cross-isolation
+        // boundary at all -- correctly absent from `crossIsolationEdges()` entirely, not merely
+        // downgraded to a resolved-but-still-reported edge. No `setTitle`-shaped edge should exist in
+        // the report anymore, confirmed or unknown.
+        #expect(!report.edges.contains { $0.calleeUSR.contains("NSCell") || $0.callerUSR.contains("NSCell") })
+        // The formula-level guarantee that an `isUnknown` edge whose *raw* risk would be `.high` is
+        // still excluded from `highRiskBoundaries` is verified directly, with hand-constructed data,
+        // in `AnalysisReportBuilderTests.swift` -- this real fixture no longer has an edge-level
+        // unknown to naturally exercise that path with, now that the NSCell case above resolves.
         #expect(!report.edges.contains { $0.isUnknown && $0.risk == .high })
     }
 }
