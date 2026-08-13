@@ -173,6 +173,7 @@ struct SwiftIsolationMap: ParsableCommand {
         let container = try resolveContainer(fromPath: path)
         let projectRoot = StalenessOrchestration.projectRoot(for: container)
 
+        eprint("Checking prerequisites...")
         let prerequisiteFailures = PrerequisiteChecking.check(
             container: container, processRunning: processRunning,
             toolchainLocator: LiveToolchainLocator(processRunning: processRunning, fileSystem: fileSystem),
@@ -187,6 +188,7 @@ struct SwiftIsolationMap: ParsableCommand {
             throw ExitCode(2)
         }
 
+        eprint("Resolving project and Swift version...")
         let languageMode = try resolveLanguageMode(container: container, fileSystem: fileSystem, processRunning: processRunning)
         let compilerVersion = try SwiftVersionDetection.compilerVersion(processRunning: processRunning)
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
@@ -209,6 +211,7 @@ struct SwiftIsolationMap: ParsableCommand {
         let analyzer = FileAnalyzer(fileSystem: fileSystem)
         var currentHashes: [String: String] = [:]
         var extractionResults: [ExtractionResult] = []
+        eprint("Parsing \(sourceFiles.count) Swift source file(s)...")
         for file in sourceFiles {
             let result = try analyzer.analyze(fileAt: file)
             currentHashes[file.path] = result.contentHash
@@ -225,6 +228,7 @@ struct SwiftIsolationMap: ParsableCommand {
         let manifest = StalenessOrchestration.loadManifest(at: manifestURL, fileSystem: fileSystem)
         let staleness = stalenessStatus(currentHashes: currentHashes, manifest: manifest)
 
+        eprint("Locating index store...")
         let locator = IndexStoreLocator(fileSystem: fileSystem)
         let initialDiscovery: IndexStoreDiscoveryResult = indexStorePath.map { .found(URL(fileURLWithPath: $0)) } ?? locator.locate(for: container)
 
@@ -247,6 +251,7 @@ struct SwiftIsolationMap: ParsableCommand {
         // `RawIndexStoreClient`'s own one-shot full-store scan processes every distinct on-disk
         // record independently and has no such gap -- confirmed via a controlled, same-process,
         // same-moment diff against `IndexStoreClient`. No `databasePath`/LMDB accelerator needed.
+        eprint("Linking declarations against the index store...")
         let indexStoreClient = try RawIndexStoreClient(storePath: indexStoreURL.path)
         let linker = DeclarationLinker(indexStore: indexStoreClient)
         // docs/task-indexstore-declaration-completeness.md: a real fraction of a large project's
@@ -267,6 +272,7 @@ struct SwiftIsolationMap: ParsableCommand {
         let linked = linker.link(extractionResults, usrRewriteMapOverrides: localFallbackOverrides)
         logVerbose("Linked \(linked.declarations.count) declaration(s), \(linked.callGraph.count) call-graph edge(s)")
 
+        eprint("Resolving external isolation (compiled dependencies)...")
         let externalResolution = runAsyncBridge {
             await resolveExternalIsolation(
                 linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
@@ -293,6 +299,7 @@ struct SwiftIsolationMap: ParsableCommand {
             mergedDeclarations[usr] = info
         }
 
+        eprint("Building report...")
         let engine = IsolationInferenceEngine(declarations: mergedDeclarations, callGraph: linked.callGraph, ruleSet: ruleSet)
         let report = AnalysisReportBuilder.build(
             engine: engine,
