@@ -311,6 +311,8 @@ struct SwiftIsolationMap: ParsableCommand {
             awaitedRangesByFile: linked.awaitedRangesByFile
         )
 
+        warnIfUncertaintyRateIsAnomalouslyHigh(report)
+
         try StalenessOrchestration.writeManifest(StalenessManifest(contentHashesByFilePath: currentHashes), to: manifestURL, fileSystem: fileSystem)
         // The exit-code decision below is based on `report` itself, not the filtered view --
         // `--severity` is a presentation choice for this invocation's output, never a way to
@@ -738,6 +740,30 @@ struct SwiftIsolationMap: ParsableCommand {
         } else {
             print(text)
         }
+    }
+
+    /// A silent, near-total external-isolation resolution failure (confirmed against a real,
+    /// ~40-dependency workspace: 97% of edges carrying `isUnknown`/`unspecified` after a stale-build
+    /// retry, with zero indication anywhere in the output) looks identical in the JSON to a small,
+    /// genuinely expected number of unresolved compiled-dependency calls -- nothing about the report
+    /// itself distinguishes "the oracle mostly failed this run" from "this project really does have
+    /// this many ambiguous boundaries." A threshold-based warning tells the two apart, even before a
+    /// real root-cause fix (retrying a failed representative query against another call site,
+    /// resolving more members via the bulk cache, ...) exists for any specific failure shape.
+    private func warnIfUncertaintyRateIsAnomalouslyHigh(_ report: AnalysisReport) {
+        guard !report.edges.isEmpty else { return }
+        let uncertainCount = report.edges.filter {
+            $0.isUnknown || $0.callerIsolation == "unspecified" || $0.calleeIsolation == "unspecified"
+        }.count
+        let fraction = Double(uncertainCount) / Double(report.edges.count)
+        guard fraction > 0.2 else { return }
+        eprint(
+            "Warning: \(uncertainCount)/\(report.edges.count) cross-isolation edges "
+                + "(\(Int((fraction * 100).rounded()))%) have unresolved isolation on at least one side. "
+                + "This usually means the external-isolation oracle didn't get real compiler arguments "
+                + "for most of the project this run (a stale-build retry, a build failure, or similar) -- "
+                + "not that this many boundaries are genuinely ambiguous. Re-run with --verbose for more detail."
+        )
     }
 
     private func logVerbose(_ message: String) {
