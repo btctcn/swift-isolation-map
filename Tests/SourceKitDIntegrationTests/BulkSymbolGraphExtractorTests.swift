@@ -86,8 +86,8 @@ struct BulkSymbolGraphExtractorTests {
         #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated)
     }
 
-    @Test("extract() omits a member with no isolation attribute of its own, but keeps a non-member with no attribute -- real shape confirmed against UIKit's own symbolgraph-extract output for UINavigationController.pushViewController(_:animated:) (docs/task-closure-isolation-attribution.md's sibling investigation)")
-    func omitsAmbiguousMemberButKeepsConfirmedNonMember() {
+    @Test("extract() inherits a globalActor container's isolation for a member with no attribute of its own -- real shape confirmed against UIKit's own symbolgraph-extract output for UINavigationController.pushViewController(_:animated:) (docs/task-closure-isolation-attribution.md's sibling investigation)")
+    func inheritsGlobalActorContainerIsolationForUnmarkedMember() {
         let processRunning = FakeProcessRunning()
         let fileSystem = FakeFileSystemQuerying()
 
@@ -121,7 +121,7 @@ struct BulkSymbolGraphExtractorTests {
             processRunning: processRunning, fileSystem: fileSystem
         )
         #expect(resolved["c:objc(cs)UINavigationController"] == .globalActor(name: "MainActor"))
-        #expect(resolved["c:objc(cs)UINavigationController(im)pushViewController:animated:"] == nil, "a member with no confirmed signal of its own must be omitted, not cached as a wrong .nonisolated fact -- a real call site's live query is what correctly resolves it instead")
+        #expect(resolved["c:objc(cs)UINavigationController(im)pushViewController:animated:"] == .globalActor(name: "MainActor"), "SE-0316: a member with no isolation of its own inherits its container's confirmed globalActor isolation -- the only way it wouldn't is an explicit nonisolated on the member itself, which is a hasConfirmedIsolationSignal match handled before this fallback ever runs")
         #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated, "a non-member's own \"no attribute\" fragments have no containing type to have inherited from, so they stay a trustworthy, cached .nonisolated fact")
     }
 
@@ -167,8 +167,9 @@ struct BulkSymbolGraphExtractorTests {
 
         // `GrandchildView` doesn't restate `@MainActor` (nothing does, per member -- that's the
         // whole bug), and neither does its immediate superclass `MiddleView`; only the root
-        // `BaseView` states it explicitly. A member of `GrandchildView` must still resolve as
-        // ambiguous (omitted), not trusted as `.nonisolated`, by walking the full chain.
+        // `BaseView` states it explicitly. A member of `GrandchildView` must still resolve to the
+        // *root's* isolation, not `.nonisolated`, by walking the full chain -- a shallow, one-level
+        // container check would have missed this and wrongly trusted the member as `.nonisolated`.
         let json = """
         {
           "symbols":[
@@ -195,7 +196,36 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["c:objc(cs)GrandchildView(im)someMethod"] == nil, "GrandchildView's own isolation comes from two inheritsFrom hops away -- a shallow, one-level container check would have missed this and wrongly trusted the member as .nonisolated")
+        #expect(resolved["c:objc(cs)GrandchildView(im)someMethod"] == .globalActor(name: "MainActor"), "GrandchildView's own isolation comes from two inheritsFrom hops away -- must still be found and inherited, not missed")
+    }
+
+    @Test("extract() trusts a member's own explicit nonisolated over its globalActor container -- confirmed real, not hypothetical: 184 real members carry this in a live UIKit extraction")
+    func trustsExplicitNonisolatedMemberOverGlobalActorContainer() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        let json = """
+        {
+          "symbols":[
+            {"identifier":{"precise":"c:objc(cs)SomeMainActorClass"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(cs)SomeMainActorClass(im)someNonisolatedMember"},"declarationFragments":[{"kind":"attribute","spelling":"nonisolated"},{"kind":"keyword","spelling":"func"}]}
+          ],
+          "relationships":[
+            {"kind":"memberOf","source":"c:objc(cs)SomeMainActorClass(im)someNonisolatedMember","target":"c:objc(cs)SomeMainActorClass"}
+          ]
+        }
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent("SomeModule.symbols.json"))
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "SomeModule", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved["c:objc(cs)SomeMainActorClass(im)someNonisolatedMember"] == .nonisolated, "the member's own nonisolated fragment is a hasConfirmedIsolationSignal match, resolved before the container-inheritance fallback ever runs -- must never be overridden by the container's MainActor isolation")
     }
 
     @Test("extract() merges symbols from every *.symbols.json sibling file, not just the module's own primary file")
