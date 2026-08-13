@@ -1,5 +1,12 @@
 import Foundation
 
+/// `ProjectResolution` is a library target with no access to the executable's own `eprint`
+/// (`swift-isolation-map/SwiftIsolationMap.swift`) -- a local, minimal equivalent, same stderr-only
+/// rationale (never stdout, which `--output`'s actual report needs to stay safely pipeable).
+func writeStderr(_ message: String, terminator: String = "\n") {
+    FileHandle.standardError.write(Data((message + terminator).utf8))
+}
+
 /// Real per-file `swiftc` compiler arguments for an Xcode project/workspace, obtained by running
 /// a real `xcodebuild -verbose ... build` and parsing the log -- see
 /// docs/priority-3-phase-a-compiler-args.md for the decision record and the empirical finding
@@ -110,6 +117,21 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             }
             var parsed = try runVerboseBuild(extraActions: [], destination: destination)
             if parsed.count < Self.minimumUsableFileCount {
+                // Silent until now: a plain build against an already-up-to-date project (the common
+                // case right after this same run's own `--force-reindex`, or any CI pipeline that
+                // just built the app) routinely hits this retry, and the clean rebuild it triggers
+                // can take real minutes on a large project -- confirmed directly against a real,
+                // ~40-dependency workspace (issue report: a user's run produced a report dominated by
+                // `unknown`/`unspecified` edges with zero indication anything unusual had happened).
+                // One line, not gated behind `--verbose`: this is exactly the kind of "why is this
+                // taking so long, and is it stuck" moment `--verbose`'s deeper per-file detail doesn't
+                // help with, and a plain hang with no output at all is what erodes trust in the tool's
+                // output once results do come back thin.
+                writeStderr(
+                    "Initial build produced too few real compiler invocations (\(parsed.count) file(s), " +
+                    "likely already up to date) -- retrying with a clean rebuild for compiler-argument " +
+                    "resolution. This can take a while on a large project."
+                )
                 parsed = try runVerboseBuild(extraActions: ["clean"], destination: destination)
             }
             cachedArguments = parsed
