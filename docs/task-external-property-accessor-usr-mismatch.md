@@ -263,22 +263,17 @@ with fresh eyes afterward — it may need to change from `isUnknown: true` to a 
 expectation, which would be the fix working, not a regression, provided the reasoning is written into
 the test's own updated comment.
 
-## 7. Remaining steps
+## 7. Remaining steps — DONE (2026-08-13), see §9 for one open follow-up
 
-1. Implement the two-part fix above.
-2. **Measure real impact the same way Gap A did**: `docs/task-raw-indexstore-spike.md`'s temporary
-   diagnostic technique (log a bulk/live hit-or-miss right where each trigger loop in
-   `ExternalIsolationBackfill.swift` checks it, short-circuit to `unknown` under an env-var guard so a
-   full pass completes in seconds instead of tens of minutes) is the fast, cheap way to verify without
-   a full real-corpus run every iteration. A full real run (this session used `.build/release/
-   swift-isolation-map <workspace> --scheme <scheme> --severity high --output json --out-file
-   result.json --verbose`, no `--force-reindex` if the index store is already fresh) is still worth
-   doing once at the end for a real before/after `medium`/`unknown` edge count, the same way this
-   session did (see `/tmp/lsboutique_diag_run.json` vs `/tmp/lsboutique_fix_run.json`-style comparison
-   — those specific temp files won't survive between sessions, regenerate).
-3. **Revert the temporary spike instrumentation** — `RawIndexStoreClient.debugAllRelations(forUSR:)`
-   and `Tests/IndexStoreIntegrationTests/TEMP_AccessorSpike.swift` — before merging the real fix, or
-   earlier if this task is paused. Neither is meant to ship.
+1. ~~Implement the two-part fix above.~~ Shipped: PR #82
+   (`fix/external-accessor-usr-canonicalization`, merged).
+2. ~~Measure real impact.~~ lsboutique before/after: cross-actor boundaries 25369 → 8173 (-68%),
+   uncertain edges 24030 → 6264 (-74%), confirmed high-risk edges 1339 → 1909 (+42.6%). Full numbers
+   in the PR description.
+3. ~~Revert the temporary spike instrumentation.~~ Done — neither `debugAllRelations(forUSR:)` nor
+   `TEMP_AccessorSpike.swift` shipped; the real fix's own tests
+   (`RawIndexStoreClientAccessorResolutionTests.swift`) are independent, permanent, pure-function unit
+   tests instead.
 
 ## 8. Explicitly out of scope for this task
 
@@ -288,3 +283,37 @@ the test's own updated comment.
 - The bulk-cache SE-0316 inheritance fix (PR #80) — already shipped, separate concern, real but small
   impact on this specific corpus (one edge, `UIWindow.init`) precisely because this accessor-mismatch
   issue dominates the same corpus's residual `unknown` count.
+
+## 9. Multi-corpus verification (2026-08-13) — the ordering the user asked for: fix, then measure, then verify the qualifier finding elsewhere
+
+Per explicit instruction, this came *after* the fix shipped and lsboutique's own before/after was in
+hand, not before. Two more real, independent corpora — chosen for a different dependency-manager shape
+than lsboutique (CocoaPods): **Swiftfin** (SPM-only, `~/corpora/Swiftfin`) and **WordPress-iOS**
+(CocoaPods-free too, in its current form — migrated to SPM/local Swift packages; `~/corpora/WordPress-iOS`,
+scheme `WordPress`, real `swift-isolation-map` run, no synthetic data).
+
+**Amendment 2's cross-module-collision concern: still not observed, now across three real, independent
+corpora.** WordPress-iOS alone gave a far larger sample than the original spike: 1756 real edges carry
+a `@CM@` qualifier, 970 of them the `@CM@<Module>@@` (double-`@`) form this fix's stripping logic
+actually handles. Same collision scan as the original spike (every "bare," qualifier-stripped USR,
+checked for co-occurring in both qualified and unqualified form) — **zero collisions**, same result as
+lsboutique and Swiftfin. Confirmed real, resolved (`isUnknown: false`) double-`@` accessor-shaped edges
+across all three corpora, including project-first-party-module qualifiers this session hadn't seen
+before (`@CM@WordPress@@`, `@CM@WordPressUI@@`, `@CM@WordPressData@@` — the qualifier isn't
+Apple-SDK-specific, it marks *any* cross-Clang-module reference).
+
+**A second, real, currently-unhandled qualifier shape was found — not yet costing anything observed,
+but not covered by the fix either.** Some real callee USRs carry a *single*-`@` form
+(`c:@CM@WordPress@objc(cs)...`, sometimes even chained: `c:@CM@WordPress@WordPressData@objc(cs)...`),
+which `strippingClangModuleQualifier`'s own `"@@"`-terminator search does not match — it returns such a
+USR unchanged (fails safe, not a wrong answer, just a missed normalization). On WordPress-iOS, 164 real
+callee edges carry this shape — but every one checked was a `(cm)` class-method reference (Core-Data-style
+factory/lookup methods: `lookupWithFeedID:inContext:`, `setLogLevel:`), never a property accessor, and
+all resolved successfully anyway (`isUnknown: false`) through the ordinary live-query path, which doesn't
+depend on `owningPropertyUSR` at all. **No real case was found where this second shape actually blocks
+accessor resolution** — but the search was against what naturally occurred in three real corpora, not
+exhaustive, and this is a real, now-documented gap in `strippingClangModuleQualifier`, not a closed
+question. If a future corpus (or a deeper look at these three) turns up a single-`@`-qualified property
+accessor specifically, extending the stripping logic to handle both shapes is the obvious next step —
+not attempted here, since no real case motivating it has been found yet, and this project's own
+discipline is to fix confirmed gaps, not speculative ones.
