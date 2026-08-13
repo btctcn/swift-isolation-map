@@ -205,24 +205,55 @@ public enum BulkSymbolGraphExtractor {
                     resolved[usr] = SymbolGraphIsolationParser.isolation(fromFragments: fragments, knownGlobalActorNames: bulkKnownGlobalActorNames)
                     continue
                 }
-                // No confirmed signal on this symbol's own fragments. For a *member*, that's
-                // ambiguous only if its containing type could plausibly be isolated -- confirmed
-                // directly: `UINavigationController.pushViewController(_:animated:)` carries no
-                // attribute of its own, but the same real USR's isolation *does* appear when
-                // queried live at a real call site (its container, `UINavigationController`,
-                // genuinely is `@MainActor`) -- see `SymbolGraphIsolationParser`'s own doc comment.
+                // No confirmed signal on this symbol's own fragments. For a *member*, SE-0316 (the
+                // same rule this project's own `IsolationInferenceEngine.resolveInheritedIsolation`
+                // already trusts for project-local declarations, unconditionally, for the global-
+                // actor case) makes this **not actually ambiguous**: a member with no isolation of
+                // its own inherits its containing type's global-actor isolation, full stop -- there
+                // is no third option in real Swift. The only way a member of a `@MainActor` class
+                // *isn't* `@MainActor` is an explicit `nonisolated` on the member itself, and that
+                // case is already handled *before* this fallback ever runs: `nonisolated` is a
+                // `hasConfirmedIsolationSignal` match on the member's own fragments (confirmed
+                // against a real UIKit extraction on this machine: 184 real members carry it), so a
+                // member reaching this fallback with zero signal of its own genuinely has none to
+                // report other than its container's. Confirmed directly against `UINavigationController
+                // .pushViewController(_:animated:)`: real bulk-extracted fragments carry no attribute,
+                // its container is confirmed `@MainActor`, and this now resolves it without a live
+                // query at all.
+                //
+                // The `.actor` (not `.globalActor`) case is structurally out of scope here, not just
+                // deliberately narrowed -- confirmed directly against `SymbolGraphIsolationParser.
+                // isolation(fromFragments:)`: it only ever returns `.nonisolated` or `.globalActor`,
+                // with no code path that recognizes a bulk-extracted `actor` type declaration at all
+                // (a real, pre-existing gap, unrelated to this fix). `resolvedTypeIsolation` can
+                // therefore never actually return `.actor` today, so the `guard containerIsolation ==
+                // .nonisolated` below is defensive completeness, not something a real container hits
+                // -- if that parser gap is ever closed, this still does the right thing (defer to a
+                // live query) rather than needing another look. SE-0316 gives another reason this
+                // would need care even if it were representable: actor isolation only propagates to
+                // *instance* members (`IsolationInferenceEngine.resolveInheritedIsolation`'s own
+                // `!declaration.isStaticMember` gate on that branch specifically, unlike
+                // `.globalActor`'s unconditional one), and this bulk pass doesn't track static-vs-
+                // instance at all. Apple's own SDKs essentially never declare a custom `actor` type
+                // anyway, so this fallback's real-world impact is overwhelmingly the `@MainActor`
+                // UIKit/AppKit member shape the fix above actually targets.
+                //
                 // A member of a container that resolves to `.nonisolated` (e.g. `Int.+=`, a member
                 // of plain nonisolated `Int` -- a real regression caught by this project's own
                 // existing golden fixtures when this check was first scoped too broadly to *every*
                 // member regardless of its container) has nothing to have inherited, so its own
-                // absence of an attribute is exactly as trustworthy as a non-member's. Caching a
-                // wrong verdict here would be final -- a bulk-cache hit is never re-checked -- so
-                // the genuinely ambiguous case is omitted entirely, letting a real call site's own
-                // live query resolve it correctly instead (exactly as if this weren't a
-                // bulk-covered module at all).
+                // absence of an attribute is exactly as trustworthy as a non-member's, and still
+                // resolves to `.nonisolated` below. Caching a wrong verdict here would be final -- a
+                // bulk-cache hit is never re-checked -- so only the `.actor` case is still deferred to
+                // a real call site's own live query, exactly as if this weren't a bulk-covered module.
                 if let containerUSR = containerOfMember[usr] {
                     var visiting: Set<String> = []
-                    guard resolvedTypeIsolation(containerUSR, visiting: &visiting) == .nonisolated else { continue }
+                    let containerIsolation = resolvedTypeIsolation(containerUSR, visiting: &visiting)
+                    if case .globalActor = containerIsolation {
+                        resolved[usr] = containerIsolation
+                        continue
+                    }
+                    guard containerIsolation == .nonisolated else { continue }
                 }
                 resolved[usr] = .nonisolated
             }
