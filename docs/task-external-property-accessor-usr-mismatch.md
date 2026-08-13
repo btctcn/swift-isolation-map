@@ -96,11 +96,21 @@ then-current inability* to resolve this case ("a real, naturally-occurring USR-g
 correctly `unknown`, not a confirmed risk, never silently dropped or miscounted either" — framed as
 accepting a known limitation, not asserting the canonicalized value would have been wrong data). The
 original bug report's own wording ("the unscoped lookup wrongly treated \[a reference occurrence's
-relation\] as authoritative") is itself ambiguous about *why* it was wrong — was the resulting USR
-**factually incorrect** (pointed at the wrong property, or a fabricated one), or was it *correct* but
-distrusted purely because it came from a non-definition occurrence? This was never disambiguated, as
-far as this document's author could find. **That's the open question this task needs to answer
-empirically, not by re-reading old comments further.**
+relation\] as authoritative") is itself ambiguous about *why* it was wrong. Three distinct
+hypotheses, not two:
+- (a) the resulting USR was **factually incorrect** — pointed at the wrong property, or a
+  fabricated one;
+- (b) it was *correct*, but distrusted purely because it came from a non-definition occurrence, on
+  principle;
+- (c) **the unscoped `.first` was nondeterministic, not the relation itself being wrong** — if a
+  single reference occurrence can carry *more than one* `.accessorOf` relation (e.g. something about
+  how the occurrence relates to both a getter and a setter, or to more than one candidate property),
+  `.first` would silently pick whichever one `relationsBySymbolUSR[usr]`'s own array-building order
+  happened to put first — a real, reproducible-looking bug from the *outside*, but with a completely
+  different fix than either (a) or (b) implies. Nothing in either doc rules this out, and it directly
+  determines what step 1 below should actually measure. This was never disambiguated, as far as this
+  document's author could find. **That's the open question this task needs to answer empirically, not
+  by re-reading old comments further.**
 
 ## 4. What earlier drafts of this investigation got wrong
 
@@ -123,35 +133,48 @@ the real starting point.
 
 ## 5. Concrete next steps
 
-1. **Query the real index store directly, empirically, before changing any code.** Against a real
-   project's index store (this session used `/Users/ab/ios/lsboutique.xcworkspace`, scheme
-   `ls.net.ru` — real, ~40 CocoaPods/SPM dependencies, `~/Library/Developer/Xcode/DerivedData/
-   lsboutique-*/Index.noindex/DataStore` once built with `--force-reindex`), check: does
-   `relationsBySymbolUSR["c:@CM@UIKit@@objc(cs)UIView(im)leadingAnchor"]` (a *reference*-only
-   occurrence, never a definition) actually carry a real `.accessorOf` relation, and if so, does its
-   `targetUSR` correctly equal `c:objc(cs)UIView(py)leadingAnchor`? Do this for several real accessor
-   USRs, not one — the getter case (bare name) and the setter case (`setXxx:` prefix) may behave
-   differently. If the relation is present and consistently correct across many real, independently
-   checked cases, that's strong evidence the `.definition`-only restriction is broader than the
-   original regression required.
+1. **Query the real index store directly, empirically, before changing any code — and count
+   relations, don't just check the first one.** Against a real project's index store (this session
+   used `/Users/ab/ios/lsboutique.xcworkspace`, scheme `ls.net.ru` — real, ~40 CocoaPods/SPM
+   dependencies, `~/Library/Developer/Xcode/DerivedData/lsboutique-*/Index.noindex/DataStore` once
+   built with `--force-reindex`), check `relationsBySymbolUSR["c:@CM@UIKit@@objc(cs)UIView(im)
+   leadingAnchor"]` (a *reference*-only occurrence, never a definition) with `.filter`, not `.first`:
+   **how many entries carry `INDEXSTORE_SYMBOL_ROLE_REL_ACCESSOROF`, not just whether at least one
+   does.** This directly separates hypothesis (c) above from (a)/(b) — if a reference occurrence
+   routinely carries more than one `.accessorOf` relation, `.first`'s nondeterministic pick (not the
+   relation data itself) is the real bug, and the fix is "pick correctly among candidates" or "reject
+   and fall through to `unknown` when the choice is ambiguous," never "trust reference occurrences
+   in general." If it's consistently exactly one, that rules out (c) and narrows the question back to
+   (a) vs (b). Do this across several real accessor USRs, not one — the getter case (bare name) and
+   the setter case (`setXxx:` prefix) may behave differently, and check whether `targetUSR` correctly
+   equals `c:objc(cs)UIView(py)leadingAnchor` for whichever relation(s) are found.
 2. **Re-examine the original regression's exact data, if reproducible.** Was
    `c:objc(cs)NSCell(py)title` (what the unscoped lookup produced for `setTitle:`) actually the
-   *correct* USR for `NSCell`'s real `title` property, or was it wrong? If reproducible with a small
-   real repro (an `NSCell` subclass, or any similarly-shaped real ObjC class with a property/setter
-   pair), settle this directly rather than trusting either doc's own wording.
-3. **If reference-occurrence `.accessorOf` relations turn out reliable**, the fix is likely narrow:
-   relax `owningPropertyUSR`'s `.definition`-role requirement specifically for the case where `usr`
-   has *no* definition occurrence at all (i.e., a genuinely external symbol) — fall back to trusting a
-   reference occurrence's relation *only* in that case, still preferring a definition-role relation
-   when one exists (preserves today's behavior for project-local code entirely). Re-run
-   `CompiledDependencyCLITests`'s `NSCell.setTitle:` assertion with fresh eyes — it may need to change
-   from `isUnknown: true` to a real resolved expectation, which would be the fix working, not a
-   regression, provided the reasoning behind the change is written into the test's own updated
-   comment.
-4. **If reference-occurrence relations turn out genuinely unreliable** (inconsistent, sometimes wrong
-   target), this task's fix direction changes entirely, and BOTH candidate directions from section 4
-   are actually dead — that finding itself would be valuable to record precisely (which cases were
-   wrong, and why) before considering a third approach.
+   *correct* USR for `NSCell`'s real `title` property, or was it wrong — and did that occurrence
+   carry exactly one `.accessorOf` relation, or more than one that `.first` silently chose between?
+   If reproducible with a small real repro (an `NSCell` subclass, or any similarly-shaped real ObjC
+   class with a property/setter pair), settle this directly rather than trusting either doc's own
+   wording.
+3. **If reference-occurrence `.accessorOf` relations turn out reliable when uniquely present**
+   (hypothesis (c) confirmed, or ruled out with a consistently-single, consistently-correct relation),
+   the fix is likely narrow: relax `owningPropertyUSR`'s `.definition`-role requirement specifically
+   for the case where `usr` has *no* definition occurrence at all (i.e., a genuinely external symbol)
+   — fall back to trusting a reference occurrence's relation *only* in that case, still preferring a
+   definition-role relation when one exists (preserves today's behavior for project-local code
+   entirely), and **explicitly log/reject (never silently `.first`) the case where more than one
+   `.accessorOf` candidate exists on the same occurrence** rather than guessing. Also verify the fix
+   rewrites `callerUSR` and `calleeUSR` **symmetrically**, matching how `DeclarationLinker.
+   canonicalized(_:)` already applies `owningPropertyUSR` to both sides of every edge for Gap A — an
+   asymmetric fix (only ever canonicalizing `calleeUSR`, say) would silently miss the case where the
+   isolation-relevant side of a boundary is the *caller*. Re-run `CompiledDependencyCLITests`'s
+   `NSCell.setTitle:` assertion with fresh eyes — it may need to change from `isUnknown: true` to a
+   real resolved expectation, which would be the fix working, not a regression, provided the
+   reasoning behind the change is written into the test's own updated comment.
+4. **If reference-occurrence relations turn out genuinely unreliable even after accounting for
+   hypothesis (c)** (inconsistent, sometimes wrong target even when uniquely present), this task's fix
+   direction changes entirely, and BOTH candidate directions from section 4 are actually dead — that
+   finding itself would be valuable to record precisely (which cases were wrong, and why) before
+   considering a third approach.
 5. **Measure real impact the same way Gap A did**: `docs/task-raw-indexstore-spike.md`'s temporary
    diagnostic technique (log a bulk/live hit-or-miss right where each trigger loop in
    `ExternalIsolationBackfill.swift` checks it, short-circuit to `unknown` under an env-var guard so a
