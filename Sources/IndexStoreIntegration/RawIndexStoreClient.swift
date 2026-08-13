@@ -2,6 +2,13 @@ import Foundation
 import CIndexStoreRaw
 import IsolationCore
 
+/// Same local-stderr-helper pattern as `ProjectResolution/XcodeBuildLogCompilerArgumentsProvider.swift`
+/// -- a library target has no access to the executable's own `eprint`, and `internal` symbols don't
+/// cross module boundaries even between targets that depend on each other.
+func writeStderr(_ message: String, terminator: String = "\n") {
+    FileHandle.standardError.write(Data((message + terminator).utf8))
+}
+
 /// Experimental second `IndexStoreQuerying` conformer, backed directly by `libIndexStore`'s raw C
 /// API (`CIndexStoreRaw`) instead of `IndexStoreDB`'s own Swift/C++ wrapper -- the scoped spike
 /// issue #51 (`docs/task-indexstore-declaration-completeness.md`) called for, testing whether
@@ -73,13 +80,77 @@ public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable 
         callEdgesByFile[path] ?? []
     }
 
+    /// Two real gaps closed here, confirmed against a real ~40-dependency corpus
+    /// (docs/task-external-property-accessor-usr-mismatch.md, §5-§6), on top of the original
+    /// project-local-only behavior:
+    /// 1. A reference-only occurrence's `.accessorOf` relation is now trusted (not just a
+    ///    `.definition`-role one) when `usr` has no definition anywhere -- i.e., a genuinely
+    ///    external symbol, which never has a local definition to begin with. Prefers a
+    ///    definition-role relation when one exists, preserving today's project-local behavior
+    ///    exactly. Verified reliable across nine real external accessor USRs before trusting
+    ///    this: every one had either exactly one candidate or several byte-identical duplicates,
+    ///    never genuine disagreement -- `accessorOwningPropertyUSR(_:)` still requires unanimous
+    ///    agreement and returns `nil` rather than guessing if that ever changes.
+    /// 2. A real call-graph edge can reference an external symbol through a Clang-Module-qualified
+    ///    USR (`c:@CM@UIKit@@objc(cs)UIView(im)leadingAnchor`) that this index's own relation
+    ///    storage never uses for the identical declaration (`c:objc(cs)UIView(im)leadingAnchor`,
+    ///    no qualifier) -- confirmed for `leadingAnchor`/`trailingAnchor`/`setHidden:`, and
+    ///    confirmed the qualifier stays identical across four different real importing contexts
+    ///    (the main app plus three separate CocoaPods) in the same corpus, with zero real
+    ///    qualified/unqualified collisions anywhere in that corpus's edge set. Falls back to the
+    ///    stripped form only when the direct lookup finds nothing.
     public func owningPropertyUSR(forUSR usr: String) -> String? {
-        // Matches `IndexStoreClient`'s own `occurrences(ofUSR: usr, roles: .definition)` scoping
-        // exactly -- see `RawRelation.occurrenceRoles`'s own doc comment for why this can't be
-        // relaxed to "any occurrence of usr."
-        relationsBySymbolUSR[usr]?.first {
-            $0.occurrenceRoles & INDEXSTORE_SYMBOL_ROLE_DEFINITION != 0 && $0.role & INDEXSTORE_SYMBOL_ROLE_REL_ACCESSOROF != 0
-        }?.targetUSR
+        if let direct = accessorOwningPropertyUSR(usr) {
+            return direct
+        }
+        let stripped = Self.strippingClangModuleQualifier(usr)
+        guard stripped != usr else { return nil }
+        return accessorOwningPropertyUSR(stripped)
+    }
+
+    /// Adapts this client's own internal `RawRelation` storage (`fileprivate`, unreachable from
+    /// tests) into the plain-tuple shape `resolvedOwningPropertyUSR(fromAccessorOfCandidates:)`
+    /// takes, so that function's own aggregation/disagreement logic stays independently testable
+    /// with synthetic data, without needing a real index store to exercise a disagreement this
+    /// project's own real corpus never actually produced.
+    private func accessorOwningPropertyUSR(_ usr: String) -> String? {
+        let candidates = (relationsBySymbolUSR[usr] ?? [])
+            .filter { $0.role & INDEXSTORE_SYMBOL_ROLE_REL_ACCESSOROF != 0 }
+            .map { (targetUSR: $0.targetUSR, isDefinitionRole: $0.occurrenceRoles & INDEXSTORE_SYMBOL_ROLE_DEFINITION != 0) }
+        return Self.resolvedOwningPropertyUSR(forUSR: usr, fromAccessorOfCandidates: candidates)
+    }
+
+    /// Requires every `.accessorOf` candidate (after preferring definition-role ones, matching
+    /// `IndexStoreClient`'s own `occurrences(ofUSR: usr, roles: .definition)` scoping when a
+    /// definition exists) to agree on the same `targetUSR` -- never `.first`-and-hope. On the real
+    /// corpus this was verified against, every multi-candidate case was byte-identical duplicates,
+    /// so this costs nothing on real data; a genuine disagreement (never observed, but not provably
+    /// impossible) safely falls through to `nil` instead of guessing, matching this project's own
+    /// Guiding Principle. `forUSR` is used only for the diagnostic message on disagreement --
+    /// doesn't affect resolution.
+    static func resolvedOwningPropertyUSR(forUSR usr: String, fromAccessorOfCandidates candidates: [(targetUSR: String, isDefinitionRole: Bool)]) -> String? {
+        let definitionCandidates = candidates.filter(\.isDefinitionRole)
+        let scoped = definitionCandidates.isEmpty ? candidates : definitionCandidates
+        let targets = Set(scoped.map(\.targetUSR))
+        guard targets.count == 1 else {
+            if targets.count > 1 {
+                writeStderr("Warning: ambiguous .accessorOf relation for \(usr) -- competing targets: \(targets.sorted().joined(separator: ", ")); leaving unresolved rather than guessing.")
+            }
+            return nil
+        }
+        return targets.first
+    }
+
+    /// Strips a leading Clang-Module qualifier (`@CM@<Module>@@`) from a USR, if present -- see
+    /// `owningPropertyUSR(forUSR:)`'s own doc comment for why this exists. Returns `usr` unchanged
+    /// if it doesn't start with this exact prefix shape.
+    static func strippingClangModuleQualifier(_ usr: String) -> String {
+        let prefix = "c:@CM@"
+        guard usr.hasPrefix(prefix),
+              let separatorRange = usr.range(of: "@@", range: usr.index(usr.startIndex, offsetBy: prefix.count)..<usr.endIndex) else {
+            return usr
+        }
+        return "c:" + usr[separatorRange.upperBound...]
     }
 
     public func baseTypeUSRs(forUSR usr: String) -> [(usr: String, name: String)] {
