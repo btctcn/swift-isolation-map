@@ -264,6 +264,89 @@ func declarationLevelTriggerRewritesConformance() async {
     #expect(resolution.updatedDeclarations["s:MyView"]?.conformances.first?.protocolGlobalActorName == "MainActor")
 }
 
+/// Fixed `sdkPath`/`target`, no real toolchain call -- `BulkSymbolGraphExtractor.extract`'s own
+/// process invocation is what gets faked, via `FakeProcessRunner.onRun` below.
+private struct FakeBulkExtractionEnvironment: BulkExtractionEnvironmentProviding {
+    func environment() throws -> BulkExtractionEnvironment {
+        BulkExtractionEnvironment(sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0", discoveredModules: [])
+    }
+}
+
+/// Writes `json` to whichever `-output-dir` a real `BulkSymbolGraphExtractor.extract` invocation
+/// asks for (freshly UUID-named per call, not predictable ahead of time) and reports success.
+private func stubSymbolGraphExtraction(_ processRunning: FakeProcessRunner, fileSystem: FakeFileSystem, moduleFileName: String, json: String) {
+    processRunning.onRun = { executable, arguments in
+        guard executable == "xcrun", let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return nil }
+        let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+        try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent(moduleFileName))
+        return ProcessResult(exitCode: 0, standardOutput: "", standardError: "")
+    }
+}
+
+@Test("A protocol's own inheritance-clause entry naming a global-actor-isolated *class* (a class-bound protocol, e.g. `protocol ViewDataConfigurable: UIView`) does not propagate that class's global actor to the protocol itself -- confirmed real false positive (docs/task-class-bound-protocol-conformance-isolation.md): this exact shape wrongly made every `static var reuseIdentifier` extension-default member resolve to @MainActor at 220 real call sites, none with a matching compiler diagnostic")
+func classBoundProtocolInheritanceDoesNotPropagateItsClassGlobalActor() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    // `SyntaxAnalysis.DeclarationExtractor.applyInheritance` only ever routes a name into
+    // `superclassCandidateName` for an actual *class* declaration's first inheritance entry --
+    // never a protocol's (`isClass: false` for `visit(_ node: ProtocolDeclSyntax)`) -- so
+    // `protocol ViewDataConfigurable: UIView` arrives here exactly like this: an ordinary,
+    // unresolved conformance entry naming `UIView`, indistinguishable at this layer from a real
+    // protocol conformance.
+    let conformance = ProtocolConformance(
+        protocolUSR: "c:objc(cs)UIView", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false
+    )
+    let protocolDeclaration = DeclarationInfo(
+        usr: "s:ViewDataConfigurable", name: "ViewDataConfigurable", conformances: [conformance], location: location
+    )
+    let linked = LinkedAnalysis(declarations: ["s:ViewDataConfigurable": protocolDeclaration], callGraph: [])
+
+    let processRunning = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    // Real shape, confirmed live against this machine's own SDK: `UIView`'s `kind.identifier` is
+    // `"swift.class"`, and it is genuinely `@MainActor`.
+    stubSymbolGraphExtraction(processRunning, fileSystem: fileSystem, moduleFileName: "UIKit.symbols.json", json: """
+    {"symbols":[{"identifier":{"precise":"c:objc(cs)UIView"},"kind":{"identifier":"swift.class"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"class"}]}]}
+    """)
+    let sourceKitD = FakeSourceKitDQuerying()
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: FakeCompilerArgumentsProviding(), sourceKitD: sourceKitD,
+        fileSystem: fileSystem, processRunning: processRunning,
+        environmentProvider: FakeBulkExtractionEnvironment(), bulkModuleNames: ["UIKit"]
+    )
+
+    #expect(resolution.updatedDeclarations["s:ViewDataConfigurable"]?.conformances.first?.protocolGlobalActorName == nil, "UIView is a class, not a protocol -- SE-0316's protocol-conformance-inherits-actor rule must not fire for a class-bound protocol's inheritance-clause entry")
+    #expect(sourceKitD.callCount == 0, "the bulk cache already has definitive kind information for UIView -- this must resolve without ever falling through to a live query")
+}
+
+@Test("A declaration conforming to a genuine, bulk-cache-resolved global-actor protocol still gets protocolGlobalActorName rewritten -- regression guard for the class-bound-protocol fix above, same bulk-cache path, opposite (real protocol) kind")
+func genuineBulkCacheProtocolConformanceStillPropagates() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let conformance = ProtocolConformance(
+        protocolUSR: "c:objc(pl)SomeMainActorProtocol", protocolGlobalActorName: nil,
+        declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false
+    )
+    let declaration = DeclarationInfo(usr: "s:MyType", name: "MyType", conformances: [conformance], location: location)
+    let linked = LinkedAnalysis(declarations: ["s:MyType": declaration], callGraph: [])
+
+    let processRunning = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    stubSymbolGraphExtraction(processRunning, fileSystem: fileSystem, moduleFileName: "UIKit.symbols.json", json: """
+    {"symbols":[{"identifier":{"precise":"c:objc(pl)SomeMainActorProtocol"},"kind":{"identifier":"swift.protocol"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"protocol"}]}]}
+    """)
+    let sourceKitD = FakeSourceKitDQuerying()
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: FakeCompilerArgumentsProviding(), sourceKitD: sourceKitD,
+        fileSystem: fileSystem, processRunning: processRunning,
+        environmentProvider: FakeBulkExtractionEnvironment(), bulkModuleNames: ["UIKit"]
+    )
+
+    #expect(resolution.updatedDeclarations["s:MyType"]?.conformances.first?.protocolGlobalActorName == "MainActor")
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("A declaration-level oracle failure marks the declaration and its direct members unknown")
 func declarationLevelTriggerFailurePropagatesToDirectMembers() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)

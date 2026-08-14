@@ -115,10 +115,12 @@ enum ExternalIsolationBackfill {
         let phaseTimingEnabled = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_PHASE_TIMING"] != nil
         let bulkPhaseStart = phaseTimingEnabled ? Date() : nil
 
-        let bulkCache = bulkSymbolGraphCache(
+        let bulkResolution = bulkSymbolGraphCache(
             environmentProvider: environmentProvider, processRunning: processRunning,
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
+        let bulkCache = bulkResolution.isolationByUSR
+        let bulkProtocolUSRs = bulkResolution.protocolUSRs
 
         if let bulkPhaseStart {
             eprint("PHASE-TIMING bulk-symbol-graph-phase: \(Date().timeIntervalSince(bulkPhaseStart))s")
@@ -132,7 +134,7 @@ enum ExternalIsolationBackfill {
         var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
         var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
         let (declarationPlans, placeholderNeeds) = collectDeclarationLevelWorkItems(
-            linked: linked, bulkCache: bulkCache,
+            linked: linked, bulkCache: bulkCache, bulkProtocolUSRs: bulkProtocolUSRs,
             backfilled: &backfilled, pairOutcomes: &pairOutcomes, pairIndicesByDeclaration: &pairIndicesByDeclaration
         )
 
@@ -270,8 +272,10 @@ enum ExternalIsolationBackfill {
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying,
         moduleNames: [String]
-    ) -> [String: IsolationKind] {
-        guard let environment = try? environmentProvider.environment() else { return [:] }
+    ) -> BulkSymbolGraphResolution {
+        guard let environment = try? environmentProvider.environment() else {
+            return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: [])
+        }
         return BulkSymbolGraphExtractor.extractAll(
             moduleNames: moduleNames, discoveredModules: environment.discoveredModules,
             sdkPath: environment.sdkPath, target: environment.target,
@@ -462,6 +466,7 @@ enum ExternalIsolationBackfill {
     private static func collectDeclarationLevelWorkItems(
         linked: LinkedAnalysis,
         bulkCache: [String: IsolationKind],
+        bulkProtocolUSRs: Set<String>,
         backfilled: inout [String: DeclarationInfo],
         pairOutcomes: inout [ConformancePairKey: ConformancePairOutcome],
         pairIndicesByDeclaration: inout [String: [(index: Int, key: ConformancePairKey)]]
@@ -578,9 +583,34 @@ enum ExternalIsolationBackfill {
                 pairIndicesByDeclaration[declaration.usr, default: []].append(contentsOf: indices)
             }
 
+            // Class-bound-protocol fix (docs/task-class-bound-protocol-conformance-isolation.md):
+            // `declaration.conformances[index].protocolUSR` is *not* necessarily a protocol -- it's
+            // whatever name appeared in an inheritance/conformance clause (`SyntaxAnalysis
+            // .DeclarationExtractor.applyInheritance`'s `else` branch has no project-wide type-kind
+            // knowledge at extraction time, so it can't tell `protocol P: SomeProtocol` apart from
+            // `protocol P: SomeGlobalActorClass`, a class-bound protocol whose class constrains
+            // *conformers*, not `P` itself). SE-0316's "conformance to a global-actor-qualified
+            // protocol" rule only applies when the named entity genuinely *is* a protocol -- reusing
+            // a class's own isolation here as if it were the protocol's stated global actor is wrong
+            // (confirmed a real false positive: `protocol ViewDataConfigurable: UIView` on a real
+            // corpus wrongly made every `ViewDataConfigurable` extension-default member, including
+            // `static var reuseIdentifier`, resolve to `@MainActor`, with zero matching compiler
+            // diagnostic at any of 220 real call sites). `bulkProtocolUSRs` (from `symbolgraph-
+            // extract`'s own authoritative `kind.identifier`) is the one signal that tells the two
+            // apart. Anything the bulk pass has *any* isolation data for is resolved definitively
+            // here either way -- `.globalActor` only when it's confirmed a protocol, `.notGlobalActor`
+            // otherwise (a confirmed class, or a protocol with no global-actor isolation of its own)
+            // -- so this never adds live-query volume; only USRs bulk data has nothing on at all
+            // still fall through to the live path below, exactly as before this fix.
             unresolvedConformanceIndices = unresolvedConformanceIndices.filter { index in
-                guard case .globalActor(let actorName)? = bulkCache[declaration.conformances[index].protocolUSR] else { return true }
-                pairOutcomes[ConformancePairKey(nominalUSR: nominal, protocolUSR: declaration.conformances[index].protocolUSR)] = .globalActor(actorName)
+                let protocolUSR = declaration.conformances[index].protocolUSR
+                guard let cachedIsolation = bulkCache[protocolUSR] else { return true }
+                let key = ConformancePairKey(nominalUSR: nominal, protocolUSR: protocolUSR)
+                if bulkProtocolUSRs.contains(protocolUSR), case .globalActor(let actorName) = cachedIsolation {
+                    pairOutcomes[key] = .globalActor(actorName)
+                } else {
+                    pairOutcomes[key] = .notGlobalActor
+                }
                 return false
             }
 
