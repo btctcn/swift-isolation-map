@@ -19,6 +19,28 @@ import ProjectResolution
 /// third-party binary SwiftPM dependency, or any SDK module simply not in `moduleNames`) is absent
 /// from the returned dictionary, and callers fall back to the existing live per-declaration
 /// `cursorinfo` oracle, unaffected and unchanged.
+/// `isolationByUSR` is the existing, unchanged contract (every resolved external symbol's own
+/// isolation, keyed by USR). `protocolUSRs` is additional: the subset of those USRs whose
+/// `symbolgraph-extract`-reported `kind.identifier` is `"swift.protocol"` -- needed to tell a
+/// genuine protocol conformance apart from a class-bound protocol's inheritance-clause entry
+/// (`protocol P: UIView`), which names a *class*, not a protocol. Both share the same
+/// `conformedProtocolNames`/`ProtocolConformance.protocolUSR` representation upstream (`SyntaxAnalysis
+/// .DeclarationExtractor` has no project-wide type-kind knowledge at extraction time to split them),
+/// so only here -- where the real, authoritative kind first becomes available -- can the two be
+/// told apart. See `ExternalIsolationBackfill`'s own use of `protocolUSRs` for why the distinction
+/// matters: SE-0316's "conformance to a global-actor-qualified protocol" rule applies only when the
+/// conformed-to name is itself a protocol annotated with a global actor -- never when it's a class
+/// that merely happens to be global-actor-isolated via its own hierarchy.
+public struct BulkSymbolGraphResolution {
+    public let isolationByUSR: [String: IsolationKind]
+    public let protocolUSRs: Set<String>
+
+    public init(isolationByUSR: [String: IsolationKind], protocolUSRs: Set<String>) {
+        self.isolationByUSR = isolationByUSR
+        self.protocolUSRs = protocolUSRs
+    }
+}
+
 public enum BulkSymbolGraphExtractor {
     /// Well-known SDK modules worth eagerly bulk-extracting -- covers the overwhelming majority of
     /// external superclasses/protocols/call targets real iOS/macOS projects reference. Deliberately
@@ -74,11 +96,11 @@ public enum BulkSymbolGraphExtractor {
         target: String,
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying
-    ) -> [String: IsolationKind] {
+    ) -> BulkSymbolGraphResolution {
         let jobs: [(name: String, extractionFlags: [String])] =
             moduleNames.map { (name: $0, extractionFlags: []) }
             + discoveredModules.map { (name: $0.name, extractionFlags: $0.extractionFlags) }
-        guard !jobs.isEmpty else { return [:] }
+        guard !jobs.isEmpty else { return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: []) }
 
         let resultBuffer = ResultBuffer(count: jobs.count)
         DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
@@ -91,12 +113,14 @@ public enum BulkSymbolGraphExtractor {
         }
 
         var merged: [String: IsolationKind] = [:]
+        var mergedProtocolUSRs: Set<String> = []
         for result in resultBuffer.results {
-            for (usr, isolation) in result {
+            for (usr, isolation) in result.isolationByUSR {
                 merged[usr] = isolation
             }
+            mergedProtocolUSRs.formUnion(result.protocolUSRs)
         }
-        return merged
+        return BulkSymbolGraphResolution(isolationByUSR: merged, protocolUSRs: mergedProtocolUSRs)
     }
 
     static func extract(
@@ -106,7 +130,7 @@ public enum BulkSymbolGraphExtractor {
         additionalArguments: [String] = [],
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying
-    ) -> [String: IsolationKind] {
+    ) -> BulkSymbolGraphResolution {
         let outputDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("swift-isolation-map-symbolgraph-\(moduleName)-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
@@ -126,7 +150,7 @@ public enum BulkSymbolGraphExtractor {
                 workingDirectory: nil,
                 timeout: perModuleTimeout
             )
-            guard result.exitCode == 0 else { return [:] }
+            guard result.exitCode == 0 else { return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: []) }
 
             // Every `*.symbols.json` file, not just the module's own primary `<Module>.symbols.json`
             // -- confirmed empirically (a real two-module build: a `@MainActor` property added to
@@ -148,11 +172,15 @@ public enum BulkSymbolGraphExtractor {
             var fragmentsByUSR: [String: [SymbolGraphDocument.Symbol.Fragment]] = [:]
             var containerOfMember: [String: String] = [:]
             var superclassOfType: [String: String] = [:]
+            var protocolUSRs: Set<String> = []
             for file in symbolFiles {
                 guard let data = try? fileSystem.readData(at: file),
                       let document = try? JSONDecoder().decode(BulkSymbolGraphDocument.self, from: data) else { continue }
                 for symbol in document.symbols {
                     fragmentsByUSR[symbol.identifier.precise] = symbol.declarationFragments ?? []
+                    if symbol.kind?.identifier == "swift.protocol" {
+                        protocolUSRs.insert(symbol.identifier.precise)
+                    }
                 }
                 for relationship in document.relationships {
                     switch relationship.kind {
@@ -257,9 +285,9 @@ public enum BulkSymbolGraphExtractor {
                 }
                 resolved[usr] = .nonisolated
             }
-            return resolved
+            return BulkSymbolGraphResolution(isolationByUSR: resolved, protocolUSRs: protocolUSRs)
         } catch {
-            return [:]
+            return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: [])
         }
     }
 }
@@ -271,13 +299,13 @@ public enum BulkSymbolGraphExtractor {
 /// `ResultBox<T>: @unchecked Sendable` precedent (`SwiftIsolationMap.swift`) for the same reason --
 /// a hand-verified safety argument the compiler can't itself express.
 private final class ResultBuffer: @unchecked Sendable {
-    private(set) var results: [[String: IsolationKind]]
+    private(set) var results: [BulkSymbolGraphResolution]
 
     init(count: Int) {
-        results = Array(repeating: [:], count: count)
+        results = Array(repeating: BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: []), count: count)
     }
 
-    func set(_ value: [String: IsolationKind], at index: Int) {
+    func set(_ value: BulkSymbolGraphResolution, at index: Int) {
         results[index] = value
     }
 }
@@ -290,10 +318,21 @@ struct BulkSymbolGraphDocument: Decodable {
 
     struct Symbol: Decodable {
         let identifier: Identifier
+        /// Defaulted, not required: real `symbolgraph-extract` output always carries this, but a
+        /// hand-written test fixture predating this field (or any other malformed/partial document)
+        /// should still decode -- absence just means "kind unknown," never a decode failure for the
+        /// whole symbol. See `BulkSymbolGraphResolution`'s own doc comment for why the real
+        /// `"swift.protocol"` value matters: it's what tells a genuine protocol conformance apart
+        /// from a class-bound protocol's inheritance-clause entry naming an actual class.
+        let kind: Kind?
         let declarationFragments: [SymbolGraphDocument.Symbol.Fragment]?
 
         struct Identifier: Decodable {
             let precise: String
+        }
+
+        struct Kind: Decodable {
+            let identifier: String
         }
     }
 

@@ -54,7 +54,7 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "AppKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved.isEmpty)
+        #expect(resolved.isolationByUSR.isEmpty)
     }
 
     @Test("extract() parses declarationFragments from every symbol in the module's primary symbol-graph file, keyed by USR")
@@ -82,8 +82,8 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "AppKit", sdkPath: "/fake/sdk", target: "arm64-apple-macosx13.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["c:objc(cs)NSView"] == .globalActor(name: "MainActor"))
-        #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated)
+        #expect(resolved.isolationByUSR["c:objc(cs)NSView"] == .globalActor(name: "MainActor"))
+        #expect(resolved.isolationByUSR["c:objc(cs)NSSomethingPlain"] == .nonisolated)
     }
 
     @Test("extract() inherits a globalActor container's isolation for a member with no attribute of its own -- real shape confirmed against UIKit's own symbolgraph-extract output for UINavigationController.pushViewController(_:animated:) (docs/task-closure-isolation-attribution.md's sibling investigation)")
@@ -120,9 +120,9 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["c:objc(cs)UINavigationController"] == .globalActor(name: "MainActor"))
-        #expect(resolved["c:objc(cs)UINavigationController(im)pushViewController:animated:"] == .globalActor(name: "MainActor"), "SE-0316: a member with no isolation of its own inherits its container's confirmed globalActor isolation -- the only way it wouldn't is an explicit nonisolated on the member itself, which is a hasConfirmedIsolationSignal match handled before this fallback ever runs")
-        #expect(resolved["c:objc(cs)NSSomethingPlain"] == .nonisolated, "a non-member's own \"no attribute\" fragments have no containing type to have inherited from, so they stay a trustworthy, cached .nonisolated fact")
+        #expect(resolved.isolationByUSR["c:objc(cs)UINavigationController"] == .globalActor(name: "MainActor"))
+        #expect(resolved.isolationByUSR["c:objc(cs)UINavigationController(im)pushViewController:animated:"] == .globalActor(name: "MainActor"), "SE-0316: a member with no isolation of its own inherits its container's confirmed globalActor isolation -- the only way it wouldn't is an explicit nonisolated on the member itself, which is a hasConfirmedIsolationSignal match handled before this fallback ever runs")
+        #expect(resolved.isolationByUSR["c:objc(cs)NSSomethingPlain"] == .nonisolated, "a non-member's own \"no attribute\" fragments have no containing type to have inherited from, so they stay a trustworthy, cached .nonisolated fact")
     }
 
     @Test("extract() trusts a member's own \"no attribute\" fragments when its container itself resolves to .nonisolated -- the real Int.+= regression this check's first, over-broad version introduced")
@@ -157,7 +157,7 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "Swift", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["s:Si2peoiyySiz_SitFZ"] == .nonisolated)
+        #expect(resolved.isolationByUSR["s:Si2peoiyySiz_SitFZ"] == .nonisolated)
     }
 
     @Test("extract() walks a superclass chain (inheritsFrom) to find a confirmed container isolation, not just the immediate container's own fragments")
@@ -196,7 +196,7 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["c:objc(cs)GrandchildView(im)someMethod"] == .globalActor(name: "MainActor"), "GrandchildView's own isolation comes from two inheritsFrom hops away -- must still be found and inherited, not missed")
+        #expect(resolved.isolationByUSR["c:objc(cs)GrandchildView(im)someMethod"] == .globalActor(name: "MainActor"), "GrandchildView's own isolation comes from two inheritsFrom hops away -- must still be found and inherited, not missed")
     }
 
     @Test("extract() trusts a member's own explicit nonisolated over its globalActor container -- confirmed real, not hypothetical: 184 real members carry this in a live UIKit extraction")
@@ -225,7 +225,7 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "SomeModule", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["c:objc(cs)SomeMainActorClass(im)someNonisolatedMember"] == .nonisolated, "the member's own nonisolated fragment is a hasConfirmedIsolationSignal match, resolved before the container-inheritance fallback ever runs -- must never be overridden by the container's MainActor isolation")
+        #expect(resolved.isolationByUSR["c:objc(cs)SomeMainActorClass(im)someNonisolatedMember"] == .nonisolated, "the member's own nonisolated fragment is a hasConfirmedIsolationSignal match, resolved before the container-inheritance fallback ever runs -- must never be overridden by the container's MainActor isolation")
     }
 
     @Test("extract() merges symbols from every *.symbols.json sibling file, not just the module's own primary file")
@@ -253,7 +253,34 @@ struct BulkSymbolGraphExtractorTests {
             moduleName: "Kingfisher", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
             processRunning: processRunning, fileSystem: fileSystem
         )
-        #expect(resolved["s:4ModA9BaseThingC0A1BE2kfSivp"] == .globalActor(name: "MainActor"))
+        #expect(resolved.isolationByUSR["s:4ModA9BaseThingC0A1BE2kfSivp"] == .globalActor(name: "MainActor"))
+    }
+
+    @Test("extract() reports a symbol as a protocol only when its own kind.identifier is \"swift.protocol\" -- a class with the identical isolation is not, real shape confirmed live against UIView (class) vs UITableViewDelegate (protocol) in this machine's own UIKit symbolgraph-extract output")
+    func distinguishesProtocolKindFromClassKind() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        let json = """
+        {"symbols":[
+            {"identifier":{"precise":"c:objc(cs)UIView"},"kind":{"identifier":"swift.class"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"class"}]},
+            {"identifier":{"precise":"c:objc(pl)UITableViewDelegate"},"kind":{"identifier":"swift.protocol"},"declarationFragments":[{"kind":"keyword","spelling":"protocol"}]},
+            {"identifier":{"precise":"c:objc(cs)NoKindHere"},"declarationFragments":[{"kind":"keyword","spelling":"class"}]}
+        ]}
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent("UIKit.symbols.json"))
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "UIKit", sdkPath: "/fake/sdk", target: "arm64-apple-ios17.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved.protocolUSRs == ["c:objc(pl)UITableViewDelegate"])
+        #expect(!resolved.protocolUSRs.contains("c:objc(cs)UIView"), "UIView is a real, globally-actor-isolated class, not a protocol -- it must never be reported as one")
+        #expect(!resolved.protocolUSRs.contains("c:objc(cs)NoKindHere"), "a symbol with no kind field at all (an older/malformed document) must decode without crashing and stay absent from protocolUSRs, never guessed")
     }
 
     @Test("Live toolchain: bulk-extracting real AppKit from the macOS SDK resolves NSView to @MainActor")
@@ -268,6 +295,6 @@ struct BulkSymbolGraphExtractorTests {
         )
         // NSView is a real, stable, long-standing @MainActor AppKit type -- confirmed directly
         // against this machine's real SDK before writing this assertion (not assumed).
-        #expect(resolved["c:objc(cs)NSView"] == .globalActor(name: "MainActor"))
+        #expect(resolved.isolationByUSR["c:objc(cs)NSView"] == .globalActor(name: "MainActor"))
     }
 }

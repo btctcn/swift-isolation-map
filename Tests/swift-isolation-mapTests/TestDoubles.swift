@@ -12,6 +12,11 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
 
     private var responses: [Invocation: ProcessResult] = [:]
     private(set) var invocations: [Invocation] = []
+    /// For callers whose arguments aren't predictable ahead of time (`BulkSymbolGraphExtractor
+    /// .extract` generates a fresh, randomly-named `-output-dir` per call) -- checked before the
+    /// exact-match `responses` dictionary, so existing `.stub(...)` usage is unaffected. Returning
+    /// `nil` falls through to the exact-match lookup (and its "no stub" error) as before.
+    var onRun: ((_ executable: String, _ arguments: [String]) -> ProcessResult?)?
 
     func stub(executable: String, arguments: [String], result: ProcessResult) {
         responses[Invocation(executable: executable, arguments: arguments)] = result
@@ -20,6 +25,9 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
     func run(executable: String, arguments: [String], workingDirectory: URL?, timeout: TimeInterval?) throws -> ProcessResult {
         let invocation = Invocation(executable: executable, arguments: arguments)
         invocations.append(invocation)
+        if let dynamicResult = onRun?(executable, arguments) {
+            return dynamicResult
+        }
         guard let result = responses[invocation] else {
             throw NSError(domain: "FakeProcessRunner", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No stubbed response for \(executable) \(arguments)"
