@@ -138,7 +138,9 @@ enum OracleWorker {
                         results[usr] = wire.outcome
                     }
                 } else {
-                    eprint("Warning: an oracle worker process failed -- its \(chunk.count) item(s) fall back to unknown.")
+                    // `runWorker` itself already `eprint`ed a specific reason (launch failure, exit
+                    // code + real stderr, unreadable/undecodable output) -- nothing generic to add
+                    // here, just apply the same "fail soft to unknown" fallback for every item.
                     for item in chunk { results[item.targetUSR] = .unknown }
                 }
             }
@@ -184,6 +186,20 @@ enum OracleWorker {
         return chunks
     }
 
+    /// A worker's own `stderr` is real diagnostic data (a launch failure's reason, a non-zero exit's
+    /// own error output, or -- opt-in via `SWIFT_ISOLATION_MAP_WORKER_STDERR` -- ordinary `eprint`
+    /// output the worker subprocess itself produced, e.g. `--verbose`-style logging or temporary debug
+    /// instrumentation added to `ExternalIsolationBackfill.query(...)`, which this codebase's own live
+    /// oracle path runs identically whether or not `--oracle-workers > 1` is in play). Confirmed a
+    /// real, previously-silent gap while auditing a real corpus's residual `isUnknown` edges
+    /// (docs/task-extern-constant-swift-name-usr-mismatch.md's §6): `LiveProcessRunner` captures a
+    /// child process's `stderr` into a `Pipe`, fully in memory, never connected to this process's own
+    /// `stderr` file descriptor -- silence here was previously not "probably lost," it was
+    /// *provably* discarded by the caller never reading `result.standardError` at all. Failure
+    /// messages below follow this project's own established convention for every other subprocess
+    /// call site (`SwiftVersionDetectionError`, `PrerequisiteChecking`, `BulkExtractionEnvironmentProviding`,
+    /// ...): always surface `standardError` in the failure message itself, trimmed, never silently
+    /// swallowed.
     private static func runWorker(
         chunk: [(targetUSR: String, file: String, line: Int, column: Int)],
         index: Int,
@@ -208,19 +224,45 @@ enum OracleWorker {
         let inputPath = tempDirectory.appendingPathComponent("worker-\(index)-input.json").path
         let outputPath = tempDirectory.appendingPathComponent("worker-\(index)-output.json").path
 
-        guard let inputData = try? JSONEncoder().encode(input) else { return nil }
-        guard (try? inputData.write(to: URL(fileURLWithPath: inputPath))) != nil else { return nil }
-
-        guard let result = try? processRunning.run(
-            executable: workerExecutablePath,
-            arguments: ["--oracle-worker-input", inputPath, "--oracle-worker-output", outputPath],
-            workingDirectory: nil
-        ), result.exitCode == 0 else {
+        guard let inputData = try? JSONEncoder().encode(input) else {
+            eprint("Warning: oracle worker \(index) failed -- could not encode its own \(chunk.count)-item input; falling back to unknown.")
+            return nil
+        }
+        guard (try? inputData.write(to: URL(fileURLWithPath: inputPath))) != nil else {
+            eprint("Warning: oracle worker \(index) failed -- could not write its own input file at \(inputPath); falling back to unknown.")
             return nil
         }
 
-        guard let outputData = try? Data(contentsOf: URL(fileURLWithPath: outputPath)) else { return nil }
-        return try? JSONDecoder().decode(OracleWorkerOutput.self, from: outputData)
+        let result: ProcessResult
+        do {
+            result = try processRunning.run(
+                executable: workerExecutablePath,
+                arguments: ["--oracle-worker-input", inputPath, "--oracle-worker-output", outputPath],
+                workingDirectory: nil
+            )
+        } catch {
+            eprint("Warning: oracle worker \(index) failed to launch (\(error)); its \(chunk.count) item(s) fall back to unknown.")
+            return nil
+        }
+
+        let trimmedStderr = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.exitCode == 0 else {
+            eprint("Warning: oracle worker \(index) exited \(result.exitCode); its \(chunk.count) item(s) fall back to unknown.\(trimmedStderr.isEmpty ? "" : " stderr: \(trimmedStderr)")")
+            return nil
+        }
+        if !trimmedStderr.isEmpty, ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_WORKER_STDERR"] != nil {
+            eprint("[worker \(index) stderr] \(trimmedStderr)")
+        }
+
+        guard let outputData = try? Data(contentsOf: URL(fileURLWithPath: outputPath)) else {
+            eprint("Warning: oracle worker \(index) exited 0 but its output file at \(outputPath) could not be read; its \(chunk.count) item(s) fall back to unknown.")
+            return nil
+        }
+        guard let output = try? JSONDecoder().decode(OracleWorkerOutput.self, from: outputData) else {
+            eprint("Warning: oracle worker \(index) exited 0 but its output could not be decoded; its \(chunk.count) item(s) fall back to unknown.")
+            return nil
+        }
+        return output
     }
 
     private static func sequentialFallback(
