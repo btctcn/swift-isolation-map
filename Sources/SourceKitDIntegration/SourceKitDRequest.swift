@@ -91,6 +91,13 @@ final class SourceKitDKeys {
     var secondarySymbols: SourceKitDUID { uid("key.secondary_symbols") }
     var fullyAnnotatedDecl: SourceKitDUID { uid("key.fully_annotated_decl") }
     var symbolGraph: SourceKitDUID { uid("key.symbol_graph") }
+    /// Real keys confirmed via `strings -a` on the installed `sourcekitdInProc` binary and via real
+    /// `cursorinfo` response dumps (docs/task-extern-constant-swift-name-usr-mismatch.md §8/§16) --
+    /// `key.name` is a plain string, `key.decl_lang` is a UID (read the same way `statisticKind`
+    /// already is below), `key.containertypeusr` is a plain string.
+    var name: SourceKitDUID { uid("key.name") }
+    var declLang: SourceKitDUID { uid("key.decl_lang") }
+    var containerTypeUSR: SourceKitDUID { uid("key.containertypeusr") }
 
     // Diagnostic spike only (docs/task-oracle-query-concurrency.md) -- confirmed to exist in the
     // real installed sourcekitd binary via `strings -a` before use, not guessed.

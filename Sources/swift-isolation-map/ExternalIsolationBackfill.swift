@@ -935,7 +935,13 @@ enum ExternalIsolationBackfill {
             let arguments = CompilerArgumentsSanitizing.sanitized(rawArguments)
             let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
-            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+            // `BridgedExternConstantMatching` only ever runs once strict USR equality has already
+            // failed -- a narrow fallback for a confirmed, real shape strict matching can never
+            // resolve by construction (docs/task-extern-constant-swift-name-usr-mismatch.md), not a
+            // relaxation of `USRMatching`'s own binding "strict equality only" design for the general
+            // case.
+            guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR)
+                ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)

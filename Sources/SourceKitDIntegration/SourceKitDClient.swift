@@ -185,6 +185,15 @@ public actor SourceKitDClient: SourceKitDQuerying {
         }
         let annotatedDecl = raw.variantDictionaryGetString(variant, keys.fullyAnnotatedDecl)
         let symbolGraph = raw.variantDictionaryGetString(variant, keys.symbolGraph)
-        return CursorInfoSymbol(usr: usr, fullyAnnotatedDeclXML: annotatedDecl, symbolGraphJSON: symbolGraph)
+        let name = raw.variantDictionaryGetString(variant, keys.name)
+        let declLangVariant = raw.variantDictionaryGetValue(variant, keys.declLang)
+        let declLang = raw.variantGetType(declLangVariant) == SourceKitDVariantType.uid.rawValue
+            ? raw.uidGetStringPtr(raw.variantUidGetValue(declLangVariant))
+            : nil
+        let containerTypeUSR = raw.variantDictionaryGetString(variant, keys.containerTypeUSR)
+        return CursorInfoSymbol(
+            usr: usr, fullyAnnotatedDeclXML: annotatedDecl, symbolGraphJSON: symbolGraph,
+            name: name, declLang: declLang, containerTypeUSR: containerTypeUSR
+        )
     }
 }

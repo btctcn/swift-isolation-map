@@ -138,6 +138,76 @@ func edgeLevelTriggerTreatsNoAttributeAsGenuineNonisolated() async {
     #expect(resolution.unknownUSRs.isEmpty)
 }
 
+@Test("A real, confirmed NS_SWIFT_NAME-bridged extern-constant shape (NSAttributedString.Key.font's own real USR) resolves via BridgedExternConstantMatching when strict USR equality fails -- docs/task-extern-constant-swift-name-usr-mismatch.md's own real, motivating case, end to end through resolve()")
+func edgeLevelTriggerResolvesBridgedExternConstantViaFallback() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let targetUSR = "s:So21NSAttributedStringKeya5UIKitE4fontABvgZ"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // The live query's own `primary.usr` is the real Clang-side USR, never `targetUSR` itself --
+    // `USRMatching.select` alone can never match this by construction (docs/task-extern-constant-
+    // swift-name-usr-mismatch.md §§8-14's own exhaustive real investigation). Every field here is a
+    // real value copied verbatim from a real `cursorinfo` dump (§8), not invented.
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(
+            usr: "c:@NSFontAttributeName", fullyAnnotatedDeclXML: nil,
+            symbolGraphJSON: noAttributeSymbolGraph(usr: "c:@NSFontAttributeName"),
+            name: "font", declLang: "source.lang.objc", containerTypeUSR: "$sSo21NSAttributedStringKeyamD"
+        ),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    // The real, correct fact (§2's own documented reasoning: a plain Clang extern constant carries no
+    // isolation attribute in its own declaration fragments, and never can) -- resolved via the exact
+    // same, unmodified `SymbolGraphIsolationParser` path a strict USR match would have used, not a new
+    // hardcoded ".nonisolated" special case.
+    #expect(resolution.backfilledDeclarations[targetUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+}
+
+@Test("A candidate that merely shares a member name, from the wrong container type, is NOT matched by the bridged-extern-constant fallback -- stays unknown rather than a false positive")
+func edgeLevelTriggerRejectsWrongContainerTypeForBridgedExternConstant() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    // Targets NSAttributedStringKey.font, but the live query's own candidate presents as a member of
+    // a *different* real container type (MiniAttrKey's own real containertypeusr, §16) -- must not
+    // match, even though the member name and every other field otherwise lines up.
+    let targetUSR = "s:So21NSAttributedStringKeya5UIKitE4fontABvgZ"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(
+            usr: "c:@MiniFontAttributeName", fullyAnnotatedDeclXML: nil, symbolGraphJSON: nil,
+            name: "font", declLang: "source.lang.objc", containerTypeUSR: "$sSo11MiniAttrKeyamD"
+        ),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations.isEmpty)
+    #expect(resolution.unknownUSRs == [targetUSR])
+}
+
 @Test("A declaration with an external superclass and no explicit isolation of its own gets the superclass backfilled")
 func declarationLevelTriggerBackfillsSuperclass() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
