@@ -8,11 +8,28 @@ public struct CursorInfoSymbol: Equatable, Sendable {
     public let usr: String
     public let fullyAnnotatedDeclXML: String?
     public let symbolGraphJSON: String?
+    /// `key.name` -- the declaration's own bare name (e.g. `"font"`), independent of USR. Needed by
+    /// `BridgedExternConstantMatching` (docs/task-extern-constant-swift-name-usr-mismatch.md §15) to
+    /// recognize a Clang-side candidate as the same declaration a Swift-mangled `targetUSR` names,
+    /// when strict USR equality (`USRMatching`) can never hold for this shape by construction.
+    public let name: String?
+    /// `key.decl_lang` (`source.lang.swift`/`source.lang.objc`/...), read as its real UID string --
+    /// see `name`'s own doc comment for why this project needs it now.
+    public let declLang: String?
+    /// `key.containertypeusr` -- the Swift-mangled USR of the type this declaration is a member of.
+    /// See `name`'s own doc comment for why this project needs it now.
+    public let containerTypeUSR: String?
 
-    public init(usr: String, fullyAnnotatedDeclXML: String?, symbolGraphJSON: String?) {
+    public init(
+        usr: String, fullyAnnotatedDeclXML: String?, symbolGraphJSON: String?,
+        name: String? = nil, declLang: String? = nil, containerTypeUSR: String? = nil
+    ) {
         self.usr = usr
         self.fullyAnnotatedDeclXML = fullyAnnotatedDeclXML
         self.symbolGraphJSON = symbolGraphJSON
+        self.name = name
+        self.declLang = declLang
+        self.containerTypeUSR = containerTypeUSR
     }
 }
 
