@@ -44,6 +44,25 @@ public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable 
     fileprivate var definedSymbolsByFile: [String: [IndexedSymbol]] = [:]
     fileprivate var callEdgesByCallee: [String: [CallGraphEdge]] = [:]
     fileprivate var callEdgesByFile: [String: [CallGraphEdge]] = [:]
+    /// Every source position where a real `getter:`-named `CALL`-role occurrence was seen --
+    /// populated during the scan, consumed once, at the end of `init`, to filter
+    /// `pendingSetterEdges`. See that property's own doc comment for why this exists.
+    fileprivate var getterCallLocations: Set<SymbolLocation> = []
+    /// A `setter:`-named `CALL`-role occurrence's edge is never added directly -- held here until
+    /// the *entire* store has been scanned, then reconciled against `getterCallLocations`
+    /// (docs/task-readonly-property-phantom-setter-edge.md): a real Objective-C **read-only**
+    /// property, accessed via a pure read (`view.leadingAnchor.constraint(...)`, never assigned),
+    /// still gets *two* `CALL`-role occurrences recorded at the exact same `(file, line, column)`
+    /// by the real Swift indexer -- one `getter:<name>` (the real access) and one phantom
+    /// `setter:<name>` for a setter that doesn't exist in the real header and would be a hard
+    /// compile error to actually invoke. Confirmed directly: a genuinely writable property
+    /// (`translatesAutoresizingMaskIntoConstraints = false`) gets *only* the `setter:`-named
+    /// occurrence at its location, never a paired `getter:` one -- so "both a getter and a setter
+    /// occurrence share one exact position" is itself the real, reliable signal that the setter
+    /// one is the indexer's own read-only-property artifact, not a genuine call. A single forward
+    /// pass can't apply this filter inline (occurrence order within a record isn't guaranteed to
+    /// put the getter before the setter), hence the defer-then-reconcile shape.
+    fileprivate var pendingSetterEdges: [(location: SymbolLocation, edge: CallGraphEdge)] = []
     /// Keyed by the *occurrence's own* symbol USR -- "what does this symbol relate to" (the
     /// `occurrences(ofUSR:roles:)` query direction: `.accessorOf`/`.childOf`/`.extendedBy`
     /// resolved from a symbol's own definition site).
@@ -64,6 +83,31 @@ public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable 
         }
         defer { indexstore_shim_store_dispose(store) }
         try rawIndexStoreScan(store: store, into: self)
+
+        // Reconcile deferred setter-named edges now that the whole store has been scanned -- see
+        // `pendingSetterEdges`'s own doc comment.
+        for edge in Self.realSetterEdges(pendingSetterEdges: pendingSetterEdges, getterCallLocations: getterCallLocations) {
+            callEdgesByCallee[edge.calleeUSR, default: []].append(edge)
+            callEdgesByFile[edge.location.file, default: []].append(edge)
+        }
+        pendingSetterEdges = []
+        getterCallLocations = []
+    }
+
+    /// Pure reconciliation logic behind the read-only-property phantom-setter filter
+    /// (`pendingSetterEdges`'s own doc comment) -- independently unit-testable without a real index
+    /// store, mirroring `resolvedOwningPropertyUSR`'s own precedent. A setter-named edge survives
+    /// exactly when its own position was *never* also a getter-named occurrence: a real write
+    /// (`x = value`) only ever produces the setter occurrence alone (confirmed against a real
+    /// corpus: `UIView.translatesAutoresizingMaskIntoConstraints = false` never has a co-located
+    /// getter occurrence), while a read-only property's real Swift-compiler-confirmed
+    /// `AccessKind::ReadWrite` inference for a chained member-access-then-call expression
+    /// (`lib/Index/Index.cpp`'s own `initVarRefIndexSymbols`, `swiftlang/swift`) reports *both*
+    /// pseudo-accessors at the identical position even though only the getter is real.
+    static func realSetterEdges(
+        pendingSetterEdges: [(location: SymbolLocation, edge: CallGraphEdge)], getterCallLocations: Set<SymbolLocation>
+    ) -> [CallGraphEdge] {
+        pendingSetterEdges.filter { !getterCallLocations.contains($0.location) }.map(\.edge)
     }
 
     // MARK: - IndexStoreQuerying
@@ -327,8 +371,18 @@ private func rawIndexStoreOccurrenceApplier(context: UnsafeMutableRawPointer?, o
     if roles & INDEXSTORE_SYMBOL_ROLE_CALL != 0,
        let callerUSR = relations.first(where: { $0.role & INDEXSTORE_SYMBOL_ROLE_REL_CALLEDBY != 0 })?.targetUSR {
         let edge = CallGraphEdge(callerUSR: callerUSR, calleeUSR: usr, location: location)
-        client.callEdgesByCallee[usr, default: []].append(edge)
-        client.callEdgesByFile[filepath, default: []].append(edge)
+        // See `pendingSetterEdges`'s own doc comment: a `setter:`-named occurrence is never added
+        // directly here -- it's only a real edge if this exact position never also carried a
+        // `getter:`-named one, which can't be known until the whole store has been scanned.
+        if name.hasPrefix("setter:") {
+            client.pendingSetterEdges.append((location, edge))
+        } else {
+            if name.hasPrefix("getter:") {
+                client.getterCallLocations.insert(location)
+            }
+            client.callEdgesByCallee[usr, default: []].append(edge)
+            client.callEdgesByFile[filepath, default: []].append(edge)
+        }
     }
     return true
 }

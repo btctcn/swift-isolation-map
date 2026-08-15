@@ -1,4 +1,4 @@
-public struct SymbolLocation: Equatable, Sendable {
+public struct SymbolLocation: Equatable, Hashable, Sendable {
     public let file: String
     public let line: Int
     public let column: Int
