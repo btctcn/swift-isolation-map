@@ -113,6 +113,56 @@ func edgeLevelTriggerMarksUnknownOnNoMatch() async {
     #expect(resolution.unknownUSRs == ["s:external.Callee"])
 }
 
+@Test("A synthesized rawValue getter of a project-local enum resolves to nonisolated deterministically, with zero live query -- SynthesizedEnumAccessorMatching's own edge-level wiring")
+func edgeLevelTriggerBackfillsSynthesizedRawValueAccessorWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let enumUSR = "s:9Ls_net_ru10PaymentWayO"
+    let accessorUSR = "s:9Ls_net_ru10PaymentWayO8rawValueSSvg"
+    let linked = LinkedAnalysis(
+        declarations: [enumUSR: DeclarationInfo(usr: enumUSR, name: "PaymentWay", explicitIsolation: nil, isEligibleForModuleDefaultIsolation: true)],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
+@Test("A rawValue-shaped accessor USR whose enum is NOT actually a project-local declaration is never fabricated as nonisolated -- string shape alone is not the safety net")
+func edgeLevelTriggerDoesNotFabricateWhenEnumIsNotLocal() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let accessorUSR = "s:9Ls_net_ru10PaymentWayO8rawValueSSvg"
+    let linked = LinkedAnalysis(
+        declarations: [:], // the enum itself is absent -- e.g. it lives in a compiled dependency
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:something.Unrelated", fullyAnnotatedDeclXML: nil, symbolGraphJSON: nil),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations.isEmpty)
+    #expect(resolution.unknownUSRs == [accessorUSR])
+}
+
 @Test("A matched result with no isolation attribute is a genuine nonisolated fact, not unknown")
 func edgeLevelTriggerTreatsNoAttributeAsGenuineNonisolated() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
