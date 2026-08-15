@@ -137,6 +137,29 @@ func edgeLevelTriggerBackfillsSynthesizedRawValueAccessorWithoutAnyLiveQuery() a
     #expect(sourceKitD.callCount == 0)
 }
 
+@Test("CGSize.width, a raw imported C struct field absent from symbolgraph-extract's own output, resolves to nonisolated deterministically, with zero live query -- ImportedStructMemberMatching's own edge-level wiring")
+func edgeLevelTriggerBackfillsImportedStructMemberWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let widthUSR = "s:So6CGSizeV5width14CoreFoundation7CGFloatVvg"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: widthUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[widthUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("A rawValue-shaped accessor USR whose enum is NOT actually a project-local declaration is never fabricated as nonisolated -- string shape alone is not the safety net")
 func edgeLevelTriggerDoesNotFabricateWhenEnumIsNotLocal() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
