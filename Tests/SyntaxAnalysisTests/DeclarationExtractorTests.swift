@@ -2,8 +2,8 @@ import Testing
 import IsolationCore
 @testable import SyntaxAnalysis
 
-private func declarations(_ source: String, file: String = "Test.swift") -> [String: DeclarationInfo] {
-    let extracted = DeclarationExtractor.extract(source: source, fileName: file)
+private func declarations(_ source: String, file: String = "Test.swift", platform: TargetPlatform = .unknown) -> [String: DeclarationInfo] {
+    let extracted = DeclarationExtractor.extract(source: source, fileName: file, platform: platform)
     var byUSR: [String: DeclarationInfo] = [:]
     for declaration in extracted {
         byUSR[declaration.usr] = declaration
@@ -623,6 +623,31 @@ func protocolOwnDeclarationHasARealLocation() {
     #expect(disposable.location != nil, "the protocol's own type-level declaration must carry the real source location of `protocol Disposable`, not nil")
 }
 
+@Test("A protocol with an empty body and no same-file extension anywhere still gets its own DeclarationInfo entry (Appearance.black mystery's real root cause)")
+func emptyBodyProtocolWithNoExtensionStillGetsATypeDeclaration() {
+    // Before this fix, `emitTypeDeclarationIfNeeded` was only ever reached via `enterTypeScope`
+    // (class/struct/enum/actor -- protocols deliberately excluded, see `emitMember`'s own doc
+    // comment) or via an `ExtensionDeclSyntax` visit (never fires when no extension exists at
+    // all). A plain marker/composition protocol like real code's own `protocol CellConfigurable:
+    // ViewDataConfigurable, UITableViewCell {}` -- no members, no same-file extension -- fell
+    // through every path that would ever create its `DeclarationInfo`. Any conforming type's
+    // reference to it then looked like an *external, oracle-needing* fact
+    // (`linked.declarations[usr] == nil`), even though it's 100% project-local: this is the real
+    // root cause behind a confirmed real-corpus mystery where `resolveIsolation` for a completely
+    // unrelated member (`SubscriptionNotifCell.awakeFromNib`, chosen as the conformance pair's
+    // live-query witness) succeeded correctly via inheritance while the edge was *still* reported
+    // `isUnknown: true`, because that witness's own USR got marked unknown directly when the
+    // now-eliminated spurious oracle query failed.
+    let decls = DeclarationExtractor.extract(source: """
+    protocol ViewDataConfigurable {}
+    protocol CellConfigurable: ViewDataConfigurable {}
+    """, fileName: "CellsConfigurable.swift")
+    let cellConfigurable = decls.first { $0.name == "CellConfigurable" }
+    #expect(cellConfigurable != nil, "an empty-body protocol with no extension anywhere must still get its own DeclarationInfo entry")
+    #expect(cellConfigurable?.location != nil)
+    #expect(cellConfigurable?.conformances.map(\.protocolUSR).contains { $0.contains("ViewDataConfigurable") } == true)
+}
+
 // MARK: - `deinit` extraction (issue #48)
 
 @Test("An explicit deinit is extracted as its own member declaration, with the correct containing type")
@@ -656,4 +681,136 @@ func deinitInheritsContainingTypeIsolation() {
     let engine = IsolationInferenceEngine(declarations: decls, callGraph: [], ruleSet: Swift60RuleSet())
     let deinitDecl = decls.values.first { $0.name == "deinit" }!
     #expect(engine.resolveIsolation(for: deinitDecl.usr) == .globalActor(name: "MainActor"))
+}
+
+// MARK: - Platform-conditional extraction (docs/task-bulk-extraction-wrong-platform.md §5)
+//
+// A plain `SyntaxVisitor` has no `#if` evaluation at all -- both branches of an `#if os(iOS) ...
+// #elseif os(OSX) ...` are ordinary syntax to it, so it extracted a declaration for the dead
+// branch exactly like a real one. Confirmed as a real, reproduced bug against a real third-party
+// dependency (`Cartography`'s own `LayoutGuide.swift`): the phantom OSX-branch declaration
+// generated a live oracle work item that `sourcekitd` answered by genuinely attempting to build
+// that branch against the real iOS SDK, producing `error: no such module 'AppKit'`. This fixture
+// is that exact real file's shape, reduced to a minimal, deterministic regression case -- not a
+// synthesized guess at what the bug might look like.
+
+private let realCartographyLayoutGuideShape = """
+#if os(iOS) || os(tvOS)
+import UIKit
+
+public typealias LayoutGuide = UILayoutGuide
+
+extension UILayoutGuide: LayoutItem {
+    public func asProxy(context: Context) -> LayoutGuideProxy {
+        return LayoutGuideProxy(context: context, item: self)
+    }
+}
+#elseif os(OSX)
+import AppKit
+
+public typealias LayoutGuide = NSLayoutGuide
+
+extension NSLayoutGuide: LayoutItem {
+    public func asProxy(context: Context) -> LayoutGuideProxy {
+        return LayoutGuideProxy(context: context, item: self)
+    }
+}
+#endif
+"""
+
+@Test("With no platform given (platform: .unknown), both #if os(iOS) and #elseif os(OSX) branches are still extracted -- this project's exact pre-fix, platform-blind behavior, deliberately preserved for the one case (platform truly undeterminable) where picking just the textually-first clause would risk silently dropping a real declaration written in a later #elseif. PlatformAwareSyntaxVisitor (not the underlying BuildConfiguration answers alone) is what guarantees this: a #if/#elseif chain only ever has one *active* clause by construction, so answering every condition query true would otherwise just make the first clause win, not both survive -- caught by review, not by this fix's own first-draft test suite.")
+func unknownPlatformStillExtractsBothBranches() {
+    let decls = declarations(realCartographyLayoutGuideShape)
+    let asProxyMethods = decls.values.filter { $0.name == "asProxy" }
+    #expect(asProxyMethods.count == 2, "platform: .unknown must extract every #if/#elseif branch unconditionally, exactly like this project's pre-fix behavior -- never silently dropping a real declaration because its platform couldn't be determined")
+}
+
+@Test("With platform: .iOS, only the #if os(iOS) branch is extracted -- the #elseif os(OSX) branch's own asProxy(context:) never becomes a phantom declaration")
+func iOSPlatformExtractsOnlyTheActiveBranch() {
+    let decls = declarations(realCartographyLayoutGuideShape, platform: .iOS)
+    let asProxyMethods = decls.values.filter { $0.name == "asProxy" }
+    #expect(asProxyMethods.count == 1, "only the real UILayoutGuide-extension asProxy should survive")
+    #expect(decls.values.first { $0.name == "asProxy" }?.containingTypeUSR?.contains("UILayoutGuide") == true)
+}
+
+@Test("With platform: .macOS, only the #elseif os(OSX) branch is extracted -- symmetric to the iOS case, confirming this isn't a hardcoded iOS-only special case")
+func macOSPlatformExtractsOnlyTheActiveBranch() {
+    let decls = declarations(realCartographyLayoutGuideShape, platform: .macOS)
+    let asProxyMethods = decls.values.filter { $0.name == "asProxy" }
+    #expect(asProxyMethods.count == 1, "only the NSLayoutGuide-extension asProxy should survive")
+    #expect(decls.values.first { $0.name == "asProxy" }?.containingTypeUSR?.contains("NSLayoutGuide") == true)
+}
+
+@Test("#if canImport(AppKit)-guarded code is excluded on iOS, matching #if os(OSX)'s own behavior -- canImport isn't just a bonus, it's independently verified, not assumed to fall out of os() handling for free")
+func canImportAppKitIsInactiveOnIOS() {
+    let decls = declarations("""
+    #if canImport(AppKit)
+    import AppKit
+    class MacOnlyHelper {}
+    #else
+    class CrossPlatformHelper {}
+    #endif
+    """, platform: .iOS)
+    #expect(find(decls, name: "MacOnlyHelper") == nil)
+    #expect(find(decls, name: "CrossPlatformHelper") != nil)
+}
+
+@Test("#if canImport(UIKit)-guarded code is excluded on macOS, the reverse direction of the AppKit case")
+func canImportUIKitIsInactiveOnMacOS() {
+    let decls = declarations("""
+    #if canImport(UIKit)
+    import UIKit
+    class IOSOnlyHelper {}
+    #else
+    class CrossPlatformHelper {}
+    #endif
+    """, platform: .macOS)
+    #expect(find(decls, name: "IOSOnlyHelper") == nil)
+    #expect(find(decls, name: "CrossPlatformHelper") != nil)
+}
+
+@Test("Real Kingfisher shape: three independent (non-#elseif-chained) canImport blocks -- AppKit, UIKit (compound: canImport(UIKit) && !os(watchOS)), WatchKit -- each resolve correctly on iOS. Regression case for a real bug in this fix's own first draft: bucketing WatchKit together with UIKit as one \"iOS-family\" set answered canImport(WatchKit) as true on iOS, reproducing the same error this whole investigation traced.")
+func kingfisherThreeIndependentCanImportBlocksResolveCorrectlyOnIOS() {
+    let decls = declarations("""
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    import AppKit
+    extension NSCell: KingfisherHasImageComponent {}
+    #endif
+
+    #if canImport(UIKit) && !os(watchOS)
+    import UIKit
+    extension UIBarItem: KingfisherHasImageComponent {}
+    #endif
+
+    #if canImport(WatchKit)
+    import WatchKit
+    extension WKInterfaceImage: KingfisherHasImageComponent {
+        @MainActor public var image: Int? {
+            get { nil }
+            set { }
+        }
+    }
+    #endif
+    """, platform: .iOS)
+    #expect(find(decls, name: "NSCell") == nil, "AppKit block must be inactive on iOS")
+    #expect(find(decls, name: "UIBarItem") != nil, "UIKit block must be active on iOS")
+    #expect(find(decls, name: "WKInterfaceImage") == nil, "WatchKit block must be inactive on iOS -- the real regression this test guards")
+}
+
+@Test("A phantom @globalActor declaration inside a dead #if branch must not pollute the file-wide global actor accept-list used by every other declaration in the file")
+func phantomGlobalActorInDeadBranchIsNotRecognized() {
+    let decls = declarations("""
+    #if os(OSX)
+    @globalActor actor MacOnlyActor {
+        static let shared = MacOnlyActor()
+    }
+    #endif
+    @MacOnlyActor class Widget {}
+    """, platform: .iOS)
+    // Without the fix, `MacOnlyActor` would be in the file-wide accept-list (from the phantom
+    // declaration) and `Widget` would resolve `.globalActor(name: "MacOnlyActor")`. With the fix,
+    // `@MacOnlyActor` is an unrecognized attribute name on iOS (the actor declaring it doesn't
+    // exist for this platform), so `Widget` gets no explicit isolation from it.
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.explicitIsolation == nil)
 }

@@ -1,4 +1,5 @@
 import SwiftSyntax
+import SwiftIfConfig
 import IsolationCore
 
 /// Raw syntactic evidence for one closure literal, produced by a per-file, evidence-only pass
@@ -45,21 +46,24 @@ public struct ClosureLiteralRecord: Equatable, Sendable {
 }
 
 public enum ClosureIsolationExtractor {
-    public static func extract(from tree: SourceFileSyntax, fileName: String, converter: SourceLocationConverter) -> [ClosureLiteralRecord] {
-        let visitor = Visitor(fileName: fileName, converter: converter)
+    public static func extract(
+        from tree: SourceFileSyntax, fileName: String, converter: SourceLocationConverter,
+        configuration: PlatformBuildConfiguration = PlatformBuildConfiguration(platform: .unknown)
+    ) -> [ClosureLiteralRecord] {
+        let visitor = Visitor(fileName: fileName, converter: converter, configuration: configuration)
         visitor.walk(tree)
         return visitor.records
     }
 
-    private final class Visitor: SyntaxVisitor {
+    private final class Visitor: PlatformAwareSyntaxVisitor {
         let fileName: String
         let converter: SourceLocationConverter
         var records: [ClosureLiteralRecord] = []
 
-        init(fileName: String, converter: SourceLocationConverter) {
+        init(fileName: String, converter: SourceLocationConverter, configuration: PlatformBuildConfiguration) {
             self.fileName = fileName
             self.converter = converter
-            super.init(viewMode: .sourceAccurate)
+            super.init(viewMode: .sourceAccurate, configuration: configuration)
         }
 
         override func visit(_ node: ClosureExprSyntax) -> SyntaxVisitorContinueKind {

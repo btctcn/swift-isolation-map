@@ -1,4 +1,5 @@
 import SwiftSyntax
+import SwiftIfConfig
 
 /// One `await <expr>` expression's own source range (issue #46,
 /// `docs/task-await-aware-risk-classification.md`). Unlike `ClosureLiteralRecord`/
@@ -34,21 +35,24 @@ public struct AwaitedRange: Equatable, Sendable {
 }
 
 public enum AwaitedCallSiteExtractor {
-    public static func extract(from tree: SourceFileSyntax, fileName: String, converter: SourceLocationConverter) -> [AwaitedRange] {
-        let visitor = Visitor(fileName: fileName, converter: converter)
+    public static func extract(
+        from tree: SourceFileSyntax, fileName: String, converter: SourceLocationConverter,
+        configuration: PlatformBuildConfiguration = PlatformBuildConfiguration(platform: .unknown)
+    ) -> [AwaitedRange] {
+        let visitor = Visitor(fileName: fileName, converter: converter, configuration: configuration)
         visitor.walk(tree)
         return visitor.ranges
     }
 
-    private final class Visitor: SyntaxVisitor {
+    private final class Visitor: PlatformAwareSyntaxVisitor {
         let fileName: String
         let converter: SourceLocationConverter
         var ranges: [AwaitedRange] = []
 
-        init(fileName: String, converter: SourceLocationConverter) {
+        init(fileName: String, converter: SourceLocationConverter, configuration: PlatformBuildConfiguration) {
             self.fileName = fileName
             self.converter = converter
-            super.init(viewMode: .sourceAccurate)
+            super.init(viewMode: .sourceAccurate, configuration: configuration)
         }
 
         override func visit(_ node: AwaitExprSyntax) -> SyntaxVisitorContinueKind {

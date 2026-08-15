@@ -1,6 +1,7 @@
 import Foundation
 import SwiftParser
 import SwiftSyntax
+import SwiftIfConfig
 import IsolationCore
 
 /// Turns one Swift source file into `[DeclarationInfo]` -- the SwiftSyntax half of the hybrid
@@ -72,17 +73,18 @@ public struct ExtractionResult: Equatable, Sendable {
 }
 
 public enum DeclarationExtractor {
-    public static func extract(source: String, fileName: String) -> [DeclarationInfo] {
-        extractWithContext(source: source, fileName: fileName).declarations
+    public static func extract(source: String, fileName: String, platform: TargetPlatform = .unknown) -> [DeclarationInfo] {
+        extractWithContext(source: source, fileName: fileName, platform: platform).declarations
     }
 
-    public static func extractWithContext(source: String, fileName: String) -> ExtractionResult {
+    public static func extractWithContext(source: String, fileName: String, platform: TargetPlatform = .unknown) -> ExtractionResult {
         let tree = Parser.parse(source: source)
         let converter = SourceLocationConverter(fileName: fileName, tree: tree)
+        let configuration = PlatformBuildConfiguration(platform: platform)
 
-        let fileWideNames = FileWideNameCollector.collect(from: tree)
+        let fileWideNames = FileWideNameCollector.collect(from: tree, configuration: configuration)
         let (index, protocolGlobalActorNames, protocolRequirementGlobalActorNames, protocolInheritedProtocolNames) = TypeIndexBuilder.buildIndex(
-            from: tree, fileWideNames: fileWideNames, fileName: fileName, converter: converter
+            from: tree, fileWideNames: fileWideNames, fileName: fileName, converter: converter, configuration: configuration
         )
 
         let visitor = DeclarationVisitor(
@@ -91,11 +93,12 @@ public enum DeclarationExtractor {
             knownGlobalActorNames: fileWideNames.globalActorNames,
             typeIndex: index,
             protocolGlobalActorNames: protocolGlobalActorNames,
-            protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames
+            protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames,
+            configuration: configuration
         )
         visitor.walk(tree)
-        let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter)
-        let awaitedRanges = AwaitedCallSiteExtractor.extract(from: tree, fileName: fileName, converter: converter)
+        let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter, configuration: configuration)
+        let awaitedRanges = AwaitedCallSiteExtractor.extract(from: tree, fileName: fileName, converter: converter, configuration: configuration)
         return ExtractionResult(
             declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames,
             protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames,
@@ -166,16 +169,18 @@ struct FileWideNames {
 }
 
 enum FileWideNameCollector {
-    static func collect(from tree: SourceFileSyntax) -> FileWideNames {
-        let visitor = Visitor()
+    static func collect(from tree: SourceFileSyntax, configuration: PlatformBuildConfiguration) -> FileWideNames {
+        let visitor = Visitor(configuration: configuration)
         visitor.walk(tree)
         return visitor.result
     }
 
-    private final class Visitor: SyntaxVisitor {
+    private final class Visitor: PlatformAwareSyntaxVisitor {
         var result = FileWideNames()
 
-        init() { super.init(viewMode: .sourceAccurate) }
+        init(configuration: PlatformBuildConfiguration) {
+            super.init(viewMode: .sourceAccurate, configuration: configuration)
+        }
 
         override func visit(_ node: ActorDeclSyntax) -> SyntaxVisitorContinueKind {
             if node.attributes.contains(named: "globalActor") {
@@ -276,17 +281,18 @@ enum TypeIndexBuilder {
     ///   same "no enclosing type scope" reality `emitMember`'s own placeholder-USR discriminator
     ///   comment already documents for protocol requirements.
     static func buildIndex(
-        from tree: SourceFileSyntax, fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter
+        from tree: SourceFileSyntax, fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter,
+        configuration: PlatformBuildConfiguration
     ) -> (
         index: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String],
         protocolRequirementGlobalActorNames: [String: [String: String]], protocolInheritedProtocolNames: [String: Set<String>]
     ) {
-        let visitor = Visitor(fileWideNames: fileWideNames, fileName: fileName, converter: converter)
+        let visitor = Visitor(fileWideNames: fileWideNames, fileName: fileName, converter: converter, configuration: configuration)
         visitor.walk(tree)
         return (visitor.index, visitor.protocolGlobalActorNames, visitor.protocolRequirementGlobalActorNames, visitor.protocolInheritedProtocolNames)
     }
 
-    private final class Visitor: SyntaxVisitor {
+    private final class Visitor: PlatformAwareSyntaxVisitor {
         let fileWideNames: FileWideNames
         let fileName: String
         let converter: SourceLocationConverter
@@ -296,11 +302,11 @@ enum TypeIndexBuilder {
         var protocolInheritedProtocolNames: [String: Set<String>] = [:]
         private var path: [String] = []
 
-        init(fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter) {
+        init(fileWideNames: FileWideNames, fileName: String, converter: SourceLocationConverter, configuration: PlatformBuildConfiguration) {
             self.fileWideNames = fileWideNames
             self.fileName = fileName
             self.converter = converter
-            super.init(viewMode: .sourceAccurate)
+            super.init(viewMode: .sourceAccurate, configuration: configuration)
         }
 
         private func location(of nameToken: TokenSyntax) -> SymbolLocation {
@@ -488,7 +494,7 @@ extension AttributeListSyntax {
 /// Pass 3: the main walk, producing the final `[DeclarationInfo]`. Emits exactly one entry per
 /// type name (using `TypeIndexEntry`'s merged same-file data, keyed by whichever declaration --
 /// primary or first-seen extension -- is visited first) and one entry per member.
-private final class DeclarationVisitor: SyntaxVisitor {
+private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
     let fileName: String
     let converter: SourceLocationConverter
     let knownGlobalActorNames: Set<String>
@@ -509,7 +515,8 @@ private final class DeclarationVisitor: SyntaxVisitor {
     init(
         fileName: String, converter: SourceLocationConverter, knownGlobalActorNames: Set<String>,
         typeIndex: [String: TypeIndexEntry], protocolGlobalActorNames: [String: String],
-        protocolRequirementGlobalActorNames: [String: [String: String]] = [:]
+        protocolRequirementGlobalActorNames: [String: [String: String]] = [:],
+        configuration: PlatformBuildConfiguration
     ) {
         self.fileName = fileName
         self.converter = converter
@@ -517,7 +524,7 @@ private final class DeclarationVisitor: SyntaxVisitor {
         self.typeIndex = typeIndex
         self.protocolGlobalActorNames = protocolGlobalActorNames
         self.protocolRequirementGlobalActorNames = protocolRequirementGlobalActorNames
-        super.init(viewMode: .sourceAccurate)
+        super.init(viewMode: .sourceAccurate, configuration: configuration)
     }
 
     private var currentEnclosingExtensionIsolation: IsolationKind? {
@@ -696,6 +703,37 @@ private final class DeclarationVisitor: SyntaxVisitor {
         path.removeLast()
         enclosingExtensionIsolationStack.removeLast()
         currentBodyConformedProtocolNamesStack.removeLast()
+    }
+
+    /// Unlike class/struct/enum/actor (`enterTypeScope`), a protocol never pushes a scope here --
+    /// its own requirements deliberately have no enclosing type to qualify against (`emitMember`'s
+    /// own doc comment). But the protocol *itself* still needs a `DeclarationInfo` entry the same
+    /// way a class/struct/enum/actor's primary declaration always gets one -- confirmed a real,
+    /// reproduced gap (`Appearance.black`-shaped mystery: a declaration whose `resolveIsolation`
+    /// clearly succeeds -- `unknownUSRs` is a *separate*, coarser signal from "is this declaration's
+    /// own final isolation actually unresolved"): a protocol with an empty body and no same-file
+    /// `extension` anywhere in the analyzed project (a plain marker/composition protocol, e.g. real
+    /// code's `protocol CellConfigurable: ViewDataConfigurable, UITableViewCell {}`) previously never
+    /// reached `emitTypeDeclarationIfNeeded` at all -- that was, before this fix, *only* ever called
+    /// from `enterTypeScope` (which excludes protocols by design) or from an `ExtensionDeclSyntax`
+    /// visit (which never fires when no extension exists). Every conforming type's reference to such
+    /// a protocol was then wrongly treated as an *external, oracle-needing* fact
+    /// (`isGenuinelyResolvedProjectLocalDeclaration` reads `linked.declarations[usr]?.location`,
+    /// `nil` for a USR with no entry at all) even though the protocol is 100% project-local and its
+    /// own effective isolation is already fully computable from data already in hand (its own
+    /// conformances, resolved the same way `ViewDataConfigurable` -- which *does* get an entry, via
+    /// its own same-file `extension` -- already works). That spurious external work item, when
+    /// claimed by a same-body member as its witness-context representative (`declaredInSameContextAsWitness`)
+    /// and its live query fails for any reason, marks *that member's own USR* unknown directly
+    /// (`applyDeclarationLevelOutcomes`'s `.unknown` branch) -- even when the member's own overall
+    /// isolation is separately, correctly resolved via inheritance, exactly the `awakeFromNib`
+    /// mystery. `typeIndex[qualifiedName]` is already fully populated for protocols regardless of
+    /// this fix (the file-wide `TypeIndexBuilder` pass's own `visit(_ node: ProtocolDeclSyntax)`
+    /// already calls `recordPrimaryDeclaration` for every protocol unconditionally) -- this only adds
+    /// the missing second-pass emission that turns that data into a real `DeclarationInfo`.
+    override func visit(_ node: ProtocolDeclSyntax) -> SyntaxVisitorContinueKind {
+        emitTypeDeclarationIfNeeded(qualifiedName: SyntacticIdentity.qualifiedName(path + [node.name.text]))
+        return .visitChildren
     }
 
     override func visit(_ node: ActorDeclSyntax) -> SyntaxVisitorContinueKind {
