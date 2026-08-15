@@ -205,6 +205,8 @@ struct SwiftIsolationMap: ParsableCommand {
         let compilerArguments = makeCompilerArgumentsProvider(container: container, processRunning: processRunning, fileSystem: fileSystem)
         let defaultIsolation = detectConfiguredDefaultIsolation(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
         logVerbose("Configured default isolation: \(defaultIsolation)")
+        let targetPlatform = detectTargetPlatform(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
+        logVerbose("Target platform: \(targetPlatform)")
 
         let ruleSet = try resolveRuleSet(forSwiftVersion: effectiveVersion, defaultIsolation: defaultIsolation)
         logVerbose("Rule set: \(type(of: ruleSet))")
@@ -213,7 +215,7 @@ struct SwiftIsolationMap: ParsableCommand {
         var extractionResults: [ExtractionResult] = []
         eprint("Parsing \(sourceFiles.count) Swift source file(s)...")
         for file in sourceFiles {
-            let result = try analyzer.analyze(fileAt: file)
+            let result = try analyzer.analyze(fileAt: file, platform: targetPlatform)
             currentHashes[file.path] = result.contentHash
             extractionResults.append(ExtractionResult(
                 declarations: result.declarations, protocolGlobalActorNames: result.protocolGlobalActorNames,
@@ -433,6 +435,44 @@ struct SwiftIsolationMap: ParsableCommand {
             return args[flagIndex + 1] == "MainActor" ? .globalActor(name: "MainActor") : .nonisolated
         }
         return .nonisolated
+    }
+
+    /// The single platform every `SyntaxAnalysis` extractor evaluates `#if os(...)`/`#if
+    /// canImport(...)` against (docs/task-bulk-extraction-wrong-platform.md §5) -- reuses whatever
+    /// `-target <triple>` the *already-resolved* `compilerArguments` carries (memoized by
+    /// `detectConfiguredDefaultIsolation`'s own call just above; this never triggers a second real
+    /// build) rather than a fresh lookup. `.unknown` (never filtering any `#if` branch, this
+    /// project's pre-existing platform-blind behavior) for anything this can't parse -- a SwiftPM
+    /// package's own `-target <triple>` shape, a compiler-arguments failure, or a triple this
+    /// parser doesn't recognize -- matching `detectConfiguredDefaultIsolation`'s own fail-soft
+    /// precedent immediately above.
+    private func detectTargetPlatform(
+        compilerArguments: CompilerArgumentsProviding, sourceFiles: [URL]
+    ) -> TargetPlatform {
+        for file in sourceFiles where file.lastPathComponent != "Package.swift" {
+            guard let args = try? compilerArguments.compilerArguments(forFile: file.path) else { continue }
+            guard let flagIndex = args.firstIndex(of: "-target"), args.indices.contains(flagIndex + 1) else {
+                return .unknown
+            }
+            return Self.platform(fromTargetTriple: args[flagIndex + 1])
+        }
+        return .unknown
+    }
+
+    /// A real target triple's OS component sits right after `-apple-`, immediately followed by a
+    /// version number (`arm64-apple-ios15.6-simulator`, `arm64-apple-macosx13.0`,
+    /// confirmed against this project's own real captured build logs this session) -- matching the
+    /// leading run of letters after that marker is enough, no need for a full triple grammar.
+    static func platform(fromTargetTriple triple: String) -> TargetPlatform {
+        guard let appleRange = triple.range(of: "-apple-") else { return .unknown }
+        let osComponent = triple[appleRange.upperBound...].prefix { $0.isLetter }
+        switch osComponent {
+        case "ios": return .iOS
+        case "macosx", "macos": return .macOS
+        case "tvos": return .tvOS
+        case "watchos": return .watchOS
+        default: return .unknown
+        }
     }
 
     // MARK: - Index store resolution (locate / prompt / build / stop)

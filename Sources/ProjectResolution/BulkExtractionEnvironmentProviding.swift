@@ -71,6 +71,20 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
         case .swiftPackage:
             preconditionFailure("LiveXcodeBulkExtractionEnvironmentProvider is only valid for .xcodeproj/.xcworkspace containers")
         }
+        // Same real failure `resolveDeterministicSimulatorDestination`'s own doc comment already
+        // documents for `LiveXcodeCompilerArgumentsProvider` (a physical device paired to the
+        // machine in the past, not currently connected, sorting ahead of every Simulator
+        // destination in `-showdestinations`): without an explicit `-destination`, this provider's
+        // own `-showBuildSettings` call resolved `PLATFORM_NAME=iphoneos` (confirmed directly
+        // against a real corpus this session) even though every real build on this machine only
+        // ever produces `Debug-iphonesimulator` -- every `FRAMEWORK_SEARCH_PATHS` entry this
+        // resolves then points at a `Debug-iphoneos` directory that was never built, silently
+        // disabling bulk pre-resolution for every discovered third-party module (confirmed via
+        // direct `symbolgraph-extract` reproduction: `Couldn't load module 'X'` for every one of
+        // them). See docs/task-bulk-extraction-wrong-platform.md §2.
+        if let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning) {
+            arguments += ["-destination", destination]
+        }
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
         guard result.exitCode == 0 else {

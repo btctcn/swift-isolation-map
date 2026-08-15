@@ -43,12 +43,12 @@ public struct FileAnalyzer {
         self.fileSystem = fileSystem
     }
 
-    public func analyze(fileAt url: URL) throws -> FileAnalysisResult {
+    public func analyze(fileAt url: URL, platform: TargetPlatform = .unknown) throws -> FileAnalysisResult {
         let data = try fileSystem.readData(at: url)
         guard let source = String(data: data, encoding: .utf8) else {
             throw FileAnalysisError.notUTF8(url)
         }
-        let extraction = DeclarationExtractor.extractWithContext(source: source, fileName: url.path)
+        let extraction = DeclarationExtractor.extractWithContext(source: source, fileName: url.path, platform: platform)
         return FileAnalysisResult(
             declarations: extraction.declarations,
             protocolGlobalActorNames: extraction.protocolGlobalActorNames,

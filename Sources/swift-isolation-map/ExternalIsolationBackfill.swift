@@ -129,7 +129,7 @@ enum ExternalIsolationBackfill {
         // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
         // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
 
-        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: backfilled)
+        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled)
 
         var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
         var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
@@ -313,12 +313,23 @@ enum ExternalIsolationBackfill {
     /// `docs/task-oracle-query-concurrency.md`'s decision record.
     private static func collectEdgeLevelWorkItems(
         linked: LinkedAnalysis,
-        backfilled: [String: DeclarationInfo]
+        backfilled: inout [String: DeclarationInfo]
     ) -> [EdgeWorkItem] {
         var bestLocationByUSR: [String: SymbolLocation] = [:]
         for edge in linked.callGraph {
             let targetUSR = edge.calleeUSR
             guard linked.declarations[targetUSR] == nil, backfilled[targetUSR] == nil else { continue }
+            // Compiler-synthesized `RawRepresentable.rawValue`/`CaseIterable.allCases` accessors of
+            // a project-local enum have no physical declaration for `DeclarationExtractor` to see
+            // (see `SynthesizedEnumAccessorMatching`'s own doc comment) -- resolved deterministically
+            // here, with zero live query, rather than ever generating a work item for the oracle.
+            if let enumUSR = SynthesizedEnumAccessorMatching.enclosingEnumUSR(forSynthesizedAccessorUSR: targetUSR),
+               linked.declarations[enumUSR] != nil {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             if let existing = bestLocationByUSR[targetUSR] {
                 if isEarlier(edge.location, than: existing) {
                     bestLocationByUSR[targetUSR] = edge.location

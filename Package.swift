@@ -37,7 +37,8 @@ let package = Package(
             dependencies: [
                 "IsolationCore",
                 .product(name: "SwiftSyntax", package: "swift-syntax"),
-                .product(name: "SwiftParser", package: "swift-syntax")
+                .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftIfConfig", package: "swift-syntax")
             ]
         ),
         .target(
