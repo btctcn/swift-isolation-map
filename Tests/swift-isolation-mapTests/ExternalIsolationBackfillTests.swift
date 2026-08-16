@@ -297,6 +297,38 @@ func edgeLevelTriggerTreatsNoAttributeAsGenuineNonisolated() async {
     #expect(resolution.unknownUSRs.isEmpty)
 }
 
+@Test("A real, confirmed compressed-name typealias-wrapper constant shape (URLResourceKey.isDirectoryKey's own real USR, using Swift's substitution compression BridgedExternConstantMatching's own strict grammar can't parse) resolves via BridgedExternConstantContainerMatching when both USRMatching and BridgedExternConstantMatching fail -- confirmed genuinely nonisolated via a real live-toolchain probe")
+func edgeLevelTriggerResolvesBridgedExternConstantContainerViaFallback() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let targetUSR = "s:So16NSURLResourceKeya011isDirectoryB0ABvgZ"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Every field here is a real value copied verbatim from a real live cursorinfo probe against
+    // the actual toolchain (a from-scratch minimal reproduction, not invented).
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(
+            usr: "c:@NSURLIsDirectoryKey", fullyAnnotatedDeclXML: nil,
+            symbolGraphJSON: noAttributeSymbolGraph(usr: "c:@NSURLIsDirectoryKey"),
+            name: "isDirectoryKey", declLang: "source.lang.objc", containerTypeUSR: "$sSo16NSURLResourceKeyamD"
+        ),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[targetUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+}
+
 @Test("A real, confirmed NS_SWIFT_NAME-bridged extern-constant shape (NSAttributedString.Key.font's own real USR) resolves via BridgedExternConstantMatching when strict USR equality fails -- docs/task-extern-constant-swift-name-usr-mismatch.md's own real, motivating case, end to end through resolve()")
 func edgeLevelTriggerResolvesBridgedExternConstantViaFallback() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
@@ -608,6 +640,61 @@ private func stubSymbolGraphExtraction(_ processRunning: FakeProcessRunner, file
         try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent(moduleFileName))
         return ProcessResult(exitCode: 0, standardOutput: "", standardError: "")
     }
+}
+
+@Test("NSDictionary[\"key\"], a Swift-declared subscript on an imported Clang class, resolves by rewriting the accessor's own USR to the bulk-cached declaration form -- SubscriptAccessorDeclarationMatching's own edge-level wiring, zero live query, real USRs from a real live-toolchain probe")
+func edgeLevelTriggerRewritesSubscriptAccessorToBulkCachedDeclarationUSR() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let accessorUSR = "s:So12NSDictionaryC10FoundationEyypSgypcig"
+    let declarationUSR = "s:So12NSDictionaryC10FoundationEyypSgypcip"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let processRunning = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    // Real shape, confirmed live against this machine's own SDK: plain, unattributed
+    // `@objc dynamic subscript(_:) -> Any? { get }`.
+    stubSymbolGraphExtraction(processRunning, fileSystem: fileSystem, moduleFileName: "Foundation.symbols.json", json: """
+    {"symbols":[{"identifier":{"precise":"\(declarationUSR)"},"kind":{"identifier":"swift.subscript"},"declarationFragments":[]}]}
+    """)
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: FakeCompilerArgumentsProviding(), sourceKitD: sourceKitD,
+        fileSystem: fileSystem, processRunning: processRunning,
+        environmentProvider: FakeBulkExtractionEnvironment(), bulkModuleNames: ["Foundation"]
+    )
+
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
+@Test("A subscript-accessor-shaped calleeUSR whose derived declaration form isn't in the bulk cache falls through to the live query, never fabricated")
+func edgeLevelTriggerDoesNotFabricateSubscriptResolutionWhenBulkCacheMisses() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let accessorUSR = "s:So12NSDictionaryC10FoundationEyypSgypcig"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:something.Unrelated", fullyAnnotatedDeclXML: nil, symbolGraphJSON: nil),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations.isEmpty)
+    #expect(resolution.unknownUSRs == [accessorUSR])
 }
 
 @Test("A protocol's own inheritance-clause entry naming a global-actor-isolated *class* (a class-bound protocol, e.g. `protocol ViewDataConfigurable: UIView`) does not propagate that class's global actor to the protocol itself -- confirmed real false positive (docs/task-class-bound-protocol-conformance-isolation.md): this exact shape wrongly made every `static var reuseIdentifier` extension-default member resolve to @MainActor at 220 real call sites, none with a matching compiler diagnostic")
