@@ -341,6 +341,17 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // A plain, non-member imported Clang global constant (`NSCocoaErrorDomain`,
+            // `kNumberCaseType`, ...) has no containing type at all, so the bulk cache -- keyed by
+            // Clang USR, never the Swift-mangled global's own -- never covers it either (see
+            // `ImportedTopLevelConstantMatching`'s own doc comment, including the real live-toolchain
+            // probe confirming these never carry an isolation attribute).
+            if ImportedTopLevelConstantMatching.isTopLevelImportedConstant(usr: targetUSR) {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             if let existing = bestLocationByUSR[targetUSR] {
                 if isEarlier(edge.location, than: existing) {
                     bestLocationByUSR[targetUSR] = edge.location

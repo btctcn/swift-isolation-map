@@ -160,6 +160,29 @@ func edgeLevelTriggerBackfillsImportedStructMemberWithoutAnyLiveQuery() async {
     #expect(sourceKitD.callCount == 0)
 }
 
+@Test("NSCocoaErrorDomain, a plain top-level imported Clang constant with no containing type at all, resolves to nonisolated deterministically, with zero live query -- ImportedTopLevelConstantMatching's own edge-level wiring")
+func edgeLevelTriggerBackfillsTopLevelImportedConstantWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let domainUSR = "s:So18NSCocoaErrorDomainSSvg"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: domainUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[domainUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("A rawValue-shaped accessor USR whose enum is NOT actually a project-local declaration is never fabricated as nonisolated -- string shape alone is not the safety net")
 func edgeLevelTriggerDoesNotFabricateWhenEnumIsNotLocal() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
