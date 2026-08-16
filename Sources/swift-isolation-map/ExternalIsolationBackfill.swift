@@ -372,6 +372,18 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // `Hashable.hashValue`'s own default-witness accessor has no physical declaration either
+            // (see `SynthesizedHashableAccessorMatching`'s own doc comment) -- unlike the enum
+            // rawValue/allCases case above, its own isolation is not assumed; the synthesized entry
+            // only carries `containingTypeUSR`, letting the unmodified `IsolationInferenceEngine`
+            // apply its own already-verified whole-type inference to it, same as any real member.
+            if let enclosingTypeUSR = SynthesizedHashableAccessorMatching.enclosingTypeUSR(forSynthesizedAccessorUSR: targetUSR),
+               linked.declarations[enclosingTypeUSR] != nil {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, containingTypeUSR: enclosingTypeUSR, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             // A raw field/constant of a plain Objective-C/C struct (`CGSize.width`, `UIEdgeInsets.top`,
             // `UIControlState.disabled`, ...) has no entry in `symbolgraph-extract`'s own output at all
             // (see `ImportedStructMemberMatching`'s own doc comment), so the bulk cache never covers

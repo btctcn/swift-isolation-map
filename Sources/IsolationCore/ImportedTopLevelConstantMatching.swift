@@ -28,6 +28,18 @@ import Foundation
 /// s:So<N><Name><ReturnTypeMangling>vg   // read-only or var getter
 /// s:So<N><Name><ReturnTypeMangling>vs   // var setter
 /// ```
+///
+/// **`"SC"` variant, same grammar, a real distinct module code**: Swift's mangling assigns a
+/// separate synthetic-module substitution code to a **plain C** (non-Objective-C) macro constant --
+/// `"SC"`, not `"So"` -- real examples found on `Project Iris` across `SQLite3`
+/// (`SQLITE_ROW`/`SQLITE_OK`/`SQLITE_OPEN_READONLY`/`SQLITE_OPEN_FULLMUTEX`), `Darwin`
+/// (`NSEC_PER_SEC`/`USEC_PER_SEC`/`AF_INET`), `CommonCrypto` (`CC_SHA256_DIGEST_LENGTH`), and
+/// `CoreFoundation` (`kCFStringEncodingInvalidId`). Checked, not assumed by analogy: a real
+/// `swift symbolgraph-extract -module-name Darwin` run confirms `NSEC_PER_SEC`/`USEC_PER_SEC`/
+/// `AF_INET`'s own `declarationFragments` carry no isolation attribute of any kind either -- their
+/// real Clang USR is even further from having one (`c:@macro@NSEC_PER_SEC`, a preprocessor macro,
+/// not even a real Clang declaration) -- so the exact same "no actor to be affiliated with"
+/// reasoning applies at least as strongly as it does for the `"So"` case.
 /// Deliberately never parses `<ReturnTypeMangling>` -- like `ImportedStructMemberMatching`, only
 /// the exact `"vg"`/`"vs"` accessor-kind suffix at the very end is checked, since the real type
 /// varies freely (`String`, `Int`, `Int64`, ...).
@@ -73,8 +85,16 @@ public enum ImportedTopLevelConstantMatching {
     /// per this type's own doc comment grammar -- `false` for every member-shaped sibling case and
     /// every USR not shaped this way at all (the overwhelmingly common case).
     public static func isTopLevelImportedConstant(usr targetUSR: String) -> Bool {
-        let prefix = "s:So"
-        guard targetUSR.hasPrefix(prefix) else { return false }
+        let objcModulePrefix = "s:So"
+        let plainCModulePrefix = "s:SC"
+        let prefix: String
+        if targetUSR.hasPrefix(objcModulePrefix) {
+            prefix = objcModulePrefix
+        } else if targetUSR.hasPrefix(plainCModulePrefix) {
+            prefix = plainCModulePrefix
+        } else {
+            return false
+        }
         var remainder = targetUSR.dropFirst(prefix.count)
         guard readLengthPrefixedIdentifier(&remainder) != nil else { return false }
         guard let firstCharacterAfterName = remainder.first, !nominalMarkers.contains(firstCharacterAfterName) else {
