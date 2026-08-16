@@ -304,6 +304,38 @@ func edgeLevelTriggerResolvesBridgedExternClassConstantViaFallback() async {
     #expect(resolution.unknownUSRs.isEmpty)
 }
 
+@Test("A real, confirmed CF-opaque-pointer bridged-function property shape (CGImage.width's own real Swift-mangled USR) resolves via BridgedExternFunctionPropertyMatching when strict USR equality fails -- confirmed genuinely nonisolated via a real live-toolchain probe")
+func edgeLevelTriggerResolvesBridgedExternFunctionPropertyViaFallback() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let targetUSR = "s:So10CGImageRefa5widthSivg"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Every field here is a real value copied verbatim from a real live cursorinfo probe against
+    // the actual toolchain (a from-scratch minimal reproduction, not invented).
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(
+            usr: "c:@F@CGImageGetWidth", fullyAnnotatedDeclXML: nil,
+            symbolGraphJSON: noAttributeSymbolGraph(usr: "c:@F@CGImageGetWidth"),
+            name: "width", declLang: "source.lang.objc", containerTypeUSR: "$sSo10CGImageRefaD"
+        ),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[targetUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+}
+
 @Test("A real, confirmed Objective-C protocol-property-witness shape (UITextField.keyboardType's own real Clang selector USR) resolves via ObjCProtocolPropertyWitnessMatching when strict USR equality fails -- confirmed genuinely @MainActor via a real live-toolchain probe")
 func edgeLevelTriggerResolvesObjCProtocolPropertyWitnessViaFallback() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
