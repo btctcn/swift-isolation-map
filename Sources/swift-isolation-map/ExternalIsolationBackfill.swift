@@ -419,6 +419,28 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // A pure-Swift static member's own accessor USR (`"...vgZ"`/`"...vsZ"`) never matches
+            // the bulk cache directly either -- same "accessor form vs. declaration form" gap as the
+            // subscript case just above, for a static var instead (see
+            // `SwiftStaticMemberAccessorDeclarationMatching`'s own doc comment).
+            if let declarationUSR = SwiftStaticMemberAccessorDeclarationMatching.declarationUSR(forStaticAccessorUSR: targetUSR),
+               let cachedIsolation = bulkCache[declarationUSR] {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
+            // An ordinary Objective-C class's own instance property, accessed from Swift, carries
+            // the call graph's own accessor-form USR (`"...vg"`/`"...vs"`), but the bulk cache keys
+            // an ordinary Clang property by its selector-style form instead (see
+            // `ObjCInstancePropertyAccessorMatching`'s own doc comment).
+            if let declarationUSR = ObjCInstancePropertyAccessorMatching.declarationUSR(forInstancePropertyAccessorUSR: targetUSR),
+               let cachedIsolation = bulkCache[declarationUSR] {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             if let existing = bestLocationByUSR[targetUSR] {
                 if isEarlier(edge.location, than: existing) {
                     bestLocationByUSR[targetUSR] = edge.location
@@ -475,6 +497,29 @@ enum ExternalIsolationBackfill {
                     )
                     bestLocationByUSR.removeValue(forKey: targetUSR)
                 }
+            }
+        }
+
+        // Demangled raw-struct-member fallback (see `DemangledStructMemberMatching`'s own doc
+        // comment): a raw C struct field whose own name uses Swift's compound/underscore-identifier
+        // mangling scheme (`ImportedStructMemberMatching`'s own simple length-prefix parse can't
+        // recognize) -- real, confirmed on Project Iris
+        // (`_firebase_appquality_sessions_SessionInfo.firebase_installation_id`, a nanopb-generated
+        // C struct field). Deliberately a separate pass for the same batching reason as the
+        // demangle-based sibling fallback above.
+        let candidateStructMemberUSRs = bestLocationByUSR.keys.filter {
+            DemangledStructMemberMatching.isCandidateRawStructMember(targetUSR: $0)
+        }
+        if !candidateStructMemberUSRs.isEmpty {
+            let rawDemangled = DemangledSiblingMatching.rawDemangled(forSwiftUSRs: candidateStructMemberUSRs, processRunning: processRunning)
+            for targetUSR in candidateStructMemberUSRs {
+                guard let demangled = rawDemangled[targetUSR], DemangledStructMemberMatching.isUnconditionallyNonisolated(rawDemangled: demangled) else {
+                    continue
+                }
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                bestLocationByUSR.removeValue(forKey: targetUSR)
             }
         }
 
@@ -1094,6 +1139,7 @@ enum ExternalIsolationBackfill {
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternConstantContainerMatching.select(from: result, targetUSR: targetUSR)
+                ?? BridgedExternConstantOptionalContainerMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }

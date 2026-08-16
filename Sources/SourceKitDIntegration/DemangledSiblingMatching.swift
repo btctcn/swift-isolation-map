@@ -36,10 +36,15 @@ public enum DemangledSiblingMatching {
     private static let discriminatorPattern = try! NSRegularExpression(pattern: #"\(([A-Za-z0-9_]+) in _[0-9A-Fa-f]+\)"#)
 
     /// Demangles a batch of Swift-mangled USRs (the literal `usr` string, `"s:"`-prefixed) via real
-    /// `swift-demangle` invocations, and returns each recognized USR's own module-agnostic,
-    /// discriminator-stripped comparable signature. A USR `swift-demangle` doesn't recognize (echoed
-    /// back unchanged, confirmed real behavior) is simply absent from the result -- never guessed.
-    public static func moduleAgnosticSignatures(forSwiftUSRs usrs: [String], processRunning: ProcessRunning) -> [String: String] {
+    /// `swift-demangle` invocations, and returns each recognized USR's own **raw, unstripped**
+    /// demangled text -- e.g. `"__C.CGSize.width.getter : Swift.Double"` or, for a genuine Swift
+    /// extension member, `"(extension in CoreGraphics):__C.CGSize.isEmpty.getter : Swift.Bool"`. A
+    /// USR `swift-demangle` doesn't recognize (echoed back unchanged, confirmed real behavior) is
+    /// simply absent from the result -- never guessed. `moduleAgnosticSignatures(forSwiftUSRs:)`
+    /// below builds on this; `DemangledStructMemberMatching` uses the raw form directly, since
+    /// stripping the module-name-like leading component would destroy the exact
+    /// `"(extension in "` vs. plain `"__C."` distinction it depends on.
+    public static func rawDemangled(forSwiftUSRs usrs: [String], processRunning: ProcessRunning) -> [String: String] {
         var results: [String: String] = [:]
         var index = 0
         while index < usrs.count {
@@ -57,12 +62,16 @@ public enum DemangledSiblingMatching {
             // `chunk` is safe and avoids re-parsing the arrow-prefixed mangled name back into a USR.
             for (usr, line) in zip(chunk, lines) {
                 guard let arrowRange = line.range(of: " ---> ") else { continue }
-                let demangled = String(line[arrowRange.upperBound...])
-                guard let signature = moduleAgnosticSignature(fromDemangled: demangled) else { continue }
-                results[usr] = signature
+                results[usr] = String(line[arrowRange.upperBound...])
             }
         }
         return results
+    }
+
+    /// Module-agnostic, discriminator-stripped comparable signature for every recognized USR -- see
+    /// `rawDemangled(forSwiftUSRs:processRunning:)` for the underlying batching/parsing.
+    public static func moduleAgnosticSignatures(forSwiftUSRs usrs: [String], processRunning: ProcessRunning) -> [String: String] {
+        rawDemangled(forSwiftUSRs: usrs, processRunning: processRunning).compactMapValues { moduleAgnosticSignature(fromDemangled: $0) }
     }
 
     /// Extracts the bare member/type name from a `moduleAgnosticSignatures(forSwiftUSRs:)` signature
