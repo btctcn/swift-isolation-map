@@ -275,6 +275,55 @@ func edgeLevelTriggerDoesNotFabricateAliasWhenNoSiblingExists() async {
     #expect(resolution.unknownUSRs == [siblingUSR])
 }
 
+@Test("A sibling-target-shaped calleeUSR whose mangled suffix diverges from its winning sibling's own (Swift mangling substitution compression) still aliases via the real demangler -- DemangledSiblingMatching's own edge-level wiring, real USRs from Project Iris's own CurrentNotifications.removeOldNotifications shape")
+func edgeLevelTriggerAliasesViaDemangleWhenMangledSuffixDivergesDueToCompression() async {
+    let siblingLocation = SymbolLocation(file: "/ContentExtension/f.swift", line: 43, column: 20)
+    let winningSiblingUSR = "s:34lsboutiqueContentExtension_Release20CurrentNotificationsC09removeOldF033_D9ECF08F60CC884FB11E97FE344112BALLyyF"
+    let compressedTargetUSR = "s:31lsboutiqueNotifications_Release07CurrentB0C09removeOldB033_B7792CC88F67F80D4270F51FAE477D8DLLyyF"
+    let linked = LinkedAnalysis(
+        declarations: [
+            winningSiblingUSR: DeclarationInfo(
+                usr: winningSiblingUSR, name: "removeOldNotifications", explicitIsolation: .nonisolated,
+                isEligibleForModuleDefaultIsolation: false, location: siblingLocation
+            )
+        ],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: compressedTargetUSR, location: SymbolLocation(file: "/f.swift", line: 1, column: 1))]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+    let processRunning = FakeProcessRunner()
+    processRunning.onRun = { executable, arguments in
+        guard executable == "xcrun", arguments.first == "swift-demangle" else { return nil }
+        if arguments.contains(where: { $0.contains("07CurrentB0C") }) {
+            return ProcessResult(
+                exitCode: 0,
+                standardOutput: "$s31lsboutiqueNotifications_Release07CurrentB0C09removeOldB033_B7792CC88F67F80D4270F51FAE477D8DLLyyF ---> lsboutiqueNotifications_Release.CurrentNotifications.(removeOldNotifications in _B7792CC88F67F80D4270F51FAE477D8D)() -> ()",
+                standardError: ""
+            )
+        }
+        if arguments.contains(where: { $0.contains("20CurrentNotificationsC") }) {
+            return ProcessResult(
+                exitCode: 0,
+                standardOutput: "$s34lsboutiqueContentExtension_Release20CurrentNotificationsC09removeOldF033_D9ECF08F60CC884FB11E97FE344112BALLyyF ---> lsboutiqueContentExtension_Release.CurrentNotifications.(removeOldNotifications in _D9ECF08F60CC884FB11E97FE344112BA)() -> ()",
+                standardError: ""
+            )
+        }
+        return nil
+    }
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: processRunning, environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[compressedTargetUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.backfilledDeclarations[compressedTargetUSR]?.name == "removeOldNotifications")
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("NSCocoaErrorDomain, a plain top-level imported Clang constant with no containing type at all, resolves to nonisolated deterministically, with zero live query -- ImportedTopLevelConstantMatching's own edge-level wiring")
 func edgeLevelTriggerBackfillsTopLevelImportedConstantWithoutAnyLiveQuery() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
