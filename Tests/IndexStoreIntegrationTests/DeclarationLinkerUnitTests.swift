@@ -604,6 +604,47 @@ func linkNeverBleedsAcrossTwoUnrelatedSameNamedTypesInDifferentUncompiledFiles()
     )
 }
 
+// MARK: - Same-bare-name type-declaration collision (issue #95, docs/task-objc-enum-accessor-linking.md §3)
+
+@Test("link(_:) keeps two genuinely different, unrelated types that merely share a bare name as two separate entries, not merged into one (real LogLevel/Project Iris/MindboxLogger shape)")
+func linkKeepsTwoUnrelatedSameNamedCompiledTypesSeparate() throws {
+    // Real shape confirmed on Project Iris: the app's own module declares its own `LogLevel` enum,
+    // completely unrelated to the `MindboxLogger` pod's own, separately-compiled `LogLevel` enum.
+    // Unlike the GestureView/Swiftfin shape above, *both* files here are genuinely compiled/indexed
+    // -- this is not an uncompiled-file problem, it's a bare-name placeholder collision between two
+    // real, independently-resolvable declarations.
+    let podLocation = SymbolLocation(file: "/Pods/MindboxLogger/LogLevel.swift", line: 23, column: 13)
+    let appLocation = SymbolLocation(file: "/App/LogLevel.swift", line: 12, column: 13)
+
+    let podType = makeDeclaration(usr: "syntactic:LogLevel", name: "LogLevel", location: podLocation)
+    let appType = makeDeclaration(usr: "syntactic:LogLevel", name: "LogLevel", location: appLocation)
+
+    let fake = FakeIndexStoreQuerying()
+    fake.symbolsByFile["/Pods/MindboxLogger/LogLevel.swift"] = [
+        IndexedSymbol(usr: "c:@M@MindboxLogger@E@LogLevel", name: "LogLevel", location: podLocation),
+    ]
+    fake.symbolsByFile["/App/LogLevel.swift"] = [
+        IndexedSymbol(usr: "s:9Ls_net_ru8LogLevelO", name: "LogLevel", location: appLocation),
+    ]
+
+    let linked = DeclarationLinker(indexStore: fake).link([
+        ExtractionResult(declarations: [podType], protocolGlobalActorNames: [:]),
+        ExtractionResult(declarations: [appType], protocolGlobalActorNames: [:]),
+    ])
+
+    let linkedPodType = try #require(
+        linked.declarations["c:@M@MindboxLogger@E@LogLevel"],
+        "the pod's own LogLevel must resolve to its own real Clang USR, independent of the app's own colliding placeholder"
+    )
+    let linkedAppType = try #require(
+        linked.declarations["s:9Ls_net_ru8LogLevelO"],
+        "the app's own LogLevel must resolve to its own real Swift-mangled USR, independent of the pod's own colliding placeholder"
+    )
+    #expect(linkedPodType.location == podLocation)
+    #expect(linkedAppType.location == appLocation)
+    #expect(linked.declarations.count == 2, "the two unrelated types must never be silently merged into one entry")
+}
+
 // MARK: - Transitive protocol-inheritance expansion (docs/task-transitive-protocol-conformance.md)
 
 @Test("link(_:) expands a type's conformance to a project-local protocol to also include that protocol's own external ancestor, letting the existing external-backfill machinery resolve it (PlatformView/Swiftfin shape)")

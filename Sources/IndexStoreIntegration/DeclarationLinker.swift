@@ -205,7 +205,7 @@ public struct DeclarationLinker {
             }
         }
 
-        let (builtUSRRewriteMap, filesWithIndexedSymbols) = buildUSRRewriteMap(for: allDeclarations)
+        let (builtUSRRewriteMap, ownUSRByLocation, filesWithIndexedSymbols) = buildUSRRewriteMap(for: allDeclarations)
         var usrRewriteMap = builtUSRRewriteMap
         for (placeholder, realUSR) in usrRewriteMapOverrides {
             usrRewriteMap[placeholder] = realUSR
@@ -289,8 +289,15 @@ public struct DeclarationLinker {
                     mergedProtocolRequirementGlobalActorNames: mergedProtocolRequirementGlobalActorNames
                 )
             }
+            // Prefer the declaration's own, independently-disambiguated location match over the
+            // shared, bare-name-keyed `usrRewriteMap` for *its own* identity -- see
+            // `buildUSRRewriteMap`'s `ownUSRByLocation` doc comment (issue #95). Only falls back to
+            // `rewritten(_:)` when this declaration's own location has no direct match (no real
+            // location at all, or its own disambiguation genuinely failed) -- identical to the
+            // prior behavior for every declaration that isn't part of a same-name collision.
+            let ownUSR = declaration.location.flatMap { ownUSRByLocation[LocationKey(location: $0)] } ?? rewritten(declaration.usr)
             let linked = DeclarationInfo(
-                usr: rewritten(declaration.usr),
+                usr: ownUSR,
                 name: declaration.name,
                 explicitIsolation: declaration.explicitIsolation,
                 isActorType: declaration.isActorType,
@@ -576,7 +583,19 @@ public struct DeclarationLinker {
     /// (`containingTypeUSR`/`superclassUSR`/`protocolUSR`) coming from a file that isn't one of
     /// them. See `link()`'s own `rewrittenReference` doc comment for the real, confirmed bug this
     /// guards against.
-    private func buildUSRRewriteMap(for declarations: [DeclarationInfo]) -> (map: [String: String], filesWithIndexedSymbols: Set<String>) {
+    ///
+    /// `ownUSRByLocation` -- the same per-declaration `match.usr` this loop already computes,
+    /// keyed by *that declaration's own location* instead of its (potentially colliding) bare
+    /// placeholder string -- exists for `link()`'s own identity rewrite (issue #95). A top-level
+    /// `"syntactic:<Name>"` placeholder is a bare name with no file/module qualification
+    /// (`SyntacticIdentity.typeUSR(_:)`), so two genuinely different, unrelated real declarations
+    /// that merely share a name (confirmed real on `Project Iris`: the app's own `LogLevel` enum
+    /// and the `MindboxLogger` pod's own, completely unrelated `LogLevel` enum) both write into
+    /// `usrRewriteMap` under the identical key, and only the last one processed during iteration
+    /// survives -- even though *this* loop already correctly disambiguated each one independently
+    /// via its own real location, one line above the collision. `ownUSRByLocation` preserves that
+    /// already-correct, per-declaration answer instead of discarding it.
+    private func buildUSRRewriteMap(for declarations: [DeclarationInfo]) -> (map: [String: String], ownUSRByLocation: [LocationKey: String], filesWithIndexedSymbols: Set<String>) {
         let filesToQuery = Set(declarations.compactMap { $0.location?.file })
         var candidatesByLocation: [LocationKey: [IndexedSymbol]] = [:]
         var filesWithIndexedSymbols: Set<String> = []
@@ -591,6 +610,7 @@ public struct DeclarationLinker {
         }
 
         var usrRewriteMap: [String: String] = [:]
+        var ownUSRByLocation: [LocationKey: String] = [:]
         for declaration in declarations {
             guard let location = declaration.location,
                   let candidates = candidatesByLocation[LocationKey(location: location)],
@@ -598,8 +618,9 @@ public struct DeclarationLinker {
                 continue
             }
             usrRewriteMap[declaration.usr] = match.usr
+            ownUSRByLocation[LocationKey(location: location)] = match.usr
         }
-        return (usrRewriteMap, filesWithIndexedSymbols)
+        return (usrRewriteMap, ownUSRByLocation, filesWithIndexedSymbols)
     }
 
     /// Multiple real symbols can share the exact same (line, column) -- confirmed empirically: a
