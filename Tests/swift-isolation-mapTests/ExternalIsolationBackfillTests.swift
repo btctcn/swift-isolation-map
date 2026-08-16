@@ -798,6 +798,96 @@ func edgeLevelTriggerDoesNotFabricateSubscriptResolutionWhenBulkCacheMisses() as
     #expect(resolution.unknownUSRs == [accessorUSR])
 }
 
+@Test("YandexPaySDK.SDKApi.instance, a pure-Swift static var, resolves by rewriting the accessor's own USR to the bulk-cached declaration form -- SwiftStaticMemberAccessorDeclarationMatching's own edge-level wiring, zero live query, real USRs from Project Iris")
+func edgeLevelTriggerRewritesSwiftStaticMemberAccessorToBulkCachedDeclarationUSR() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let accessorUSR = "s:12YandexPaySDK0aB6SDKApiC8instanceACvgZ"
+    let declarationUSR = "s:12YandexPaySDK0aB6SDKApiC8instanceACvpZ"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let processRunning = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    // Real shape, confirmed via a real `swift symbolgraph-extract` run against YandexPaySDK's own
+    // built framework: plain, unattributed `static var instance: YandexPaySDKApi { get }`.
+    stubSymbolGraphExtraction(processRunning, fileSystem: fileSystem, moduleFileName: "YandexPaySDK.symbols.json", json: """
+    {"symbols":[{"identifier":{"precise":"\(declarationUSR)"},"kind":{"identifier":"swift.var"},"declarationFragments":[]}]}
+    """)
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: FakeCompilerArgumentsProviding(), sourceKitD: sourceKitD,
+        fileSystem: fileSystem, processRunning: processRunning,
+        environmentProvider: FakeBulkExtractionEnvironment(), bulkModuleNames: ["YandexPaySDK"]
+    )
+
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
+@Test("UISceneConnectionOptions.shortcutItem, an ordinary Objective-C class instance property, resolves by rewriting the accessor's own USR to the bulk-cached Clang selector-style declaration form -- ObjCInstancePropertyAccessorMatching's own edge-level wiring, zero live query, real USRs from Project Iris")
+func edgeLevelTriggerRewritesObjCInstancePropertyAccessorToBulkCachedDeclarationUSR() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let accessorUSR = "s:So24UISceneConnectionOptionsC12shortcutItemSo021UIApplicationShortcutE0CSgvg"
+    let declarationUSR = "c:objc(cs)UISceneConnectionOptions(py)shortcutItem"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let processRunning = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    // Real shape, confirmed via a real `swift symbolgraph-extract` run against UIKit: `UIScene
+    // .ConnectionOptions` is a real, confirmed `@MainActor class` -- its own bulk entry carries that.
+    stubSymbolGraphExtraction(processRunning, fileSystem: fileSystem, moduleFileName: "UIKit.symbols.json", json: """
+    {"symbols":[{"identifier":{"precise":"\(declarationUSR)"},"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"MainActor","preciseIdentifier":"s:ScM"},{"kind":"keyword","spelling":"var"}]}]}
+    """)
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: FakeCompilerArgumentsProviding(), sourceKitD: sourceKitD,
+        fileSystem: fileSystem, processRunning: processRunning,
+        environmentProvider: FakeBulkExtractionEnvironment(), bulkModuleNames: ["UIKit"]
+    )
+
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == .globalActor(name: "MainActor"))
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
+@Test("A Firebase-shaped SessionInfo.firebase_installation_id (a nanopb-generated raw C struct field with a compound/underscore identifier ImportedStructMemberMatching's own simple parser can't recognize) resolves to nonisolated via the real demangler -- DemangledStructMemberMatching's own edge-level wiring, real USR from Project Iris")
+func edgeLevelTriggerBackfillsDemangledStructMemberWithoutMatchingSimpleParser() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let targetUSR = "s:So41_firebase_appquality_sessions_SessionInfoV0A16_installation_idSpySo16pb_bytes_array_sVGSgvg"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+    let processRunning = FakeProcessRunner()
+    processRunning.onRun = { executable, arguments in
+        guard executable == "xcrun", arguments.first == "swift-demangle" else { return nil }
+        return ProcessResult(
+            exitCode: 0,
+            standardOutput: "$sSo41_firebase_appquality_sessions_SessionInfoV0A16_installation_idSpySo16pb_bytes_array_sVGSgvg ---> __C._firebase_appquality_sessions_SessionInfo.firebase_installation_id.getter : Swift.UnsafeMutablePointer<__C.pb_bytes_array_s>?",
+            standardError: ""
+        )
+    }
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: processRunning, environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[targetUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("A protocol's own inheritance-clause entry naming a global-actor-isolated *class* (a class-bound protocol, e.g. `protocol ViewDataConfigurable: UIView`) does not propagate that class's global actor to the protocol itself -- confirmed real false positive (docs/task-class-bound-protocol-conformance-isolation.md): this exact shape wrongly made every `static var reuseIdentifier` extension-default member resolve to @MainActor at 220 real call sites, none with a matching compiler diagnostic")
 func classBoundProtocolInheritanceDoesNotPropagateItsClassGlobalActor() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
