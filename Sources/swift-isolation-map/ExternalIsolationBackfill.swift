@@ -129,7 +129,7 @@ enum ExternalIsolationBackfill {
         // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
         // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
 
-        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled)
+        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled, bulkCache: bulkCache)
 
         var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
         var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
@@ -313,7 +313,8 @@ enum ExternalIsolationBackfill {
     /// `docs/task-oracle-query-concurrency.md`'s decision record.
     private static func collectEdgeLevelWorkItems(
         linked: LinkedAnalysis,
-        backfilled: inout [String: DeclarationInfo]
+        backfilled: inout [String: DeclarationInfo],
+        bulkCache: [String: IsolationKind]
     ) -> [EdgeWorkItem] {
         // Built once, project-wide -- see `MultiTargetDeclarationAliasing`'s own doc comment for
         // the real, confirmed multi-target-membership shape this closes. Only genuinely-linked
@@ -378,6 +379,18 @@ enum ExternalIsolationBackfill {
             if ImportedTopLevelConstantMatching.isTopLevelImportedConstant(usr: targetUSR) {
                 backfilled[targetUSR] = DeclarationInfo(
                     usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
+            // A subscript accessor's own USR (`NSDictionary["key"]`, `...cig`/`...cis`-suffixed)
+            // never matches the bulk cache directly -- both the bulk symbol graph and a live hover
+            // key the same subscript by its own *declaration* USR (`...cip`-suffixed) instead (see
+            // `SubscriptAccessorDeclarationMatching`'s own doc comment). Once rewritten to that
+            // declaration form, the bulk cache already has the real answer -- zero live query.
+            if let declarationUSR = SubscriptAccessorDeclarationMatching.subscriptDeclarationUSR(forAccessorUSR: targetUSR),
+               let cachedIsolation = bulkCache[declarationUSR] {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
                 )
                 continue
             }
@@ -1004,6 +1017,7 @@ enum ExternalIsolationBackfill {
             // case.
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR)
+                ?? BridgedExternConstantContainerMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
