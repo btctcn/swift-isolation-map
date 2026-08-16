@@ -129,7 +129,7 @@ enum ExternalIsolationBackfill {
         // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
         // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
 
-        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled, bulkCache: bulkCache)
+        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled, bulkCache: bulkCache, processRunning: processRunning)
 
         var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
         var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
@@ -314,7 +314,8 @@ enum ExternalIsolationBackfill {
     private static func collectEdgeLevelWorkItems(
         linked: LinkedAnalysis,
         backfilled: inout [String: DeclarationInfo],
-        bulkCache: [String: IsolationKind]
+        bulkCache: [String: IsolationKind],
+        processRunning: ProcessRunning
     ) -> [EdgeWorkItem] {
         // Built once, project-wide -- see `MultiTargetDeclarationAliasing`'s own doc comment for
         // the real, confirmed multi-target-membership shape this closes. Only genuinely-linked
@@ -426,6 +427,57 @@ enum ExternalIsolationBackfill {
                 bestLocationByUSR[targetUSR] = edge.location
             }
         }
+
+        // Demangle-based sibling fallback (see `DemangledSiblingMatching`'s own doc comment):
+        // retries every still-unresolved, multi-target-shaped USR the plain suffix comparison above
+        // missed because Swift's own mangling substitution compression made two module-qualified
+        // variants' suffixes diverge -- real, confirmed on `Project Iris`
+        // (`CurrentNotifications.removeOldNotifications`). Deliberately a second, separate pass
+        // (not folded into the loop above): needs the *complete* set of still-pending targets
+        // collected first, to batch every `swift-demangle` invocation instead of one per edge.
+        let stillPendingMultiTargetUSRs = bestLocationByUSR.keys.filter {
+            MultiTargetDeclarationAliasing.moduleNameAndSuffix(ofSwiftUSR: $0) != nil
+        }
+        if !stillPendingMultiTargetUSRs.isEmpty {
+            let targetSignatures = DemangledSiblingMatching.moduleAgnosticSignatures(forSwiftUSRs: stillPendingMultiTargetUSRs, processRunning: processRunning)
+            let neededBareNames = Set(targetSignatures.values.compactMap { DemangledSiblingMatching.bareMemberName(fromSignature: $0) })
+            if !neededBareNames.isEmpty {
+                // Narrowed via each candidate's own already-extracted `DeclarationInfo.name` (zero
+                // demangling cost) before demangling *those* too -- keeps the real `swift-demangle`
+                // call volume bounded to what's actually needed, not every linked declaration.
+                let candidateUSRs = linked.declarations.values
+                    .filter { $0.location != nil && neededBareNames.contains($0.name) }
+                    .map(\.usr)
+                let candidateSignatures = DemangledSiblingMatching.moduleAgnosticSignatures(forSwiftUSRs: candidateUSRs, processRunning: processRunning)
+                var candidateUSRsBySignature: [String: [String]] = [:]
+                for (usr, signature) in candidateSignatures {
+                    candidateUSRsBySignature[signature, default: []].append(usr)
+                }
+                for targetUSR in stillPendingMultiTargetUSRs {
+                    // Exactly one candidate must share this signature -- same "never guess" rule as
+                    // `disambiguate`/`MultiTargetDeclarationAliasing` itself: two genuinely different
+                    // real declarations coincidentally sharing a module-agnostic signature (e.g. the
+                    // same bare-name-collision shape `docs/task-syntactic-placeholder-name-collision.md`
+                    // fixed) must never be guessed between.
+                    guard let signature = targetSignatures[targetUSR],
+                          let matchingUSRs = candidateUSRsBySignature[signature], matchingUSRs.count == 1,
+                          let sibling = linked.declarations[matchingUSRs[0]] else {
+                        continue
+                    }
+                    backfilled[targetUSR] = DeclarationInfo(
+                        usr: targetUSR, name: sibling.name, explicitIsolation: sibling.explicitIsolation,
+                        isActorType: sibling.isActorType, containingTypeUSR: sibling.containingTypeUSR,
+                        isStaticMember: sibling.isStaticMember, superclassUSR: sibling.superclassUSR,
+                        conformances: sibling.conformances, isEligibleForModuleDefaultIsolation: sibling.isEligibleForModuleDefaultIsolation,
+                        enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
+                        location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
+                        isActorInitializer: sibling.isActorInitializer
+                    )
+                    bestLocationByUSR.removeValue(forKey: targetUSR)
+                }
+            }
+        }
+
         return bestLocationByUSR.map { EdgeWorkItem(targetUSR: $0.key, location: $0.value) }
     }
 
