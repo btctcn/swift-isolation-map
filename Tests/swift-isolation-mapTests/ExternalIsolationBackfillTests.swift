@@ -160,6 +160,69 @@ func edgeLevelTriggerBackfillsImportedStructMemberWithoutAnyLiveQuery() async {
     #expect(sourceKitD.callCount == 0)
 }
 
+@Test("AppGroupFetcher.hostApplicationName, compiled under a sibling Xcode target's own module namespace, resolves by aliasing the already-linked winning variant's own DeclarationInfo verbatim -- MultiTargetDeclarationAliasing's own edge-level wiring, real USRs from the real, confirmed three-target corpus shape, zero live query")
+func edgeLevelTriggerAliasesSiblingTargetDeclarationWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let classUSR = "c:@M@Ls_net_ru@objc(cs)AppGroupFetcher"
+    let winningUSR = "s:9Ls_net_ru15AppGroupFetcherC19hostApplicationNameSSSgvp"
+    let siblingUSR = "s:31lsboutiqueNotifications_Release15AppGroupFetcherC19hostApplicationNameSSSgvp"
+    let winningDeclaration = DeclarationInfo(
+        usr: winningUSR, name: "hostApplicationName", containingTypeUSR: classUSR,
+        isEligibleForModuleDefaultIsolation: true, location: SymbolLocation(file: "/AppGroupFetcher.swift", line: 43, column: 9)
+    )
+    let mainActorClass = DeclarationInfo(
+        usr: classUSR, name: "AppGroupFetcher", explicitIsolation: .globalActor(name: "MainActor"),
+        isEligibleForModuleDefaultIsolation: false, location: SymbolLocation(file: "/AppGroupFetcher.swift", line: 3, column: 7)
+    )
+    let linked = LinkedAnalysis(
+        declarations: [winningUSR: winningDeclaration, classUSR: mainActorClass],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: siblingUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    // The aliased entry's own containingTypeUSR must be copied verbatim (not just nonisolated),
+    // so downstream inheritance resolution (this test doesn't re-run the engine, but confirms the
+    // structural fact the engine would need) works identically to the winning variant.
+    #expect(resolution.backfilledDeclarations[siblingUSR]?.containingTypeUSR == classUSR)
+    #expect(resolution.backfilledDeclarations[siblingUSR]?.name == "hostApplicationName")
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
+@Test("A sibling-target-shaped calleeUSR whose suffix has no already-linked match anywhere falls through to the live query, never fabricated as an alias")
+func edgeLevelTriggerDoesNotFabricateAliasWhenNoSiblingExists() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let siblingUSR = "s:31lsboutiqueNotifications_Release15AppGroupFetcherC19hostApplicationNameSSSgvp"
+    let linked = LinkedAnalysis(
+        declarations: [:], // no winning sibling variant linked anywhere
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: siblingUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(usr: "s:something.Unrelated", fullyAnnotatedDeclXML: nil, symbolGraphJSON: nil),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations.isEmpty)
+    #expect(resolution.unknownUSRs == [siblingUSR])
+}
+
 @Test("NSCocoaErrorDomain, a plain top-level imported Clang constant with no containing type at all, resolves to nonisolated deterministically, with zero live query -- ImportedTopLevelConstantMatching's own edge-level wiring")
 func edgeLevelTriggerBackfillsTopLevelImportedConstantWithoutAnyLiveQuery() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)

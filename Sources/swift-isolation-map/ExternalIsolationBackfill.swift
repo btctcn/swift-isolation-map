@@ -315,10 +315,39 @@ enum ExternalIsolationBackfill {
         linked: LinkedAnalysis,
         backfilled: inout [String: DeclarationInfo]
     ) -> [EdgeWorkItem] {
+        // Built once, project-wide -- see `MultiTargetDeclarationAliasing`'s own doc comment for
+        // the real, confirmed multi-target-membership shape this closes. Only genuinely-linked
+        // declarations (a real `location`, never a placeholder/backfilled entry) are indexed, so a
+        // lookup miss here is never itself evidence of anything -- just "no sibling-target variant
+        // of this declaration happens to already be linked."
+        var declarationBySuffix: [String: DeclarationInfo] = [:]
+        for declaration in linked.declarations.values where declaration.location != nil {
+            guard let (_, suffix) = MultiTargetDeclarationAliasing.moduleNameAndSuffix(ofSwiftUSR: declaration.usr) else { continue }
+            declarationBySuffix[suffix] = declaration
+        }
+
         var bestLocationByUSR: [String: SymbolLocation] = [:]
         for edge in linked.callGraph {
             let targetUSR = edge.calleeUSR
             guard linked.declarations[targetUSR] == nil, backfilled[targetUSR] == nil else { continue }
+            // A project-local declaration compiled under a sibling Xcode target's own module
+            // namespace (see `MultiTargetDeclarationAliasing`'s own doc comment) -- resolved
+            // deterministically here by reusing the already-linked sibling variant's own, fully
+            // resolved `DeclarationInfo` verbatim (same `containingTypeUSR` etc., so downstream
+            // inheritance/module-default resolution works identically), zero live query needed.
+            if let (_, suffix) = MultiTargetDeclarationAliasing.moduleNameAndSuffix(ofSwiftUSR: targetUSR),
+               let sibling = declarationBySuffix[suffix] {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: sibling.name, explicitIsolation: sibling.explicitIsolation,
+                    isActorType: sibling.isActorType, containingTypeUSR: sibling.containingTypeUSR,
+                    isStaticMember: sibling.isStaticMember, superclassUSR: sibling.superclassUSR,
+                    conformances: sibling.conformances, isEligibleForModuleDefaultIsolation: sibling.isEligibleForModuleDefaultIsolation,
+                    enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
+                    location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
+                    isActorInitializer: sibling.isActorInitializer
+                )
+                continue
+            }
             // Compiler-synthesized `RawRepresentable.rawValue`/`CaseIterable.allCases` accessors of
             // a project-local enum have no physical declaration for `DeclarationExtractor` to see
             // (see `SynthesizedEnumAccessorMatching`'s own doc comment) -- resolved deterministically
