@@ -360,6 +360,18 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // A top-level `@objc`-annotated enum's own `linked.declarations` entry is keyed by its
+            // *Clang*-style USR, not the Swift-mangled form the check above derives (see
+            // `SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR`'s own doc comment) --
+            // `DeclarationLinker`'s own disambiguation picks the Clang form when both exist as real
+            // index-store candidates at the enum's declaration site.
+            if let objcEnumUSR = SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: targetUSR),
+               linked.declarations[objcEnumUSR] != nil {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             // A raw field/constant of a plain Objective-C/C struct (`CGSize.width`, `UIEdgeInsets.top`,
             // `UIControlState.disabled`, ...) has no entry in `symbolgraph-extract`'s own output at all
             // (see `ImportedStructMemberMatching`'s own doc comment), so the bulk cache never covers

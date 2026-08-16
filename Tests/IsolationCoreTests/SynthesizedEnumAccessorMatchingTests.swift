@@ -45,4 +45,42 @@ struct SynthesizedEnumAccessorMatchingTests {
     func rejectsWrongAccessorKind() {
         #expect(SynthesizedEnumAccessorMatching.enclosingEnumUSR(forSynthesizedAccessorUSR: "s:9Ls_net_ru10PaymentWayO8rawValueSSvs") == nil)
     }
+
+    @Test("enclosingObjCEnumUSR() reads the real top-level @objc enum shape, confirmed against a real from-scratch minimal reproduction (MiniObjCEnum) and the real Project Iris corpus (MindboxLogger.LogLevel)")
+    func readsRealTopLevelObjCEnumShape() {
+        #expect(
+            SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: "s:12MiniObjCEnum8LogLevelO8rawValueSivg")
+                == "c:@M@MiniObjCEnum@E@LogLevel"
+        )
+        #expect(
+            SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: "s:13MindboxLogger8LogLevelO8rawValueSivg")
+                == "c:@M@MindboxLogger@E@LogLevel"
+        )
+    }
+
+    @Test("enclosingObjCEnumUSR() reads the real allCases static getter shape too")
+    func readsRealAllCasesObjCEnumShape() {
+        #expect(
+            SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: "s:12MiniObjCEnum8LogLevelO8allCasesSayACGvgZ")
+                == "c:@M@MiniObjCEnum@E@LogLevel"
+        )
+    }
+
+    @Test("enclosingObjCEnumUSR() returns nil for a nested enum's own accessor -- deliberately scoped to top-level only, no claim made about the nested case without real evidence")
+    func rejectsNestedEnumShape() {
+        #expect(SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: "s:9Ls_net_ru10FilterDataV6LayoutO8allCasesSayACGvgZ") == nil)
+    }
+
+    @Test("enclosingObjCEnumUSR() returns nil for USRs that don't match this shape at all -- the overwhelmingly common case")
+    func rejectsUnrelatedUSRsForObjCEnum() {
+        let unrelated = [
+            "s:9Ls_net_ru5PriceV9formatted5valueSSSd_tFZ", // an ordinary project-local static func
+            "s:9Ls_net_ru10PaymentWayO8rawValueSSvs", // wrong accessor kind (setter)
+            "", // empty
+            "s:" // prefix only, nothing after it
+        ]
+        for usr in unrelated {
+            #expect(SynthesizedEnumAccessorMatching.enclosingObjCEnumUSR(forSynthesizedAccessorUSR: usr) == nil, "\(usr)")
+        }
+    }
 }

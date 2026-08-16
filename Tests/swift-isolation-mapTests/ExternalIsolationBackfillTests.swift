@@ -137,6 +137,30 @@ func edgeLevelTriggerBackfillsSynthesizedRawValueAccessorWithoutAnyLiveQuery() a
     #expect(sourceKitD.callCount == 0)
 }
 
+@Test("A synthesized rawValue getter of a project-local, top-level @objc enum resolves to nonisolated deterministically, with zero live query -- linked.declarations keys the enum by its Clang-style USR, not the Swift-mangled form, confirmed via a real, from-scratch minimal reproduction (MiniObjCEnum)")
+func edgeLevelTriggerBackfillsSynthesizedRawValueAccessorOfObjCEnumWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let objcEnumUSR = "c:@M@MiniObjCEnum@E@LogLevel"
+    let accessorUSR = "s:12MiniObjCEnum8LogLevelO8rawValueSivg"
+    let linked = LinkedAnalysis(
+        declarations: [objcEnumUSR: DeclarationInfo(usr: objcEnumUSR, name: "LogLevel", explicitIsolation: nil, isEligibleForModuleDefaultIsolation: true)],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == .nonisolated)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("CGSize.width, a raw imported C struct field absent from symbolgraph-extract's own output, resolves to nonisolated deterministically, with zero live query -- ImportedStructMemberMatching's own edge-level wiring")
 func edgeLevelTriggerBackfillsImportedStructMemberWithoutAnyLiveQuery() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
