@@ -330,6 +330,17 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // A raw field/constant of a plain Objective-C/C struct (`CGSize.width`, `UIEdgeInsets.top`,
+            // `UIControlState.disabled`, ...) has no entry in `symbolgraph-extract`'s own output at all
+            // (see `ImportedStructMemberMatching`'s own doc comment), so the bulk cache never covers
+            // it either -- resolved deterministically here instead: a raw imported C struct field is
+            // categorically outside Swift's attribute system, never needing a live query to confirm.
+            if ImportedStructMemberMatching.containerUSR(forPossibleMemberUSR: targetUSR) != nil {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: .nonisolated, isEligibleForModuleDefaultIsolation: false
+                )
+                continue
+            }
             if let existing = bestLocationByUSR[targetUSR] {
                 if isEarlier(edge.location, than: existing) {
                     bestLocationByUSR[targetUSR] = edge.location
