@@ -963,7 +963,8 @@ enum ExternalIsolationBackfill {
             // relaxation of `USRMatching`'s own binding "strict equality only" design for the general
             // case.
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR)
-                ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+                ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR)
+                ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)

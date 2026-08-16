@@ -249,6 +249,38 @@ func edgeLevelTriggerResolvesBridgedExternConstantViaFallback() async {
     #expect(resolution.unknownUSRs.isEmpty)
 }
 
+@Test("A real, confirmed NS_SWIFT_NAME-bridged class-constant shape (UITableView.automaticDimension's own real USR) resolves via BridgedExternClassConstantMatching when strict USR equality fails -- confirmed genuinely @MainActor via a real live-toolchain probe, not assumed nonisolated the way ImportedStructMemberMatching's raw-C-struct-field case is")
+func edgeLevelTriggerResolvesBridgedExternClassConstantViaFallback() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let targetUSR = "s:So11UITableViewC18automaticDimension14CoreFoundation7CGFloatVvgZ"
+    let linked = LinkedAnalysis(
+        declarations: [:],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: targetUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying()
+    // Every field here is a real value copied verbatim from a real live cursorinfo probe against
+    // the actual toolchain (a from-scratch minimal reproduction, not invented).
+    sourceKitD.responsesByOffset[0] = .success(CursorInfoResult(
+        primary: CursorInfoSymbol(
+            usr: "c:@UITableViewAutomaticDimension", fullyAnnotatedDeclXML: nil,
+            symbolGraphJSON: mainActorSymbolGraph(usr: "c:@UITableViewAutomaticDimension"),
+            name: "automaticDimension", declLang: "source.lang.objc", containerTypeUSR: "$sSo11UITableViewCmD"
+        ),
+        secondary: []
+    ))
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    #expect(resolution.backfilledDeclarations[targetUSR]?.explicitIsolation == .globalActor(name: "MainActor"))
+    #expect(resolution.unknownUSRs.isEmpty)
+}
+
 @Test("A candidate that merely shares a member name, from the wrong container type, is NOT matched by the bridged-extern-constant fallback -- stays unknown rather than a false positive")
 func edgeLevelTriggerRejectsWrongContainerTypeForBridgedExternConstant() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
