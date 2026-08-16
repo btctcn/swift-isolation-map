@@ -161,6 +161,34 @@ func edgeLevelTriggerBackfillsSynthesizedRawValueAccessorOfObjCEnumWithoutAnyLiv
     #expect(sourceKitD.callCount == 0)
 }
 
+@Test("Moya.Endpoint.hashValue, a synthesized Hashable default-witness accessor with no declaration of its own, resolves via containingTypeUSR (not a hardcoded isolation), with zero live query -- SynthesizedHashableAccessorMatching's own edge-level wiring")
+func edgeLevelTriggerBackfillsSynthesizedHashableAccessorViaContainingTypeWithoutAnyLiveQuery() async {
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    let enclosingTypeUSR = "s:4Moya8EndpointC"
+    let accessorUSR = "s:4Moya8EndpointC9hashValueSivg"
+    let linked = LinkedAnalysis(
+        declarations: [enclosingTypeUSR: DeclarationInfo(usr: enclosingTypeUSR, name: "Endpoint", explicitIsolation: .globalActor(name: "MainActor"), isEligibleForModuleDefaultIsolation: false)],
+        callGraph: [CallGraphEdge(callerUSR: "s:caller", calleeUSR: accessorUSR, location: location)]
+    )
+    let fileSystem = makeFixture(contents: "x\n", at: "/f.swift")
+    let compilerArguments = FakeCompilerArgumentsProviding()
+    compilerArguments.argumentsByFile["/f.swift"] = ["-sdk", "/SDK"]
+    let sourceKitD = FakeSourceKitDQuerying() // deliberately no stubbed response: any live query fails the test
+
+    let resolution = await ExternalIsolationBackfill.resolve(
+        linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
+        processRunning: FakeProcessRunner(), environmentProvider: FakeBulkExtractionEnvironmentProviding(), bulkModuleNames: []
+    )
+
+    // Deliberately no explicitIsolation baked in here -- that's left for the unmodified
+    // IsolationInferenceEngine to derive from containingTypeUSR (`.globalActor("MainActor")` above),
+    // exactly like a real member of the same type would go through.
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.containingTypeUSR == enclosingTypeUSR)
+    #expect(resolution.backfilledDeclarations[accessorUSR]?.explicitIsolation == nil)
+    #expect(resolution.unknownUSRs.isEmpty)
+    #expect(sourceKitD.callCount == 0)
+}
+
 @Test("CGSize.width, a raw imported C struct field absent from symbolgraph-extract's own output, resolves to nonisolated deterministically, with zero live query -- ImportedStructMemberMatching's own edge-level wiring")
 func edgeLevelTriggerBackfillsImportedStructMemberWithoutAnyLiveQuery() async {
     let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)

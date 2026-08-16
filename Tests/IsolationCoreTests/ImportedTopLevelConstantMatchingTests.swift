@@ -18,6 +18,24 @@ struct ImportedTopLevelConstantMatchingTests {
         }
     }
 
+    @Test("isTopLevelImportedConstant() accepts the \"SC\" (plain C, non-Objective-C) module-code variant -- real SQLite3/Darwin/CommonCrypto/CoreFoundation macro constants from Project Iris")
+    func acceptsPlainCModuleCodeVariant() {
+        let realUSRs = [
+            "s:SC10SQLITE_ROWs5Int32Vvg",
+            "s:SC9SQLITE_OKs5Int32Vvg",
+            "s:SC20SQLITE_OPEN_READONLYs5Int32Vvg",
+            "s:SC21SQLITE_OPEN_FULLMUTEXs5Int32Vvg",
+            "s:SC12NSEC_PER_SECs6UInt64Vvg",
+            "s:SC12USEC_PER_SECs6UInt64Vvg",
+            "s:SC7AF_INETs5Int32Vvg",
+            "s:SC23CC_SHA256_DIGEST_LENGTHs5Int32Vvg",
+            "s:SC26kCFStringEncodingInvalidIds6UInt32Vvg"
+        ]
+        for usr in realUSRs {
+            #expect(ImportedTopLevelConstantMatching.isTopLevelImportedConstant(usr: usr), "\(usr)")
+        }
+    }
+
     @Test("isTopLevelImportedConstant() rejects a real class instance property that also ends in \"vg\" -- the exact false-positive risk this type's own design was built to avoid (UISceneConnectionOptions.shortcutItem)")
     func rejectsRealClassInstancePropertyFalsePositiveRisk() {
         let usr = "s:So24UISceneConnectionOptionsC12shortcutItemSo021UIApplicationShortcutE0CSgvg"
