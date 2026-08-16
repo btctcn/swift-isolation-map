@@ -975,7 +975,8 @@ enum ExternalIsolationBackfill {
             // case.
             guard let symbol = USRMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternConstantMatching.select(from: result, targetUSR: targetUSR)
-                ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+                ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
+                ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation)
