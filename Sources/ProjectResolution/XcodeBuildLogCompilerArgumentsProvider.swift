@@ -22,6 +22,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     private let fileSystem: FileSystemQuerying
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
+    private var cachedModuleNames: Set<String>?
     private var cachedError: Error?
     private let skipMacroValidation: Bool
     // Resolved once per provider instance, not once per `runVerboseBuild` attempt -- the plain-vs-
@@ -54,6 +55,20 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             throw CompilerArgumentsError.argumentsNotFound(file: path)
         }
         return arguments
+    }
+
+    /// The real `-module-name` value of every target this instance's own real build compiled --
+    /// see `RawIndexStoreClient.allowedModuleNames`'s own doc comment for what this exists to feed.
+    /// Best-effort: a build that failed outright (`loadArgumentsIfNeeded` throwing, `cachedError`
+    /// already set) has no module names to report, `nil` here exactly like `compilerArguments
+    /// (forFile:)` would throw for the same reason -- callers of *this* method (unlike
+    /// `compilerArguments(forFile:)`'s own single-file callers) have no natural per-file fallback,
+    /// so failure is reported as "unknown" (disables filtering) rather than propagated.
+    public func realModuleNames() -> Set<String>? {
+        _ = try? loadArgumentsIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        return cachedModuleNames
     }
 
     private func loadArgumentsIfNeeded() throws -> [String: [String]] {
@@ -115,7 +130,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
                 destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning)
                 cachedDestination = destination
             }
-            var parsed = try runVerboseBuild(extraActions: [], destination: destination)
+            var (parsed, moduleNames) = try runVerboseBuild(extraActions: [], destination: destination)
             if parsed.count < Self.minimumUsableFileCount {
                 // Silent until now: a plain build against an already-up-to-date project (the common
                 // case right after this same run's own `--force-reindex`, or any CI pipeline that
@@ -132,9 +147,10 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
                     "likely already up to date) -- retrying with a clean rebuild for compiler-argument " +
                     "resolution. This can take a while on a large project."
                 )
-                parsed = try runVerboseBuild(extraActions: ["clean"], destination: destination)
+                (parsed, moduleNames) = try runVerboseBuild(extraActions: ["clean"], destination: destination)
             }
             cachedArguments = parsed
+            cachedModuleNames = moduleNames
             return parsed
         } catch {
             cachedError = error
@@ -142,7 +158,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         }
     }
 
-    private func runVerboseBuild(extraActions: [String], destination: String?) throws -> [String: [String]] {
+    private func runVerboseBuild(extraActions: [String], destination: String?) throws -> (arguments: [String: [String]], moduleNames: Set<String>) {
         var arguments = ["-verbose"]
         if skipMacroValidation {
             arguments.append("-skipMacroValidation")
@@ -170,11 +186,23 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
 
         var parsed: [String: [String]] = [:]
+        var moduleNames: Set<String> = []
         for invocation in CompilerArgsLogParser.parseXcodeSwiftCompileInvocations(buildLog: result.standardOutput) {
             let files = try expandFileList(at: invocation.sourceFileListPath)
             let fullArguments = invocation.arguments + files
             for file in files {
                 parsed[file] = fullArguments
+            }
+            // The real, compiled module name for this target -- `RawIndexStoreClient
+            // .allowedModuleNames`'s own doc comment explains what this set feeds. Read directly
+            // from this same real `-verbose` line rather than derived from the target name shown
+            // in the log's own `(in target 'X' ...)` annotation, which is never guaranteed to match
+            // (Swift module names can't contain characters a target name can, e.g. `Ls.net.ru`'s
+            // own real module name is `Ls_net_ru`) -- `-module-name`'s own value is the same string
+            // `indexstore_unit_reader_get_module_name` reports for the same compiled unit.
+            if let moduleNameIndex = invocation.arguments.firstIndex(of: "-module-name"),
+               invocation.arguments.index(after: moduleNameIndex) < invocation.arguments.endIndex {
+                moduleNames.insert(invocation.arguments[invocation.arguments.index(after: moduleNameIndex)])
             }
         }
 
@@ -194,7 +222,7 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
                 reason: "xcodebuild -verbose \((extraActions + ["build"]).joined(separator: " ")) exited \(result.exitCode) and produced no usable compiler invocations: \(result.standardError)"
             )
         }
-        return parsed
+        return (parsed, moduleNames)
     }
 
     /// The `@`-referenced response file is one absolute source path per line -- confirmed against

@@ -253,8 +253,26 @@ struct SwiftIsolationMap: ParsableCommand {
         // `RawIndexStoreClient`'s own one-shot full-store scan processes every distinct on-disk
         // record independently and has no such gap -- confirmed via a controlled, same-process,
         // same-moment diff against `IndexStoreClient`. No `databasePath`/LMDB accelerator needed.
+        // Scopes the raw scan to exactly the modules this run's own scheme-driven build actually
+        // compiled (docs/task-index-store-module-scoping.md) -- `Index.noindex/DataStore` is a
+        // single directory shared and accumulated across *every* build Xcode has ever run against
+        // this DerivedData, real, confirmed on Project Iris: an unrelated build (Xcode GUI, CI, a
+        // different tool invocation) that once compiled the `lsboutiqueTests` (XCTest) target left
+        // real, indexed records behind, even though the analyzed scheme's own `.xcscheme` declares
+        // an empty `<Testables>` list and never compiles that target itself. `realModuleNames()`
+        // returns `nil` for SwiftPM (no equivalent problem there) or if the build genuinely
+        // couldn't be determined -- `allowedModuleNames: nil` disables filtering, unchanged prior
+        // behavior, never a hard failure over this.
+        let allowedModuleNames = compilerArguments.realModuleNames()
+        if let allowedModuleNames {
+            logVerbose("Scoping index store to \(allowedModuleNames.count) real module(s) from this run's own build: \(allowedModuleNames.sorted().joined(separator: ", "))")
+        }
+
         eprint("Linking declarations against the index store...")
-        let indexStoreClient = try RawIndexStoreClient(storePath: indexStoreURL.path)
+        let indexStoreClient = try RawIndexStoreClient(storePath: indexStoreURL.path, allowedModuleNames: allowedModuleNames)
+        if indexStoreClient.skippedUnitCount > 0 {
+            logVerbose("Skipped \(indexStoreClient.skippedUnitCount) index store unit(s) outside the analyzed scheme's own real module set")
+        }
         let linker = DeclarationLinker(indexStore: indexStoreClient)
         // docs/task-indexstore-declaration-completeness.md: a real fraction of a large project's
         // own declarations (803, measured on Project Iris) never resolve via the bulk index's

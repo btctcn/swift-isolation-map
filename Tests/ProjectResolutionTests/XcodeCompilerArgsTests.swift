@@ -154,6 +154,58 @@ func liveXcodeProviderExpandsFileListAndMapsEveryFileToTheSameArguments() throws
     #expect(argsA.contains("/Users/dev/SQLumen/SQLumen/Core/DDLService.swift"))
 }
 
+@Test("realModuleNames() extracts the real -module-name value from this run's own build, for RawIndexStoreClient's allowedModuleNames filter (docs/task-index-store-module-scoping.md)")
+func realModuleNamesExtractsModuleNameFromRealBuildLine() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    let fileListURL = URL(fileURLWithPath: "/DerivedData/SQLumen.SwiftFileList")
+    fileSystem.addFile(at: fileListURL, contents: sampleFileListContents)
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: realSQLumenCompileLine.replacingOccurrences(
+                of: "/Users/dev/Library/Developer/Xcode/DerivedData/SQLumen-axiwtafjwewywncnfqkujtirqdpd/Build/Intermediates.noindex/SQLumen.build/Debug/SQLumen.build/Objects-normal/arm64/SQLumen.SwiftFileList",
+                with: "/DerivedData/SQLumen.SwiftFileList"
+            ),
+            standardError: ""
+        )
+    )
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    #expect(provider.realModuleNames() == ["SQLumen"])
+}
+
+@Test("realModuleNames() returns nil when the build failed outright and nothing was parsed -- never a guess, matching compilerArguments(forFile:)'s own failure mode")
+func realModuleNamesReturnsNilWhenBuildFailedOutright() {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
+        result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
+    )
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "SQLumen", "-project", "/SQLumen/SQLumen.xcodeproj", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "clean", "build"],
+        result: ProcessResult(exitCode: 1, standardOutput: "", standardError: "** BUILD FAILED ** (nothing compiled at all)")
+    )
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcodeproj(URL(fileURLWithPath: "/SQLumen/SQLumen.xcodeproj")),
+        scheme: "SQLumen",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    #expect(provider.realModuleNames() == nil)
+}
+
 @Test("skipMacroValidation: true passes -skipMacroValidation to the internal xcodebuild invocation; false (the default) never does")
 func skipMacroValidationFlagIsPassedOnlyWhenRequested() throws {
     let runner = FakeProcessRunner()
