@@ -287,7 +287,6 @@ struct SPMProduct: Decodable {
   [2] Build the project now
   [q] Cancel
   ```
-- `--index-store-path <path>` — explicit path, auto-detection is skipped.
 - `--auto-build` — the CLI builds the project itself (`xcodebuild -indexStoreEnable YES` / `swift build --index-store-path ...`) without an interactive prompt. Intended for CI/scripts.
 - `--force-reindex` — forces a rebuild, ignoring any existing (even fresh) index store.
 
@@ -404,9 +403,6 @@ ARGUMENTS:
 OPTIONS:
   --scheme <name>              REQUIRED. Build scheme (Xcode) or
                                 product/target (SPM).
-
-  --index-store-path <path>    Explicit path to the index store. If provided,
-                                auto-detection is skipped.
 
   --auto-build                 If the index store is missing or stale, the CLI
                                 builds the project itself without an interactive

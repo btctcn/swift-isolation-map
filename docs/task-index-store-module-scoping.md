@@ -123,6 +123,22 @@ compiled as Clang modules under `-fmodules`/index-while-building and are correct
 first-party target (including `lsboutiqueTests`) is an ordinary TU compile and is correctly
 `false`.
 
+**No fixed enumeration exists (there is no "list from Apple") -- `IsSystem` is dynamically derived
+per build, not a static property of a given framework.** Traced one level deeper, into where
+`Module::IsSystem` itself gets set: `clang/lib/Lex/ModuleMap.cpp:1968-1969` --
+`if (MD.Attrs.IsSystem || IsSystem) ActiveModule->IsSystem = true;` -- either an explicit
+`[system]` attribute written on that specific module in its own module map, or inherited from the
+enclosing *module map file's own* system-ness. That file-level flag, in turn
+(`clang/lib/Lex/HeaderSearch.cpp:2340/2395/2420`: `IsSystem = DL.isSystemHeaderDirectory()`), comes
+from whether the module map was found via a search path directory registered as a *system* header
+search path (`-isystem`/`-iframework`/the SDK's own automatically-added framework and header
+paths) versus an ordinary user path (`-I`/`-F`). In a normal Xcode build this is reliable in
+practice -- Apple's SDK frameworks are always resolved through the automatically-registered system
+paths, third-party Pods/SPM packages never are -- matching the exact, zero-mixed-modules split
+found empirically in Step 4(b). But it is not an intrinsic property of "being an Apple framework";
+it is a property of *how this specific compiler invocation's search paths classified the directory
+the module map was found in*.
+
 **b) Empirical confirmation against the real Project Iris store**, independent of (a) -- added a
 temporary `debugModuleSystemCounts()` diagnostic to `RawIndexStoreClient` (tallies
 `is_system_unit` true/false per module, unconditionally, during the existing scan) and a
@@ -251,3 +267,69 @@ a new, dedicated test (`systemUnitsSurviveFilteringEvenWhenAppKitIsNotInTheAllow
 the exemption directly: `ExtensionOfExternalType.swift`'s `extension NSView` still resolves its
 real AppKit base types (`NSResponder`, ...) through `extendedTypeUSR`/`baseTypeUSRs` even when
 `"AppKit"` is never in `allowedModuleNames`. Full suite (506 tests) passes.
+
+## Step 9 — `is_system_unit`, traced to real source, not guessed (follow-up, same day)
+
+Challenged (correctly) on whether `is_system_unit`'s signature/semantics were actually read from
+source or inferred by analogy -- they were inferred first, then verified for real:
+
+- **Signature** confirmed against the real upstream header this project already cites as its
+  source of truth (`swiftlang/llvm-project`, branch `next`,
+  `clang/include/indexstore/indexstore.h`): `bool indexstore_unit_reader_is_system_unit
+  (indexstore_unit_reader_t)`.
+- **Semantics** traced through the real implementation: `clang/lib/Index/IndexingAction.cpp` --
+  `bool IsSystemUnit = UnitModule ? UnitModule->IsSystem : false;` -- true iff the unit is itself a
+  compiled Clang *module* (not an ordinary TU) whose module is a system module.
+- **`Module::IsSystem` itself** traced one level deeper, into `clang/lib/Lex/ModuleMap.cpp:1968-
+  1969` and `clang/lib/Lex/HeaderSearch.cpp:2340/2395/2420`: set either by an explicit `[system]`
+  attribute on that module, or inherited from whether its own module map file was discovered via a
+  *system* header search path (`-isystem`/`-iframework`/the SDK's own automatically-registered
+  paths) versus an ordinary `-I`/`-F` path. **There is no fixed enumeration ("a list from Apple")
+  -- it's dynamically derived per build from search-path classification, not a static property of
+  a given framework.** Reliable in practice for normal Xcode builds (SDK frameworks always resolve
+  through the automatic system paths; third-party Pods/SPM packages never do), matching the exact
+  zero-mixed-modules split found empirically in Step 4(b), but not an intrinsic guarantee.
+
+Also confirmed empirically via 220-module per-module tallying (Step 4(b), unchanged) and a fast,
+standalone probe reusing the already-fresh index store directly (no re-running xcodebuild).
+
+## Step 10 — Open follow-up: output-path-based filtering (not started)
+
+While researching Step 9, found the closest thing to official documentation of how the index store
+itself is built: `swiftlang/indexstore-db`'s own `Sources/IndexStore/Index Store.md` (written by
+the actual maintainers, not third-party). It independently confirms this task's entire premise --
+*and* names a more precise alternative to both this task's filtering approaches (the original
+broken module-name allow-list, and the shipped `is_system_unit` exemption):
+
+> At the moment, the Index Store is only ever appended to and no unit or record files are ever
+> removed... The Index Store may... contain stale unit files: (1) a source file was deleted from
+> the project but the unit file of its last build is still present... (2) a source file used to be
+> part of an iOS and watchOS target but was removed from one and then modified -- the outdated
+> unit file of the last build still exists... **SourceKit-LSP solves this issue by querying the
+> build system for the output paths it produces and filtering unit files based on their output
+> path.**
+
+This is exactly the `lsboutiqueTests` pollution this whole task set out to fix -- described by the
+tool's own maintainers, who name the *authoritative* fix: match units by their own real **output
+path** (`indexstore_unit_reader_get_output_file`, confirmed a real function in the header --
+Step 9's fetched `indexstore.h` lists it alongside `get_module_name`), read from the build system's
+own real invocation log, rather than by module name at all. Per the same doc's "Output path"
+section, a unit's output path is what actually distinguishes two different compiled variants of
+the identical source file (different target, different platform, different config) -- something
+neither the broken module-name filter nor the shipped `is_system_unit` exemption can distinguish,
+since both operate at the coarser module-name granularity.
+
+**Task, not started:** work out an output-path-based filtering approach (parse each real compiler
+invocation's own `-o <path>` from the same `xcodebuild -verbose` log
+`LiveXcodeCompilerArgumentsProvider` already parses for `-module-name`, build a set of this run's
+own real output paths, and keep a unit iff `indexstore_unit_reader_get_output_file(unit)` is in
+that set -- SDK/system units still need their own separate exemption, since they're never part of
+*this* run's own compiled output paths at all, so `is_system_unit` likely still needs to stay,
+composed with the new check, not replaced outright). Compare against the currently-shipped
+`is_system_unit`-only fix via full real-corpus (or synthetic-fixture) before/after runs -- same
+methodology as Step 6: `crossActorBoundaries`/`highRiskBoundaries`/`unspecifiedIsolation`/
+`skippedUnitCount`, plus an edge-level diff (Step 6's own methodology) to see whether output-path
+filtering catches anything the shipped fix still misses (e.g. the 27-edge non-modular-ObjC gap
+from Step 6, or duplicate-target-variant pollution the module-name filter can't distinguish at
+all). Not yet scoped further than this -- treat as its own hypothesis -> spike per this project's
+usual workflow, not a same-session pivot on top of the just-merged fix.

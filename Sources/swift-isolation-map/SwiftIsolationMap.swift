@@ -53,9 +53,28 @@ struct ProcessFailure: Error, CustomStringConvertible {
     let command: String
     let exitCode: Int32
     let standardError: String
+    /// `xcodebuild`'s own real diagnostics (e.g. `xcodebuild: error: Could not resolve package
+    /// dependencies: ...`, `** BUILD FAILED **`) are printed to *stdout*, not stderr -- confirmed
+    /// directly (a real invocation against a read-only `-derivedDataPath`: the actual permission-
+    /// denied reason appeared only in `standardOutput`, `standardError` carried nothing useful for
+    /// it). `standardError`-only reporting silently dropped the one thing a user actually needs to
+    /// fix a real build failure. Only the *tail* is kept -- a full build log can be many thousands
+    /// of lines; the failure reason is reliably near the end, right before the process exits.
+    let standardOutput: String
+
+    private static let tailCharacterLimit = 4000
 
     var description: String {
-        "\(command) failed (exit \(exitCode)): \(standardError)"
+        let trimmedOutput = standardOutput.suffix(Self.tailCharacterLimit)
+        var message = "\(command) failed (exit \(exitCode))"
+        if !trimmedOutput.isEmpty {
+            message += ":\n\(trimmedOutput)"
+        }
+        let trimmedError = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedError.isEmpty {
+            message += "\nstderr: \(trimmedError)"
+        }
+        return message
     }
 }
 
@@ -101,14 +120,29 @@ struct SwiftIsolationMap: ParsableCommand {
     @Option(help: ArgumentHelp("Internal: where a local-declaration-resolution worker writes its resolved outcomes as JSON.", visibility: .hidden))
     var localDeclarationWorkerOutput: String?
 
-    @Option(help: "Explicit path to the index store. If provided, auto-detection is skipped.")
-    var indexStorePath: String?
-
     @Flag(help: "If the index store is missing or stale, build the project without an interactive prompt.")
     var autoBuild: Bool = false
 
     @Flag(help: "Forces a rebuild, ignoring any existing (even fresh) index store.")
     var forceReindex: Bool = false
+
+    // Off by default (docs/task-private-derived-data-hypothesis.md): for Xcode projects, this tool
+    // always builds into its own private, composite-keyed `-derivedDataPath` (never shared with
+    // Xcode GUI/CI/anything else) instead of Xcode's own shared DerivedData -- a real-corpus spike
+    // on Project Iris confirmed that store has *zero* cross-scheme pollution by construction, so
+    // scoping the raw index-store scan by module name/`is_system_unit` is no longer needed there.
+    // Removing the former `--index-store-path` escape hatch (a caller pointing this tool at some
+    // other, shared/foreign store) closed the one remaining scenario this flag existed for, and
+    // removed a real correctness risk of its own: that override only ever redirected *where this
+    // run reads its index data from*, never where the *separate* compiler-argument-resolution
+    // build (always private now, unconditionally) writes its own build products -- the two could
+    // silently diverge (different code state, different real modules) if pointed at different
+    // places. Kept, still off by default, purely as a defensive escape hatch for a degenerate case
+    // this design doesn't fully rule out (e.g. Xcode's own "Custom Derived Data Location"
+    // preference happening to be pointed at the identical private path) -- EXPERIMENTAL, may change
+    // or be removed entirely without notice as the private-DerivedData default matures.
+    @Flag(help: "EXPERIMENTAL, may be removed without notice: re-enable index-store module-name/is_system_unit scoping (allowedModuleNames) of the raw index-store scan. Off by default -- this tool's own private, per-(project, scheme, destination) index store never accumulates unrelated targets' units in the first place.")
+    var experimentalIndexStoreModuleFilter: Bool = false
 
     // Off by default deliberately -- unlike `xcodeIndexingBuildSettings`'s other overrides (which
     // remove artificial obstacles this tool's own internal builds never needed, like code signing),
@@ -194,6 +228,26 @@ struct SwiftIsolationMap: ParsableCommand {
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
         logVerbose("Language mode: \(languageMode); compiler: \(compilerVersion); effective: \(effectiveVersion)")
 
+        // EXPERIMENTAL private DerivedData (docs/task-private-derived-data-hypothesis.md): computed
+        // unconditionally for Xcode containers -- every real `xcodebuild` invocation this run makes
+        // (both the compiler-argument-resolution build `LiveXcodeCompilerArgumentsProvider` needs
+        // for `SyntaxAnalysis`/live-fallback/the external-isolation oracle, and the index-store-
+        // populating build below if one turns out to be needed) always targets this same private,
+        // composite-keyed location, never Xcode's own shared DerivedData -- a real-corpus spike on
+        // Project Iris confirmed that store has zero cross-scheme pollution by construction.
+        // `nil` only for SwiftPM, which already has its own private, non-shared index store
+        // (`IndexStoreLocator.explicitIndexStorePath`, `.build/swift-isolation-map-index-store`) and
+        // never touches `-derivedDataPath` (an Xcode-only flag) at all.
+        var privateDerivedDataPath: URL?
+        switch container {
+        case .xcodeproj, .xcworkspace:
+            let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning)
+            privateDerivedDataPath = PrivateDerivedData.path(for: container, scheme: scheme, destination: destination)
+            logVerbose("Using private DerivedData at \(privateDerivedDataPath!.path)")
+        case .swiftPackage:
+            break
+        }
+
         // A single read per source file drives both the staleness content-hash and the syntactic
         // extraction -- see StalenessOrchestration.swiftFiles's own doc comment for why this list
         // is reused for both purposes, and FileAnalyzer's for why one read yields both facts.
@@ -202,7 +256,9 @@ struct SwiftIsolationMap: ParsableCommand {
         let sourceFiles = StalenessOrchestration.swiftFiles(under: projectRoot, fileSystem: fileSystem)
         logVerbose("Found \(sourceFiles.count) Swift source file(s) under \(projectRoot.path)")
 
-        let compilerArguments = makeCompilerArgumentsProvider(container: container, processRunning: processRunning, fileSystem: fileSystem)
+        let compilerArguments = makeCompilerArgumentsProvider(
+            container: container, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: privateDerivedDataPath
+        )
         let defaultIsolation = detectConfiguredDefaultIsolation(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
         logVerbose("Configured default isolation: \(defaultIsolation)")
         let targetPlatform = detectTargetPlatform(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
@@ -226,20 +282,39 @@ struct SwiftIsolationMap: ParsableCommand {
             ))
         }
 
-        let manifestURL = StalenessOrchestration.manifestURL(for: container)
+        // Manifest scoping (docs/task-private-derived-data-hypothesis.md Step 4): a private-
+        // DerivedData run's own manifest lives *inside* that same composite-key directory --
+        // "what does this specific cache currently vouch for," not project-wide -- rather than the
+        // pre-existing single sibling-of-the-project-file manifest, which would otherwise get
+        // confused about which (scheme, destination) variant it's actually vouching for the moment
+        // more than one is ever analyzed against the same project.
+        let manifestURL = privateDerivedDataPath.map { $0.appendingPathComponent(StalenessOrchestration.manifestFileName) }
+            ?? StalenessOrchestration.manifestURL(for: container)
         let manifest = StalenessOrchestration.loadManifest(at: manifestURL, fileSystem: fileSystem)
         let staleness = stalenessStatus(currentHashes: currentHashes, manifest: manifest)
 
         eprint("Locating index store...")
         let locator = IndexStoreLocator(fileSystem: fileSystem)
-        let initialDiscovery: IndexStoreDiscoveryResult = indexStorePath.map { .found(URL(fileURLWithPath: $0)) } ?? locator.locate(for: container)
+        let initialDiscovery: IndexStoreDiscoveryResult
+        if let privateDerivedDataPath {
+            // Known by construction, not searched for -- a private root's own layout is this
+            // tool's own choice (`PrivateDerivedData.path`), unlike Xcode's own opaque, hashed
+            // shared-DerivedData folder naming that `IndexStoreLocator.locate(for:)` has to search
+            // for instead.
+            let dataStoreURL = privateDerivedDataPath.appendingPathComponent("Index.noindex/DataStore")
+            initialDiscovery = fileSystem.directoryExists(at: dataStoreURL) ? .found(dataStoreURL) : .missing
+        } else {
+            initialDiscovery = locator.locate(for: container)
+        }
 
         let indexStoreURL = try resolveIndexStoreURL(
             container: container,
             initialDiscovery: initialDiscovery,
             staleness: staleness,
             locator: locator,
-            processRunning: processRunning
+            processRunning: processRunning,
+            derivedDataPath: privateDerivedDataPath,
+            fileSystem: fileSystem
         )
         logVerbose("Using index store at \(indexStoreURL.path)")
 
@@ -256,14 +331,21 @@ struct SwiftIsolationMap: ParsableCommand {
         // Scopes the raw scan to exactly the modules this run's own scheme-driven build actually
         // compiled (docs/task-index-store-module-scoping.md) -- `Index.noindex/DataStore` is a
         // single directory shared and accumulated across *every* build Xcode has ever run against
-        // this DerivedData, real, confirmed on Project Iris: an unrelated build (Xcode GUI, CI, a
-        // different tool invocation) that once compiled the `lsboutiqueTests` (XCTest) target left
+        // *shared* DerivedData, real, confirmed on Project Iris: an unrelated build (Xcode GUI, CI,
+        // a different tool invocation) that once compiled the `lsboutiqueTests` (XCTest) target left
         // real, indexed records behind, even though the analyzed scheme's own `.xcscheme` declares
-        // an empty `<Testables>` list and never compiles that target itself. `realModuleNames()`
-        // returns `nil` for SwiftPM (no equivalent problem there) or if the build genuinely
-        // couldn't be determined -- `allowedModuleNames: nil` disables filtering, unchanged prior
-        // behavior, never a hard failure over this.
-        let allowedModuleNames = compilerArguments.realModuleNames()
+        // an empty `<Testables>` list and never compiles that target itself.
+        //
+        // EXPERIMENTAL, off by default (`--experimental-index-store-module-filter`,
+        // docs/task-private-derived-data-hypothesis.md): the private, composite-keyed DerivedData
+        // computed above already has zero cross-scheme pollution *by construction* -- nothing but
+        // this exact (project, scheme, destination) run's own build ever writes into it -- so a
+        // real-corpus spike (Project Iris) confirmed this filtering is no longer needed there
+        // (unfiltered vs. filtered results landed within edge-level noise of each other, both
+        // matching the historical known-good baseline). Kept available, opt-in, only as a
+        // defensive fallback -- see this flag's own declaration for the (narrow, unlikely)
+        // remaining scenario it still guards against.
+        let allowedModuleNames = experimentalIndexStoreModuleFilter ? compilerArguments.realModuleNames() : nil
         if let allowedModuleNames {
             logVerbose("Scoping index store to \(allowedModuleNames.count) real module(s) from this run's own build: \(allowedModuleNames.sorted().joined(separator: ", "))")
         }
@@ -409,7 +491,7 @@ struct SwiftIsolationMap: ParsableCommand {
     /// lifetime (see `LiveSwiftPMCompilerArgumentsProvider`'s own doc comment), so sharing one
     /// instance means that real build runs at most once per invocation, not once per consumer.
     private func makeCompilerArgumentsProvider(
-        container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying
+        container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying, derivedDataPath: URL?
     ) -> CompilerArgumentsProviding {
         switch container {
         case .swiftPackage(let packageURL):
@@ -419,7 +501,7 @@ struct SwiftIsolationMap: ParsableCommand {
         case .xcodeproj, .xcworkspace:
             return LiveXcodeCompilerArgumentsProvider(
                 container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
-                skipMacroValidation: skipMacroValidation
+                skipMacroValidation: skipMacroValidation, derivedDataPath: derivedDataPath
             )
         }
     }
@@ -500,7 +582,9 @@ struct SwiftIsolationMap: ParsableCommand {
         initialDiscovery: IndexStoreDiscoveryResult,
         staleness: StalenessStatus,
         locator: IndexStoreLocator,
-        processRunning: ProcessRunning
+        processRunning: ProcessRunning,
+        derivedDataPath: URL?,
+        fileSystem: FileSystemQuerying
     ) throws -> URL {
         let decision = decideIndexAction(storeDiscovery: initialDiscovery, stalenessStatus: staleness, autoBuild: autoBuild, forceReindex: forceReindex)
         switch decision {
@@ -517,10 +601,13 @@ struct SwiftIsolationMap: ParsableCommand {
 
         case .rebuildThenProceed:
             eprint("Building project to generate a fresh index store...")
-            return try build(container: container, locator: locator, processRunning: processRunning)
+            return try build(container: container, locator: locator, processRunning: processRunning, derivedDataPath: derivedDataPath, fileSystem: fileSystem)
 
         case .promptUser:
-            return try promptForIndexStore(discovery: initialDiscovery, container: container, locator: locator, processRunning: processRunning)
+            return try promptForIndexStore(
+                discovery: initialDiscovery, container: container, locator: locator, processRunning: processRunning,
+                derivedDataPath: derivedDataPath, fileSystem: fileSystem
+            )
         }
     }
 
@@ -540,7 +627,9 @@ struct SwiftIsolationMap: ParsableCommand {
         discovery: IndexStoreDiscoveryResult,
         container: ProjectContainer,
         locator: IndexStoreLocator,
-        processRunning: ProcessRunning
+        processRunning: ProcessRunning,
+        derivedDataPath: URL?,
+        fileSystem: FileSystemQuerying
     ) throws -> URL {
         switch discovery {
         case .missing:
@@ -566,14 +655,14 @@ struct SwiftIsolationMap: ParsableCommand {
                 guard let providedPath = readLine()?.trimmingCharacters(in: .whitespaces), !providedPath.isEmpty else {
                     throw ExitCode(2)
                 }
-                // A manually-provided path is trusted the same way `--index-store-path` is (auto-
-                // detection, and the staleness comparison that only applies to a store this tool
-                // itself vouches for, are both skipped) -- there's no manifest for a path the user
-                // is pointing at for the first time.
+                // A manually-provided path is trusted outright -- auto-detection, and the staleness
+                // comparison that only applies to a store this tool itself vouches for, are both
+                // skipped -- there's no manifest for a path the user is pointing at for the first
+                // time, entered interactively right here, not a silent CLI-flag override.
                 return URL(fileURLWithPath: providedPath)
             }
         case "2":
-            return try build(container: container, locator: locator, processRunning: processRunning)
+            return try build(container: container, locator: locator, processRunning: processRunning, derivedDataPath: derivedDataPath, fileSystem: fileSystem)
         default:
             throw ExitCode(2)
         }
@@ -590,7 +679,10 @@ struct SwiftIsolationMap: ParsableCommand {
     /// by the build setting `COMPILER_INDEX_STORE_ENABLE` (confirmed present, value `Default`, in
     /// real `xcodebuild -showBuildSettings` output), passed the same way any other build setting
     /// override is: a bare `KEY=VALUE` argument, not a `-flag`.
-    private func build(container: ProjectContainer, locator: IndexStoreLocator, processRunning: ProcessRunning) throws -> URL {
+    private func build(
+        container: ProjectContainer, locator: IndexStoreLocator, processRunning: ProcessRunning, derivedDataPath: URL?,
+        fileSystem: FileSystemQuerying
+    ) throws -> URL {
         switch container {
         case .swiftPackage(let packageURL):
             let packageDirectory = packageURL.deletingLastPathComponent()
@@ -601,7 +693,7 @@ struct SwiftIsolationMap: ParsableCommand {
                 workingDirectory: packageDirectory
             )
             guard result.exitCode == 0 else {
-                throw ProcessFailure(command: "swift build", exitCode: result.exitCode, standardError: result.standardError)
+                throw ProcessFailure(command: "swift build", exitCode: result.exitCode, standardError: result.standardError, standardOutput: result.standardOutput)
             }
             return storePath
 
@@ -624,10 +716,28 @@ struct SwiftIsolationMap: ParsableCommand {
             if let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning) {
                 arguments += ["-destination", destination]
             }
+            // EXPERIMENTAL private DerivedData (docs/task-private-derived-data-hypothesis.md) --
+            // always non-`nil` here in practice (every `.xcodeproj`/`.xcworkspace` caller of this
+            // function passes the unconditionally-computed private path); the `if let` stays a
+            // plain optional unwrap rather than a forced one only for this function's own
+            // testability (a caller could construct one without it).
+            if let derivedDataPath {
+                arguments += ["-derivedDataPath", derivedDataPath.path]
+            }
             arguments += xcodeIndexingBuildSettings + ["build"]
             let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
             guard result.exitCode == 0 else {
-                throw ProcessFailure(command: "xcodebuild", exitCode: result.exitCode, standardError: result.standardError)
+                throw ProcessFailure(command: "xcodebuild", exitCode: result.exitCode, standardError: result.standardError, standardOutput: result.standardOutput)
+            }
+            // A private root's own store location is known by construction (unlike Xcode's own
+            // opaque, hashed shared-DerivedData folder naming, which `locator.locate(for:)` has to
+            // search for) -- checked directly rather than re-searching.
+            if let derivedDataPath {
+                let dataStoreURL = derivedDataPath.appendingPathComponent("Index.noindex/DataStore")
+                guard fileSystem.directoryExists(at: dataStoreURL) else {
+                    throw SwiftIsolationMapError.indexStoreMissingAfterRebuild
+                }
+                return dataStoreURL
             }
             guard case .found(let url) = locator.locate(for: container) else {
                 throw SwiftIsolationMapError.indexStoreMissingAfterRebuild
