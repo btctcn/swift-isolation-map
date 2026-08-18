@@ -20,6 +20,12 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
     private let scheme: String
     private let processRunning: ProcessRunning
     private let fileSystem: FileSystemQuerying
+    /// EXPERIMENTAL (docs/task-private-derived-data-hypothesis.md) -- when non-`nil`, every
+    /// `xcodebuild` invocation this provider runs targets this private location (`-derivedDataPath`)
+    /// instead of Xcode's own shared default, so the compiler-argument-resolution build and the
+    /// index-store-populating build (`SwiftIsolationMap.build`) always agree on where the same
+    /// run's own build artifacts live -- never `nil` and `non-nil` mixed within one invocation.
+    private let derivedDataPath: URL?
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
     private var cachedModuleNames: Set<String>?
@@ -40,13 +46,15 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         scheme: String,
         processRunning: ProcessRunning = LiveProcessRunner(),
         fileSystem: FileSystemQuerying = LiveFileSystem(),
-        skipMacroValidation: Bool = false
+        skipMacroValidation: Bool = false,
+        derivedDataPath: URL? = nil
     ) {
         self.container = container
         self.scheme = scheme
         self.processRunning = processRunning
         self.fileSystem = fileSystem
         self.skipMacroValidation = skipMacroValidation
+        self.derivedDataPath = derivedDataPath
     }
 
     public func compilerArguments(forFile path: String) throws -> [String] {
@@ -180,6 +188,9 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         // `cachedDestination`'s own comment.
         if let destination {
             arguments += ["-destination", destination]
+        }
+        if let derivedDataPath {
+            arguments += ["-derivedDataPath", derivedDataPath.path]
         }
         arguments += xcodeIndexingBuildSettings + extraActions + ["build"]
 

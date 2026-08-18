@@ -94,9 +94,13 @@ ARGUMENTS:
 OPTIONS:
   --auto-build                If the index store is missing or stale, build the project
                               without an interactive prompt.
+  --experimental-index-store-module-filter
+                              EXPERIMENTAL, may be removed without notice: re-enable index-store
+                              module-name/is_system_unit scoping of the raw index-store scan. Off
+                              by default -- this tool's own private, per-(project, scheme,
+                              destination) index store (see "Where the index store lives" below)
+                              never accumulates unrelated targets' units in the first place.
   --force-reindex             Forces a rebuild, ignoring any existing (even fresh) index store.
-  --index-store-path <path>   Explicit path to the index store. If provided, auto-detection
-                              is skipped.
   --oracle-workers <N>        Parallelize the external-oracle live-query phase across N worker
                               processes (default: 1, sequential). Real speedup on a large project:
                               ~1.8x at N=4, ~3.3x at N=8 -- see docs/task-process-tree-optimization.md.
@@ -125,6 +129,34 @@ Example:
 ```
 swift-isolation-map ./MyApp.xcworkspace --scheme MyApp --auto-build --output json --out-file report.json
 ```
+
+### Where the index store lives (EXPERIMENTAL)
+
+For `.xcodeproj`/`.xcworkspace` projects, this tool never reads from or builds into Xcode's own
+shared `~/Library/Developer/Xcode/DerivedData` — every real `xcodebuild` invocation it makes (the
+compiler-argument-resolution build `SyntaxAnalysis`/the live-fallback/the external-isolation oracle
+need, and the index-store-populating build itself) targets its own private, per-run `-derivedDataPath`
+instead:
+
+```
+~/Library/Caches/swift-isolation-map/DerivedData/<project>-<hash>/<scheme>/<destination>/<configuration>/
+```
+
+`<project>-<hash>` identifies the exact real checkout (two different checkouts of the same repo —
+branches, worktrees — get different, non-colliding directories); `<scheme>`/`<destination>` keep two
+different schemes or platforms from ever landing in the same store. This exists because Xcode's own
+`Index.noindex/DataStore` is shared and accumulated across *every* build anything has ever run
+against that DerivedData (Xcode GUI, CI, a different tool invocation) — a real, confirmed source of
+stale/foreign data in the index a scheme-scoped analysis never asked for; see
+`docs/task-index-store-module-scoping.md` and `docs/task-private-derived-data-hypothesis.md` for the
+full investigation. The directory is **not** deleted between runs (repeat analyses of the same
+project/scheme/destination get normal Xcode incremental-build speed, not a full rebuild every time)
+but lives under `~/Library/Caches`, so it's always safe to delete by hand if you want the space back
+or want to force a clean rebuild.
+
+For `Package.swift` (SPM) targets, the equivalent has been true since `v0.1`: this tool has always
+used its own private index store (`.build/swift-isolation-map-index-store`), never SwiftPM's shared
+default.
 
 Exit codes: `0` — no high-risk boundaries found; `1` — high-risk boundaries found (fail a CI
 gate on this); a thrown error otherwise (bad scheme, unreachable index store, etc.).

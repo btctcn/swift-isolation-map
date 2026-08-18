@@ -39,6 +39,12 @@ public struct LiveFileSystem: FileSystemQuerying {
     }
 
     public func write(data: Data, to url: URL) throws {
+        // Auto-creates the parent directory chain if missing -- needed since
+        // `PrivateDerivedData.path(for:...)`'s manifest location (docs/task-private-derived-data-
+        // hypothesis.md) may not exist yet on a project's very first run, unlike the pre-existing
+        // sibling-of-the-project-file manifest location, whose parent (the project root) always
+        // already exists by construction. A no-op when the directory is already there.
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
     }
 }
