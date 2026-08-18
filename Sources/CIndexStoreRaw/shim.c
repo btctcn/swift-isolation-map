@@ -8,6 +8,8 @@ typedef bool (*store_units_apply_f_fn)(indexstore_t, unsigned, void *, indexstor
 typedef indexstore_unit_reader_t (*unit_reader_create_fn)(indexstore_t, const char *, indexstore_error_t *);
 typedef void (*unit_reader_dispose_fn)(indexstore_unit_reader_t);
 typedef indexstore_string_ref_t (*unit_reader_get_main_file_fn)(indexstore_unit_reader_t);
+typedef indexstore_string_ref_t (*unit_reader_get_module_name_fn)(indexstore_unit_reader_t);
+typedef bool (*unit_reader_is_system_unit_fn)(indexstore_unit_reader_t);
 typedef bool (*unit_reader_dependencies_apply_f_fn)(indexstore_unit_reader_t, void *, indexstore_shim_unit_dependency_applier_t);
 typedef indexstore_unit_dependency_kind_t (*unit_dependency_get_kind_fn)(indexstore_unit_dependency_t);
 typedef indexstore_string_ref_t (*unit_dependency_get_filepath_fn)(indexstore_unit_dependency_t);
@@ -35,6 +37,8 @@ static store_units_apply_f_fn sStoreUnitsApplyF;
 static unit_reader_create_fn sUnitReaderCreate;
 static unit_reader_dispose_fn sUnitReaderDispose;
 static unit_reader_get_main_file_fn sUnitReaderGetMainFile;
+static unit_reader_get_module_name_fn sUnitReaderGetModuleName;
+static unit_reader_is_system_unit_fn sUnitReaderIsSystemUnit;
 static unit_reader_dependencies_apply_f_fn sUnitReaderDependenciesApplyF;
 static unit_dependency_get_kind_fn sUnitDependencyGetKind;
 static unit_dependency_get_filepath_fn sUnitDependencyGetFilepath;
@@ -88,6 +92,8 @@ int indexstore_shim_load(const char *dylibPath) {
     sUnitReaderCreate = (unit_reader_create_fn)resolve("indexstore_unit_reader_create", &failed);
     sUnitReaderDispose = (unit_reader_dispose_fn)resolve("indexstore_unit_reader_dispose", &failed);
     sUnitReaderGetMainFile = (unit_reader_get_main_file_fn)resolve("indexstore_unit_reader_get_main_file", &failed);
+    sUnitReaderGetModuleName = (unit_reader_get_module_name_fn)resolve("indexstore_unit_reader_get_module_name", &failed);
+    sUnitReaderIsSystemUnit = (unit_reader_is_system_unit_fn)resolve("indexstore_unit_reader_is_system_unit", &failed);
     sUnitReaderDependenciesApplyF = (unit_reader_dependencies_apply_f_fn)resolve("indexstore_unit_reader_dependencies_apply_f", &failed);
     sUnitDependencyGetKind = (unit_dependency_get_kind_fn)resolve("indexstore_unit_dependency_get_kind", &failed);
     sUnitDependencyGetFilepath = (unit_dependency_get_filepath_fn)resolve("indexstore_unit_dependency_get_filepath", &failed);
@@ -151,6 +157,14 @@ void indexstore_shim_unit_reader_dispose(indexstore_unit_reader_t unit_reader) {
 
 indexstore_string_ref_t indexstore_shim_unit_reader_get_main_file(indexstore_unit_reader_t unit_reader) {
     return sUnitReaderGetMainFile(unit_reader);
+}
+
+indexstore_string_ref_t indexstore_shim_unit_reader_get_module_name(indexstore_unit_reader_t unit_reader) {
+    return sUnitReaderGetModuleName(unit_reader);
+}
+
+bool indexstore_shim_unit_reader_is_system_unit(indexstore_unit_reader_t unit_reader) {
+    return sUnitReaderIsSystemUnit(unit_reader);
 }
 
 bool indexstore_shim_unit_reader_dependencies_apply_f(indexstore_unit_reader_t unit_reader, void *context, indexstore_shim_unit_dependency_applier_t applier) {

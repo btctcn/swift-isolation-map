@@ -82,6 +82,8 @@ bool indexstore_shim_store_units_apply_f(indexstore_t store, unsigned sorted, vo
 indexstore_unit_reader_t indexstore_shim_unit_reader_create(indexstore_t store, const char *unit_name, indexstore_error_t *error);
 void indexstore_shim_unit_reader_dispose(indexstore_unit_reader_t unit_reader);
 indexstore_string_ref_t indexstore_shim_unit_reader_get_main_file(indexstore_unit_reader_t unit_reader);
+indexstore_string_ref_t indexstore_shim_unit_reader_get_module_name(indexstore_unit_reader_t unit_reader);
+bool indexstore_shim_unit_reader_is_system_unit(indexstore_unit_reader_t unit_reader);
 
 typedef bool (*indexstore_shim_unit_dependency_applier_t)(void *context, indexstore_unit_dependency_t dependency);
 bool indexstore_shim_unit_reader_dependencies_apply_f(indexstore_unit_reader_t unit_reader, void *context, indexstore_shim_unit_dependency_applier_t applier);

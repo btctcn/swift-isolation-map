@@ -71,8 +71,27 @@ public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable 
     /// `occurrences(relatedToUSR:roles:)` query direction: `.baseOf`/`.extendedBy` resolved
     /// looking *at* a type from whatever references it).
     fileprivate var relatedToUSR: [String: [RawRelation]] = [:]
+    /// How many real units the scan skipped because `allowedModuleNames` was non-`nil` and didn't
+    /// contain that unit's own module name -- surfaced for `--verbose` diagnostics (issue: a shared,
+    /// project-wide Xcode index store accumulates units from *any* build ever run against it,
+    /// including an unrelated scheme's own test target from a completely separate invocation; see
+    /// `allowedModuleNames`'s own doc comment).
+    public fileprivate(set) var skippedUnitCount = 0
 
-    public init(storePath: String, toolchainLocator: ToolchainLocating = LiveToolchainLocator()) throws {
+    /// `allowedModuleNames`, when non-`nil`, restricts the scan to units whose own
+    /// `indexstore_unit_reader_get_module_name` is in this set -- real, confirmed gap on `Project
+    /// Iris`: `Index.noindex/DataStore` is a single directory shared and accumulated across *every*
+    /// build Xcode has ever run against this DerivedData folder, not scoped to the scheme/target
+    /// this tool was actually asked to analyze. Confirmed directly: a real run's own index store
+    /// carried real, indexed `lsboutiqueTests` (XCTest) units even though the analyzed scheme's own
+    /// `.xcscheme` declares an empty `<Testables>` list and a plain `xcodebuild -scheme ls.net.ru
+    /// build` never compiles that target at all -- those records were left over from some *other*,
+    /// unrelated build (Xcode GUI, CI, a different tool invocation) that happened to touch the same
+    /// DerivedData at some point. `nil` (the default) disables filtering entirely, unchanged from
+    /// this type's original behavior -- every existing caller (SPM projects, whose compiler-
+    /// arguments provider has no notion of "real module names" at all, and any test double) keeps
+    /// scanning the whole store exactly as before.
+    public init(storePath: String, toolchainLocator: ToolchainLocating = LiveToolchainLocator(), allowedModuleNames: Set<String>? = nil) throws {
         let dylibPath = try toolchainLocator.libIndexStorePath()
         if indexstore_shim_load(dylibPath) != 0 {
             throw RawIndexStoreError.loadFailed(String(cString: indexstore_shim_last_error()))
@@ -82,7 +101,7 @@ public final class RawIndexStoreClient: IndexStoreQuerying, @unchecked Sendable 
             throw RawIndexStoreError.storeCreateFailed(rawIndexStoreDescribe(error))
         }
         defer { indexstore_shim_store_dispose(store) }
-        try rawIndexStoreScan(store: store, into: self)
+        try rawIndexStoreScan(store: store, into: self, allowedModuleNames: allowedModuleNames)
 
         // Reconcile deferred setter-named edges now that the whole store has been scanned -- see
         // `pendingSetterEdges`'s own doc comment.
@@ -271,13 +290,19 @@ private func rawIndexStoreString(_ ref: indexstore_string_ref_t) -> String {
 /// spike) -> every occurrence in each *distinct* record, exactly once (a record can be a
 /// dependency of more than one unit, e.g. the same file compiled into two targets -- processed
 /// once, not once per referencing unit, to avoid double-counting edges).
-private func rawIndexStoreScan(store: indexstore_t, into client: RawIndexStoreClient) throws {
-    var state = RawUnitScanState(client: Unmanaged.passUnretained(client).toOpaque(), store: store, processedRecords: [], error: nil)
+private func rawIndexStoreScan(store: indexstore_t, into client: RawIndexStoreClient, allowedModuleNames: Set<String>?) throws {
+    var state = RawUnitScanState(
+        client: Unmanaged.passUnretained(client).toOpaque(), store: store, processedRecords: [],
+        allowedModuleNames: allowedModuleNames, error: nil
+    )
     withUnsafeMutablePointer(to: &state) { statePointer in
         _ = indexstore_shim_store_units_apply_f(store, /* sorted */ 1, statePointer, rawIndexStoreUnitApplier)
     }
     if let error = state.error {
         throw error
+    }
+    if let debugPath = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_DEBUG_UNIT_MODULES"] {
+        try? state.debugUnitLog.joined(separator: "\n").write(toFile: debugPath, atomically: true, encoding: .utf8)
     }
 }
 
@@ -285,7 +310,9 @@ private struct RawUnitScanState {
     let client: UnsafeMutableRawPointer
     let store: indexstore_t
     var processedRecords: Set<String>
+    let allowedModuleNames: Set<String>?
     var error: RawIndexStoreError?
+    var debugUnitLog: [String] = []
 }
 
 private func rawIndexStoreUnitApplier(context: UnsafeMutableRawPointer?, unitNameRef: indexstore_string_ref_t) -> Bool {
@@ -298,6 +325,44 @@ private func rawIndexStoreUnitApplier(context: UnsafeMutableRawPointer?, unitNam
         return true
     }
     defer { indexstore_shim_unit_reader_dispose(unit) }
+
+    // `allowedModuleNames == nil` (the default) never filters anything -- unchanged prior behavior.
+    // See `RawIndexStoreClient.allowedModuleNames`'s own doc comment for the real, confirmed gap
+    // this closes: the shared, project-wide index store accumulates units from any build ever run
+    // against this DerivedData, not just the scheme this tool was asked to analyze.
+    //
+    // A *system* unit (`indexstore_unit_reader_is_system_unit`, confirmed exported by the real
+    // `libIndexStore.dylib`) is never filtered, regardless of `allowedModuleNames` -- confirmed the
+    // hard way (a full real-corpus regression on Project Iris, `crossActorBoundaries` 1790->23198)
+    // that a positive allow-list built purely from the app's own real *Swift* `-module-name` values
+    // can never contain a precompiled SDK/Clang-module's own name (`UIKit`, `Foundation`,
+    // `CoreGraphics`, ...), because those are never something the app's own Swift compiler
+    // invocations declare as their `-module-name`. Filtering them out anyway silently destroyed the
+    // `.accessorOf` (property<->synthesized-accessor) relation data for every SDK symbol project-
+    // wide -- that relation's one authoritative `.definition`-role occurrence is recorded only when
+    // *that SDK module's own* unit is indexed, never at an app call site that merely references it
+    // (`RawIndexStoreClient.resolvedOwningPropertyUSR`'s own definition-role preference) -- so
+    // `owningPropertyUSR(forUSR:)` silently went from resolving correctly to always returning `nil`
+    // for e.g. `UIView.setBackgroundColor:`, breaking the external-isolation oracle's ability to
+    // canonicalize the callee to a USR it actually has an answer for. The original motivating gap
+    // (a *first-party* target from an unrelated build/scheme, e.g. `lsboutiqueTests`, polluting the
+    // shared store) is unaffected by this exemption: a first-party target's own unit is never a
+    // system unit, so it's still correctly excluded whenever its module name isn't in this run's own
+    // real module set.
+    if let allowedModuleNames = statePointer.pointee.allowedModuleNames {
+        let isSystemUnit = indexstore_shim_unit_reader_is_system_unit(unit)
+        let moduleName = rawIndexStoreString(indexstore_shim_unit_reader_get_module_name(unit))
+        let allowed = isSystemUnit || allowedModuleNames.contains(moduleName)
+        if ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_DEBUG_UNIT_MODULES"] != nil {
+            let mainFile = rawIndexStoreString(indexstore_shim_unit_reader_get_main_file(unit))
+            statePointer.pointee.debugUnitLog.append("\(allowed ? "ALLOW" : "SKIP") module=\(moduleName) system=\(isSystemUnit) unit=\(unitName) mainFile=\(mainFile)")
+        }
+        guard allowed else {
+            let client = Unmanaged<RawIndexStoreClient>.fromOpaque(statePointer.pointee.client).takeUnretainedValue()
+            client.skippedUnitCount += 1
+            return true
+        }
+    }
 
     var dependencies: [(recordName: String, filepath: String)] = []
     withUnsafeMutablePointer(to: &dependencies) { dependenciesPointer in
