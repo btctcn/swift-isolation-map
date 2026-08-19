@@ -235,8 +235,29 @@ struct SwiftIsolationMap: ParsableCommand {
             throw ExitCode(2)
         }
 
+        // Bootstrap-only private path, computed before anything else: every real `xcodebuild`
+        // invocation this run makes must stay contained to this tool's own private DerivedData,
+        // never Xcode's shared one (docs/task-private-derived-data-hypothesis.md) -- but the real,
+        // *final* composite-keyed path (below) isn't known until `resolveDeterministicSimulator
+        // Destination` itself returns, and that call is itself an `xcodebuild` invocation. `nil`
+        // destination still resolves to a real, private, never-shared location (a fixed "unknown-
+        // destination" path segment), just not the final one -- used for every `xcodebuild` call
+        // this early, including `resolveLanguageMode`'s own (confirmed the hard way as a real,
+        // missed leak: `SwiftVersionDetection.xcodeLanguageMode` is the very *first* `xcodebuild`
+        // call in the whole pipeline, and kept writing into
+        // `~/Library/Developer/Xcode/DerivedData` on a real second corpus even after every other
+        // call site was fixed first).
+        let bootstrapDerivedDataPath: URL? = {
+            switch container {
+            case .xcodeproj, .xcworkspace: return PrivateDerivedData.path(for: container, scheme: scheme, destination: nil)
+            case .swiftPackage: return nil
+            }
+        }()
+
         eprint("Resolving project and Swift version...")
-        let languageMode = try resolveLanguageMode(container: container, fileSystem: fileSystem, processRunning: processRunning)
+        let languageMode = try resolveLanguageMode(
+            container: container, fileSystem: fileSystem, processRunning: processRunning, derivedDataPath: bootstrapDerivedDataPath
+        )
         let compilerVersion = try SwiftVersionDetection.compilerVersion(processRunning: processRunning)
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
         logVerbose("Language mode: \(languageMode); compiler: \(compilerVersion); effective: \(effectiveVersion)")
@@ -254,7 +275,9 @@ struct SwiftIsolationMap: ParsableCommand {
         var privateDerivedDataPath: URL?
         switch container {
         case .xcodeproj, .xcworkspace:
-            let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning)
+            let destination = resolveDeterministicSimulatorDestination(
+                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: bootstrapDerivedDataPath
+            )
             privateDerivedDataPath = PrivateDerivedData.path(for: container, scheme: scheme, destination: destination)
             logVerbose("Using private DerivedData at \(privateDerivedDataPath!.path)")
         case .swiftPackage:
@@ -388,10 +411,11 @@ struct SwiftIsolationMap: ParsableCommand {
         logVerbose("Linked \(linked.declarations.count) declaration(s), \(linked.callGraph.count) call-graph edge(s)")
 
         eprint("Resolving external isolation (compiled dependencies)...")
+        let derivedDataPathForExternalIsolation = privateDerivedDataPath
         let externalResolution = runAsyncBridge {
             await resolveExternalIsolation(
                 linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
-                oracleWorkers: oracleWorkers
+                oracleWorkers: oracleWorkers, derivedDataPath: derivedDataPathForExternalIsolation
             )
         }
         logVerbose(
@@ -455,7 +479,9 @@ struct SwiftIsolationMap: ParsableCommand {
     /// same `swift package describe` call used for that validation (`SPMResolvedScheme.toolsVersion`).
     /// Xcode has no equivalent already-resolved field (scheme validation and the `SWIFT_VERSION`
     /// build setting come from two different real commands), so it's queried separately.
-    private func resolveLanguageMode(container: ProjectContainer, fileSystem: FileSystemQuerying, processRunning: ProcessRunning) throws -> String {
+    private func resolveLanguageMode(
+        container: ProjectContainer, fileSystem: FileSystemQuerying, processRunning: ProcessRunning, derivedDataPath: URL?
+    ) throws -> String {
         switch container {
         case .swiftPackage:
             let resolver = SwiftPMSchemeResolver(processRunning: processRunning)
@@ -476,7 +502,9 @@ struct SwiftIsolationMap: ParsableCommand {
                 reportSchemeMismatch(requested: requested, available: available)
                 throw ExitCode(2)
             }
-            return try SwiftVersionDetection.xcodeLanguageMode(container: container, schemeName: scheme, processRunning: processRunning)
+            return try SwiftVersionDetection.xcodeLanguageMode(
+                container: container, schemeName: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+            )
         }
     }
 
@@ -734,7 +762,9 @@ struct SwiftIsolationMap: ParsableCommand {
             // particular, why code signing must be disabled), and
             // `resolveDeterministicSimulatorDestination`'s for why the destination itself must
             // also be pinned down explicitly.
-            if let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning) {
+            if let destination = resolveDeterministicSimulatorDestination(
+                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+            ) {
                 arguments += ["-destination", destination]
             }
             // EXPERIMENTAL private DerivedData (docs/task-private-derived-data-hypothesis.md) --
@@ -840,7 +870,8 @@ struct SwiftIsolationMap: ParsableCommand {
         compilerArguments: CompilerArgumentsProviding,
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying,
-        oracleWorkers: Int
+        oracleWorkers: Int,
+        derivedDataPath: URL?
     ) async -> ExternalIsolationResolution {
         let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
 
@@ -853,7 +884,8 @@ struct SwiftIsolationMap: ParsableCommand {
             )
         case .xcodeproj, .xcworkspace:
             environmentProvider = LiveXcodeBulkExtractionEnvironmentProvider(
-                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
+                derivedDataPath: derivedDataPath
             )
         }
 

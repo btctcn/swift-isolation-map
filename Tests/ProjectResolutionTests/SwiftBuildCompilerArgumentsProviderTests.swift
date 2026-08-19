@@ -101,6 +101,28 @@ func moduleNamesUnionAcrossResponses() {
     #expect(moduleNames == ["ModuleA", "ModuleB"])
 }
 
+@Test("matchesSimulatorPlatform accepts real iPhoneSimulator SDK args")
+func matchesSimulatorPlatformAcceptsRealIPhoneSimulatorArgs() {
+    let args = ["-target", "arm64-apple-ios18.6-simulator", "-sdk", "/Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.4.sdk"]
+
+    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args))
+}
+
+@Test("matchesSimulatorPlatform rejects a real AppleTVSimulator SDK -- a platform-incompatible target silently returning its own native platform, not an error")
+func matchesSimulatorPlatformRejectsRealAppleTVSimulatorArgs() {
+    // Real shape captured this session: forcing `platform: "iphonesimulator"` on Swiftfin's own
+    // `Swiftfin tvOS` target didn't error -- `generateIndexingFileSettings` silently returned this
+    // target's own real, natively-appropriate tvOS Simulator args instead.
+    let args = ["-target", "x86_64-apple-tvos26.1-simulator", "-sdk", "/Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/AppleTVSimulator.platform/Developer/SDKs/AppleTVSimulator26.4.sdk"]
+
+    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args))
+}
+
+@Test("matchesSimulatorPlatform rejects args with no -sdk flag at all, rather than crashing or defaulting to true")
+func matchesSimulatorPlatformRejectsMissingSDKFlag() {
+    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(["-module-name", "M"]))
+}
+
 @Test("Arena paths are subpaths of the given derivedDataPath, matching the on-disk layout a real -derivedDataPath build produces")
 func arenaInfoDerivesRealOnDiskLayout() {
     let derivedDataPath = URL(fileURLWithPath: "/Users/dev/Library/Caches/swift-isolation-map/DerivedData/MyApp-abcd1234/MyScheme/generic_platform_iOS_Simulator/default")

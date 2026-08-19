@@ -135,7 +135,9 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             if let cachedDestination {
                 destination = cachedDestination
             } else {
-                destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning)
+                destination = resolveDeterministicSimulatorDestination(
+                    container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+                )
                 cachedDestination = destination
             }
             var (parsed, moduleNames) = try runVerboseBuild(extraActions: [], destination: destination)
