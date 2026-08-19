@@ -4,14 +4,26 @@ import PackageDescription
 let package = Package(
     name: "swift-isolation-map",
     platforms: [
-        .macOS(.v13)
+        // Bumped from .v13 for `swift-build`'s own minimum (docs/task-swift-build-prepare-for-
+        // indexing-spike.md) -- required by `SwiftBuildCompilerArgumentsProvider`, the
+        // `--experimental-swift-build-compiler-args` conformer.
+        .macOS(.v15)
     ],
     products: [
         .executable(name: "swift-isolation-map", targets: ["swift-isolation-map"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.2")
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.2"),
+        // Apple's 2024 open-sourcing of `SWBBuildService` (the engine `xcodebuild` itself talks to
+        // -- confirmed via real build logs, `xcodebuild -> SWBBuildService -> clang`). No semver
+        // tags exist upstream (only `swift-DEVELOPMENT-SNAPSHOT-*` toolchain-release tags, which
+        // aren't valid SPM versions) -- pinned to the exact commit this whole feature was
+        // researched, spiked, and validated against end-to-end on a real ~2200-file corpus
+        // (docs/task-swift-build-prepare-for-indexing-spike.md Steps 1-10c), not floated on a
+        // branch. Bump deliberately, not silently: re-validate against the real corpus (that doc's
+        // own Step 10 comparison) before moving this pin forward.
+        .package(url: "https://github.com/swiftlang/swift-build.git", revision: "2e916b2d01fcacc825c50e28b15b7b2483860caf")
     ],
     targets: [
         .executableTarget(
@@ -29,7 +41,10 @@ let package = Package(
         .target(name: "IsolationCore"),
         .target(
             name: "ProjectResolution",
-            dependencies: ["IsolationCore", "SyntaxAnalysis"]
+            dependencies: [
+                "IsolationCore", "SyntaxAnalysis",
+                .product(name: "SwiftBuild", package: "swift-build")
+            ]
         ),
         .target(name: "OutputFormat"),
         .target(
@@ -88,7 +103,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ProjectResolutionTests",
-            dependencies: ["ProjectResolution"]
+            dependencies: [
+                "ProjectResolution",
+                .product(name: "SwiftBuild", package: "swift-build")
+            ]
         ),
         .testTarget(
             name: "SyntaxAnalysisTests",
