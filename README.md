@@ -16,7 +16,7 @@ Latest release: [0.1.0](https://github.com/btctcn/swift-isolation-map/releases/t
 
 ## Requirements
 
-- **macOS 13+.**
+- **macOS 15+.**
 - **A full Xcode install — not just the Command Line Tools.** This tool `dlopen`s two toolchain
   dylibs directly at runtime — `libIndexStore.dylib` (the semantic call graph) and `sourcekitdInProc`
   (the external-isolation oracle) — and, for `.xcodeproj`/`.xcworkspace` projects, also shells out to
