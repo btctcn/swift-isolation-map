@@ -1,0 +1,115 @@
+import Foundation
+import Testing
+import SwiftBuild
+@testable import ProjectResolution
+
+/// Shape confirmed against a real `generateIndexingFileSettings` response captured this session
+/// (docs/task-swift-build-prepare-for-indexing-spike.md Step 3) -- one `[String: SWBPropertyListItem]`
+/// per source file, `swiftASTCommandArguments` a `.plArray` of `.plString`, plus `sourceFilePath`/
+/// `swiftASTModuleName` as bare `.plString`s.
+private func realShapedFileInfo(path: String, args: [String], moduleName: String) -> [String: SWBPropertyListItem] {
+    [
+        "sourceFilePath": .plString(path),
+        "swiftASTCommandArguments": .plArray(args.map { .plString($0) }),
+        "swiftASTModuleName": .plString(moduleName),
+        // Real responses carry several more keys (outputFilePath, LanguageDialect,
+        // swiftASTBuiltProductsDir, toolchains, assetSymbolIndexPath) this parser never reads --
+        // included so the parser's own field selection (not "reads everything present") is what's
+        // under test.
+        "LanguageDialect": .plString("swift"),
+        "outputFilePath": .plString("/DerivedData/Foo.build/\((path as NSString).lastPathComponent).o")
+    ]
+}
+
+@Test("A single target's real-shaped response is parsed into a file -> arguments map, plus its module name")
+func parsesOneTargetsRealShapedResponse() {
+    let info = realShapedFileInfo(
+        path: "/repo/App/AppGroupFetcher.swift",
+        args: ["-module-name", "Ls_net_ru", "-Onone", "-target", "arm64-apple-ios15.6-simulator"],
+        moduleName: "Ls_net_ru"
+    )
+
+    let (map, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([info])
+
+    #expect(map["/repo/App/AppGroupFetcher.swift"] == ["-module-name", "Ls_net_ru", "-Onone", "-target", "arm64-apple-ios15.6-simulator"])
+    #expect(moduleNames == ["Ls_net_ru"])
+}
+
+@Test("Multiple files in one response all get their own entry")
+func parsesMultipleFilesFromOneResponse() {
+    let infos = [
+        realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "M"], moduleName: "M"),
+        realShapedFileInfo(path: "/repo/B.swift", args: ["-module-name", "M"], moduleName: "M")
+    ]
+
+    let (map, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings(infos)
+
+    #expect(Set(map.keys) == ["/repo/A.swift", "/repo/B.swift"])
+    #expect(moduleNames == ["M"])
+}
+
+@Test("An entry missing sourceFilePath is skipped, not crashed on or emitted with an empty key")
+func skipsEntryMissingSourceFilePath() {
+    var info = realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "M"], moduleName: "M")
+    info["sourceFilePath"] = nil
+
+    let (map, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([info])
+
+    #expect(map.isEmpty)
+    #expect(moduleNames.isEmpty)
+}
+
+@Test("An entry missing swiftASTCommandArguments is skipped -- a file with no real args is not a usable answer")
+func skipsEntryMissingCommandArguments() {
+    var info = realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "M"], moduleName: "M")
+    info["swiftASTCommandArguments"] = nil
+
+    let (map, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([info])
+
+    #expect(map.isEmpty)
+    #expect(moduleNames.isEmpty)
+}
+
+@Test("A non-string item inside swiftASTCommandArguments is dropped, not turned into a crash or a garbage string")
+func dropsNonStringArgumentItems() {
+    var info = realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "M"], moduleName: "M")
+    info["swiftASTCommandArguments"] = .plArray([.plString("-module-name"), .plBool(true), .plString("M")])
+
+    let (map, _) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([info])
+
+    #expect(map["/repo/A.swift"] == ["-module-name", "M"])
+}
+
+@Test("A missing swiftASTModuleName is tolerated -- the file's arguments still get recorded")
+func toleratesMissingModuleName() {
+    var info = realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "M"], moduleName: "M")
+    info["swiftASTModuleName"] = nil
+
+    let (map, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([info])
+
+    #expect(map["/repo/A.swift"] == ["-module-name", "M"])
+    #expect(moduleNames.isEmpty)
+}
+
+@Test("Module names union across every target's response, not just the last one parsed")
+func moduleNamesUnionAcrossResponses() {
+    let a = realShapedFileInfo(path: "/repo/A.swift", args: ["-module-name", "ModuleA"], moduleName: "ModuleA")
+    let b = realShapedFileInfo(path: "/repo/B.swift", args: ["-module-name", "ModuleB"], moduleName: "ModuleB")
+
+    let (_, moduleNames) = SwiftBuildCompilerArgumentsProvider.parseIndexingFileSettings([a, b])
+
+    #expect(moduleNames == ["ModuleA", "ModuleB"])
+}
+
+@Test("Arena paths are subpaths of the given derivedDataPath, matching the on-disk layout a real -derivedDataPath build produces")
+func arenaInfoDerivesRealOnDiskLayout() {
+    let derivedDataPath = URL(fileURLWithPath: "/Users/dev/Library/Caches/swift-isolation-map/DerivedData/MyApp-abcd1234/MyScheme/generic_platform_iOS_Simulator/default")
+
+    let arena = SwiftBuildCompilerArgumentsProvider.arenaInfo(derivedDataPath: derivedDataPath)
+
+    #expect(arena.derivedDataPath == derivedDataPath.path)
+    #expect(arena.buildProductsPath == derivedDataPath.path + "/Build/Products")
+    #expect(arena.buildIntermediatesPath == derivedDataPath.path + "/Build/Intermediates.noindex")
+    #expect(arena.indexDataStoreFolderPath == derivedDataPath.path + "/Index.noindex/DataStore")
+    #expect(arena.indexEnableDataStore == true)
+}

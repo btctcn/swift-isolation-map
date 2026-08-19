@@ -1,5 +1,5 @@
 {
-  "originHash" : "7ba15c01a55620489165db38d0e8ef705fe14eea6e90fd68249ea9cad263921f",
+  "originHash" : "b5bcb5922e72792626818a9b452c41233399d91b063b0d3aa4405127ea226351",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -11,12 +11,74 @@
       }
     },
     {
+      "identity" : "swift-build",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-build.git",
+      "state" : {
+        "revision" : "2e916b2d01fcacc825c50e28b15b7b2483860caf"
+      }
+    },
+    {
+      "identity" : "swift-driver",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-driver.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "9c56fe27a7a8af40c4e8967caae1fb4cd932502c"
+      }
+    },
+    {
+      "identity" : "swift-llbuild",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-llbuild.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "3e472c2b8feb5bf3fdfd206a195b5712654a5371"
+      }
+    },
+    {
       "identity" : "swift-syntax",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax.git",
       "state" : {
         "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
         "version" : "603.0.2"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system.git",
+      "state" : {
+        "revision" : "869129b7bf4ecc57b97d0193ad29690ca2134750",
+        "version" : "1.8.1"
+      }
+    },
+    {
+      "identity" : "swift-toolchain-sqlite",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-toolchain-sqlite",
+      "state" : {
+        "revision" : "cc7ea00f730c2234a332cd264c6e5cdbb6c4f971",
+        "version" : "1.0.12"
+      }
+    },
+    {
+      "identity" : "swift-tools-protocols",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-tools-protocols.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "5b3c1b600da965f08f56ece1a714e1821f29ef34"
+      }
+    },
+    {
+      "identity" : "swift-tools-support-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-tools-support-core.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "c574915fe88e942e4c4c93376f022daa2ecf05f9"
       }
     }
   ],

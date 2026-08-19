@@ -144,6 +144,19 @@ struct SwiftIsolationMap: ParsableCommand {
     @Flag(help: "EXPERIMENTAL, may be removed without notice: re-enable index-store module-name/is_system_unit scoping (allowedModuleNames) of the raw index-store scan. Off by default -- this tool's own private, per-(project, scheme, destination) index store never accumulates unrelated targets' units in the first place.")
     var experimentalIndexStoreModuleFilter: Bool = false
 
+    // Off by default: replaces the `xcodebuild -verbose`/clean-rebuild path with a direct call
+    // into `swift-build`'s own open-source `SWBBuildService` API (docs/task-swift-build-prepare-
+    // for-indexing-spike.md) -- proven, on a real ~2200-file corpus, to reproduce the honest
+    // clean-rebuild path's report byte-for-byte at the edge level, ~35% faster, once
+    // `-showBuildSettingsForIndex`'s own real device/simulator bug (the other doc's Step 6a) is
+    // sidestepped by driving the engine directly instead of through `xcodebuild`'s CLI. Off by
+    // default: this project has one real end-to-end validation, not the months of production
+    // mileage `LiveXcodeCompilerArgumentsProvider` already has -- see that doc's Step 10c for the
+    // one still-open risk (Xcode/`swift-build` protocol version skew), tested once successfully,
+    // not exhaustively.
+    @Flag(help: "EXPERIMENTAL, may be removed without notice: resolve compiler arguments via a direct swift-build/SWBBuildService API call instead of xcodebuild -verbose. Off by default -- see docs/task-swift-build-prepare-for-indexing-spike.md.")
+    var experimentalSwiftBuildCompilerArgs: Bool = false
+
     // Off by default deliberately -- unlike `xcodeIndexingBuildSettings`'s other overrides (which
     // remove artificial obstacles this tool's own internal builds never needed, like code signing),
     // `-skipMacroValidation` disables a real Xcode security gate: it lets a project's SPM macro
@@ -499,6 +512,14 @@ struct SwiftIsolationMap: ParsableCommand {
                 packageDirectory: packageURL.deletingLastPathComponent(), processRunning: processRunning
             )
         case .xcodeproj, .xcworkspace:
+            // EXPERIMENTAL (docs/task-swift-build-prepare-for-indexing-spike.md) -- `derivedDataPath`
+            // is unconditionally non-nil for Xcode containers (computed just above this call, see
+            // `privateDerivedDataPath`'s own assignment), so this `if let` only ever falls through to
+            // the honest path in a state this project's own invariants already say can't happen; kept
+            // as a graceful fallback rather than a force-unwrap regardless.
+            if experimentalSwiftBuildCompilerArgs, let derivedDataPath {
+                return SwiftBuildCompilerArgumentsProvider(container: container, scheme: scheme, derivedDataPath: derivedDataPath)
+            }
             return LiveXcodeCompilerArgumentsProvider(
                 container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
                 skipMacroValidation: skipMacroValidation, derivedDataPath: derivedDataPath
