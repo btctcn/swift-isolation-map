@@ -42,7 +42,28 @@ public enum CompilerArgumentsSanitizing {
         "-target-sdk-version": true,
         "-target-sdk-name": true,
         "-index-system-modules": false,
-        "-serialize-diagnostics-path": true
+        "-serialize-diagnostics-path": true,
+        // Bare (not `-Xcc`-prefixed) in `swift-build`'s own `generateIndexingFileSettings`
+        // response under `action = "indexbuild"` (docs/task-swift-build-prepare-for-indexing-
+        // spike.md) -- confirmed empirically against a real regression: switching that provider's
+        // own `action` from `"build"` to `"indexbuild"` (needed to fix a real Swiftfin app-target
+        // failure) broke every single Project Iris cursor-info query with `sourcekitd`'s own
+        // `"error creating ASTInvocation: error: unknown argument: '-fretain-comments-from-system-
+        // headers'"` -- a real Clang-only flag the Swift driver's own argument parser rejects
+        // outright, exactly the same failure shape as this list's other driver-vs-frontend
+        // mismatches, just sourced from a different provider than the ones that motivated this
+        // file originally.
+        "-fretain-comments-from-system-headers": false,
+        // Same `action = "indexbuild"` source as `-fretain-comments-from-system-headers` above --
+        // confirmed empirically against a second real Project Iris regression check after the
+        // first fix: `-working-directory <path>` also produces `sourcekitd`'s own `"unknown
+        // argument: '-working-directory'"` under this provider's args, for a different
+        // target/file than the one used to diagnose the first flag (not visible in a single-file
+        // A/B diff of `build` vs `indexbuild` args, only in the full multi-target real run).
+        // Meaningless for a single `key.compilerargs` query anyway, same as `-incremental` above --
+        // it only affects relative-path resolution across a whole build's own multiple
+        // invocations, and every path in a live query's own argument list is already absolute.
+        "-working-directory": true
     ]
 
     public static func sanitized(_ arguments: [String]) -> [String] {

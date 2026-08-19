@@ -46,7 +46,8 @@ enum SwiftVersionDetection {
     static func xcodeLanguageMode(
         container: ProjectContainer,
         schemeName: String,
-        processRunning: ProcessRunning
+        processRunning: ProcessRunning,
+        derivedDataPath: URL? = nil
     ) throws -> String {
         var arguments = ["-showBuildSettings", "-scheme", schemeName]
         switch container {
@@ -56,6 +57,20 @@ enum SwiftVersionDetection {
             arguments += ["-workspace", url.path]
         case .swiftPackage:
             preconditionFailure("xcodeLanguageMode is only valid for .xcodeproj/.xcworkspace containers")
+        }
+        // Same private-DerivedData containment every other real `xcodebuild` invocation in this
+        // project already has -- this is the *very first* one in the whole pipeline (called before
+        // `privateDerivedDataPath` itself is computed), confirmed the hard way as the actual root
+        // cause of a shared-DerivedData leak that survived fixing every *other* call site first
+        // (`resolveDeterministicSimulatorDestination`'s own 4 call sites,
+        // `LiveXcodeBulkExtractionEnvironmentProvider`) -- real content (`SourcePackages`/`Build`)
+        // kept reappearing under `~/Library/Developer/Xcode/DerivedData` on a real second corpus
+        // (Swiftfin) even after those fixes, traced to this one being missed entirely. The caller
+        // passes the same bootstrap (`destination: nil`) private path
+        // `resolveDeterministicSimulatorDestination`'s own call site uses, for the same reason
+        // (the real, final path's own composite key isn't known yet at this point in the pipeline).
+        if let derivedDataPath {
+            arguments += ["-derivedDataPath", derivedDataPath.path]
         }
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
         guard result.exitCode == 0 else {

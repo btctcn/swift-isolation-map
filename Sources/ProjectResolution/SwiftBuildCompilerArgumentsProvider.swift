@@ -22,6 +22,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
     private let scheme: String
     private let derivedDataPath: URL
     private let locator: SWBBuildServiceLocating
+    private let processRunning: ProcessRunning
 
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
@@ -32,12 +33,14 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         container: ProjectContainer,
         scheme: String,
         derivedDataPath: URL,
-        locator: SWBBuildServiceLocating = LiveSWBBuildServiceLocator()
+        locator: SWBBuildServiceLocating = LiveSWBBuildServiceLocator(),
+        processRunning: ProcessRunning = LiveProcessRunner()
     ) {
         self.container = container
         self.scheme = scheme
         self.derivedDataPath = derivedDataPath
         self.locator = locator
+        self.processRunning = processRunning
     }
 
     public func compilerArguments(forFile path: String) throws -> [String] {
@@ -66,6 +69,17 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             return map
         } catch {
             cachedError = error
+            // Every caller of `compilerArguments(forFile:)`/`realModuleNames()` swallows failures
+            // per-file via `try?` (the same soft-failure contract `LiveXcodeCompilerArgumentsProvider`
+            // callers already rely on) -- confirmed the hard way (a real Swiftfin run, scheme/target
+            // name mismatch, see the guard removed above) that a total provider failure was
+            // otherwise completely silent: every file simply came back `argumentsNotFound`, with
+            // zero indication *why*, degrading straight to `Target platform: unknown` and 0 live-
+            // fallback resolutions with no diagnostic anywhere. Surfaced once here, unconditionally
+            // (not gated behind `--verbose`), mirroring `LiveXcodeCompilerArgumentsProvider`'s own
+            // "too few compiler invocations" precedent for the same reason: a plain hang/degraded-
+            // silently moment is exactly what erodes trust once results come back thin.
+            writeStderr("SwiftBuild direct: compiler-argument resolution failed entirely: \(error)")
             throw error
         }
     }
@@ -94,6 +108,50 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         return try box.value!.get()
     }
 
+    /// `session.loadWorkspace(containerPath:)` cannot be used for a real, on-disk `.xcodeproj`/
+    /// `.xcworkspace` -- confirmed by reading `swift-build`'s own server-side handler
+    /// (`SetSessionWorkspaceContainerPathRequest`'s `PIFProvidingRequest` conformance, `Sources/
+    /// SWBBuildService/Messages.swift`): for that container type (as opposed to a `.json`/`.pif`
+    /// file), it internally shells out to `xcrun xcodebuild -dumpPIF <tmp> -project/-workspace
+    /// <path>` with **no `-derivedDataPath` at all**, hardcoded, with no client-facing parameter to
+    /// override it -- confirmed the hard way as the real cause of a persistent
+    /// `~/Library/Developer/Xcode/DerivedData` leak (real `SourcePackages`/`Build`/`Logs` content)
+    /// that survived fixing every one of *this* project's own 6 `xcodebuild` call sites first, on a
+    /// real second, SPM-heavy corpus (Swiftfin) -- the leak is `SWBBuildService`'s own internal
+    /// behavior for this one API path, not anything reachable from this provider's own arguments.
+    ///
+    /// Real workaround, not a guess: run the *exact same* `-dumpPIF` invocation ourselves, with our
+    /// own explicit `-scheme`/`-derivedDataPath` (confirmed empirically that `-dumpPIF` requires
+    /// `-scheme` whenever `-derivedDataPath` is given -- `xcodebuild` itself rejects the combination
+    /// otherwise), then hand the resulting PIF JSON to `session.sendPIF(_:)` directly -- a real,
+    /// public, documented alternative to `loadWorkspace(containerPath:)` for exactly this case.
+    /// Confirmed directly: packages resolve into *this* private path afterward, zero new shared-
+    /// DerivedData content.
+    private func loadWorkspace(session: SWBBuildServiceSession, containerPath: String, containerArgument: String) async throws {
+        let pifPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swift-isolation-map-pif-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: pifPath) }
+
+        let result = try processRunning.run(
+            executable: "xcodebuild",
+            arguments: [
+                "-dumpPIF", pifPath.path, containerArgument, containerPath,
+                "-scheme", scheme, "-derivedDataPath", derivedDataPath.path
+            ],
+            workingDirectory: nil
+        )
+        guard result.exitCode == 0 else {
+            throw CompilerArgumentsError.buildLogParseFailed(
+                reason: "xcodebuild -dumpPIF exited \(result.exitCode): \(result.standardError)"
+            )
+        }
+
+        let pifData = try Data(contentsOf: pifPath)
+        let jsonObject = try JSONSerialization.jsonObject(with: pifData)
+        let pifItem = try SWBPropertyListItem(unsafePropertyList: jsonObject)
+        try await session.sendPIF(pifItem)
+    }
+
     private func runAsync() async throws -> [String: [String]] {
         let bundleURL = try locator.serviceBundleURL()
         let service = try await SWBBuildService(serviceBundleURL: bundleURL)
@@ -103,24 +161,44 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         let session = try sessionResult.get()
 
         let containerPath: String
+        let containerArgument: String
         switch container {
-        case .xcodeproj(let url): containerPath = url.path
-        case .xcworkspace(let url): containerPath = url.path
+        case .xcodeproj(let url):
+            containerPath = url.path
+            containerArgument = "-project"
+        case .xcworkspace(let url):
+            containerPath = url.path
+            containerArgument = "-workspace"
         case .swiftPackage:
             preconditionFailure("SwiftBuildCompilerArgumentsProvider is only valid for .xcodeproj/.xcworkspace containers")
         }
-        try await session.loadWorkspace(containerPath: containerPath)
+        try await loadWorkspace(session: session, containerPath: containerPath, containerArgument: containerArgument)
 
         let workspaceInfo = try await session.workspaceInfo()
-        guard workspaceInfo.targetInfos.contains(where: { $0.targetName.lowercased() == scheme.lowercased() }) else {
-            throw CompilerArgumentsError.buildLogParseFailed(
-                reason: "no target named '\(scheme)' (case-insensitive) in workspace; available: \(workspaceInfo.targetInfos.map(\.targetName))"
-            )
-        }
+        // Deliberately no "does some target's name match the scheme name" guard here -- confirmed
+        // wrong the hard way (a real second-corpus run, Swiftfin: scheme `Swiftfin` builds targets
+        // named `Swiftfin iOS`/`Swiftfin tvOS`, neither an exact case-insensitive match). A scheme's
+        // own name routinely differs from every target name it builds (platform-suffixed variants,
+        // umbrella schemes, renamed targets) -- there is no reliable string relationship to check.
+        // Harmless to skip: every target in the workspace gets queried below regardless of `scheme`,
+        // so this check never gated which targets were actually resolved, only whether the whole
+        // provider aborted before trying -- pure false-negative risk, no real safety value.
 
         let sdkVersion = try Self.simulatorSDKVersion()
         var params = SWBBuildParameters()
-        params.action = "build"
+        // `"indexbuild"`, not `"build"` -- confirmed the hard way against a real second corpus
+        // (Swiftfin): with `action = "build"`, `generateIndexingFileSettings` failed outright for
+        // both of that project's own real app targets (`Swiftfin iOS`/`Swiftfin tvOS`) with
+        // `unable to get target build graph` -- `TargetBuildGraph` construction itself errored,
+        // silently (`SWBBuildService`'s own error response carries no diagnostic detail for this
+        // path), while every other, smaller dependency target happened to succeed regardless.
+        // `"indexbuild"` is the dedicated action name for exactly this API (confirmed in
+        // `swift-build`'s own test suite, `ArenaIndexingInfoTests.swift`'s real fixture setup) --
+        // switching to it made both real app targets resolve correctly (707/1182 real files each,
+        // `SwiftfinApp.swift` present and correctly per-platform-pathed in both). Project Iris never
+        // surfaced this because its own single real app target happened to succeed under `"build"`
+        // regardless -- a second, structurally different real corpus is what caught it.
+        params.action = "indexbuild"
         params.configurationName = "Debug"
         params.activeRunDestination = SWBRunDestinationInfo(
             platform: "iphonesimulator",
@@ -131,6 +209,16 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             disableOnlyActiveArch: false
         )
         params.arenaInfo = Self.arenaInfo(derivedDataPath: derivedDataPath)
+        // Same code-signing bypass `xcodeIndexingBuildSettings` already applies to every real
+        // `xcodebuild` invocation this tool makes -- kept here too, defensively, even though
+        // `"indexbuild"` alone was sufficient to fix the real Swiftfin failure: a real signed app
+        // target with entitlements/capabilities this project's own Project Iris/Swiftfin corpora
+        // don't happen to exercise could plausibly still need it.
+        var overrides = SWBSettingsTable()
+        overrides.set(value: "YES", for: "COMPILER_INDEX_STORE_ENABLE")
+        overrides.set(value: "NO", for: "CODE_SIGNING_ALLOWED")
+        overrides.set(value: "NO", for: "CODE_SIGNING_REQUIRED")
+        params.overrides.commandLine = overrides
 
         let delegate = SwiftBuildIndexingDelegate()
         var map: [String: [String]] = [:]
@@ -160,7 +248,20 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             }
             succeededTargetCount += 1
             let (targetMap, targetModuleNames) = Self.parseIndexingFileSettings(settings.sourceFileBuildInfos)
-            for (path, args) in targetMap where map[path] == nil {
+            // `generateIndexingFileSettings` doesn't actually honor `activeRunDestination` for a
+            // target whose own `SUPPORTED_PLATFORMS` doesn't include it -- confirmed the hard way
+            // against a real second corpus (Swiftfin, which has both an iOS and a tvOS app target):
+            // forcing `platform: "iphonesimulator"` on the tvOS target didn't error, it silently
+            // returned that target's own real, natively-appropriate `AppleTVSimulator` args instead
+            // (`-target x86_64-apple-tvos26.1-simulator`, `-sdk .../AppleTVSimulator26.4.sdk`) --
+            // correct for *that* target in isolation, but useless here, since this provider's own
+            // private DerivedData only ever has a `Debug-iphonesimulator` build (this tool's own
+            // single-platform design, matching `resolveDeterministicSimulatorDestination`), so
+            // those args reference `GeneratedModuleMaps-appletvsimulator`/`Debug-appletvsimulator`
+            // paths that were never built here at all. Filtering by the args' own real `-sdk` value
+            // (not by target/product-type metadata, which would need its own separate query) keeps
+            // exactly the files this DerivedData can actually answer for.
+            for (path, args) in targetMap where map[path] == nil && Self.matchesSimulatorPlatform(args) {
                 map[path] = args
             }
             moduleNames.formUnion(targetModuleNames)
@@ -173,6 +274,17 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         )
         cachedModuleNames = moduleNames
         return map
+    }
+
+    /// Pure: true when `args`' own real `-sdk` value is an iOS Simulator SDK -- see the real call
+    /// site's own comment for why this check exists (a platform-incompatible target silently
+    /// returns its own native platform's args instead of erroring). Checks the args' own `-sdk`
+    /// value, not target/product-type metadata, so it stays correct regardless of *why* a
+    /// particular target's response didn't match (a tvOS/macOS/watchOS app target today, some other
+    /// platform-specific target shape tomorrow) without needing to enumerate every case.
+    static func matchesSimulatorPlatform(_ args: [String]) -> Bool {
+        guard let sdkIndex = args.firstIndex(of: "-sdk"), sdkIndex + 1 < args.count else { return false }
+        return args[sdkIndex + 1].lowercased().contains("iphonesimulator")
     }
 
     /// Pure: extracts `[file: arguments]` and every real `-module-name` seen from one target's raw

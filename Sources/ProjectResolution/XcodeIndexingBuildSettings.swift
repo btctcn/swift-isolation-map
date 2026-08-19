@@ -42,14 +42,30 @@ public let xcodeIndexingBuildSettings = [
 /// capable platform at all (a pure macOS/host scheme) -- there, `xcodebuild`'s default destination
 /// is already the unambiguous host Mac, and forcing a `-destination` would only add a new way to
 /// fail against a project this function has no evidence is broken for.
+/// `derivedDataPath` -- confirmed necessary, not just tidy: even a read-only-seeming
+/// `-showdestinations` query resolves the real package graph (real `xcodebuild`, real Xcode
+/// project), and for a project with SPM macro/build-tool plugins that means actually *compiling*
+/// those plugin binaries -- confirmed directly against two independent real projects
+/// (`WordPress-iOS`, `Swiftfin`) that both left a real, populated
+/// `~/Library/Developer/Xcode/DerivedData/<Project>-<hash>` folder behind from this call alone,
+/// every single run, even after every *other* real `xcodebuild` invocation in this project had
+/// already been routed through its own private path. `nil` is accepted (not a required parameter)
+/// for the one real caller that cannot know its own private path yet -- the private path's own
+/// composite key includes this function's own return value, so the very first bootstrap call has
+/// nothing to pass; that caller uses `PrivateDerivedData.path(destination: nil)` instead (a real,
+/// private, still-never-shared location, just keyed on a fixed placeholder segment rather than the
+/// real destination) -- see `SwiftIsolationMap.swift`'s own call site for why.
 public func resolveDeterministicSimulatorDestination(
-    container: ProjectContainer, scheme: String, processRunning: ProcessRunning
+    container: ProjectContainer, scheme: String, processRunning: ProcessRunning, derivedDataPath: URL? = nil
 ) -> String? {
     var arguments = ["-showdestinations", "-scheme", scheme]
     switch container {
     case .xcodeproj(let url): arguments += ["-project", url.path]
     case .xcworkspace(let url): arguments += ["-workspace", url.path]
     case .swiftPackage: return nil
+    }
+    if let derivedDataPath {
+        arguments += ["-derivedDataPath", derivedDataPath.path]
     }
     guard let result = try? processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil) else {
         return nil

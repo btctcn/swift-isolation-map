@@ -42,6 +42,16 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
     private let scheme: String
     private let processRunning: ProcessRunning
     private let fileSystem: FileSystemQuerying
+    /// Threaded through, never recomputed -- the same private-DerivedData invariant every other
+    /// real `xcodebuild` invocation in this project already honors (`PrivateDerivedDataLocator`'s
+    /// own computation, shared with `LiveXcodeCompilerArgumentsProvider`/`SwiftIsolationMap.build`).
+    /// Confirmed missing here the hard way: without it, this provider's own `-showBuildSettings`
+    /// call silently used Xcode's *shared* DerivedData location instead
+    /// (`~/Library/Developer/Xcode/DerivedData/<Project>-<hash>`), recreating that shared folder on
+    /// every single analysis run against an Xcode project -- exactly the cross-run/cross-tool
+    /// pollution risk `docs/task-private-derived-data-hypothesis.md` exists to rule out everywhere
+    /// else, missed for this one provider.
+    private let derivedDataPath: URL?
     private let lock = NSLock()
     private var cached: BulkExtractionEnvironment?
 
@@ -49,12 +59,14 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
         container: ProjectContainer,
         scheme: String,
         processRunning: ProcessRunning = LiveProcessRunner(),
-        fileSystem: FileSystemQuerying = LiveFileSystem()
+        fileSystem: FileSystemQuerying = LiveFileSystem(),
+        derivedDataPath: URL? = nil
     ) {
         self.container = container
         self.scheme = scheme
         self.processRunning = processRunning
         self.fileSystem = fileSystem
+        self.derivedDataPath = derivedDataPath
     }
 
     public func environment() throws -> BulkExtractionEnvironment {
@@ -82,8 +94,13 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
         // disabling bulk pre-resolution for every discovered third-party module (confirmed via
         // direct `symbolgraph-extract` reproduction: `Couldn't load module 'X'` for every one of
         // them). See docs/task-bulk-extraction-wrong-platform.md §2.
-        if let destination = resolveDeterministicSimulatorDestination(container: container, scheme: scheme, processRunning: processRunning) {
+        if let destination = resolveDeterministicSimulatorDestination(
+            container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+        ) {
             arguments += ["-destination", destination]
+        }
+        if let derivedDataPath {
+            arguments += ["-derivedDataPath", derivedDataPath.path]
         }
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
