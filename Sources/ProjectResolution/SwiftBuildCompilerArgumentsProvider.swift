@@ -228,6 +228,15 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         var candidatesByPath: [String: [(targetName: String, args: [String])]] = [:]
         var moduleNames: Set<String> = []
         var succeededTargetCount = 0
+        // (targetName, error description) for every target `generateIndexingFileSettings` itself
+        // rejected -- docs/task-swift-build-prepare-for-indexing-spike.md Step 13: most of these
+        // are real and expected (see the `catch` block's own comment), but a *specific* target's
+        // failure is exactly the signal needed to confirm or rule out that step's own open
+        // hypothesis (a shared file's "home" target failing this query on a given run, silently
+        // handing `preferredArguments` a single wrong-target fallback candidate instead of the
+        // expected match). Collected, not logged per-target inline, so the summary line below stays
+        // one line regardless of how many of the workspace's targets this hits.
+        var failedTargets: [(name: String, reason: String)] = []
         for targetInfo in workspaceInfo.targetInfos {
             var request = SWBBuildRequest()
             request.parameters = params
@@ -248,6 +257,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
                 // target: docs/task-swift-build-prepare-for-indexing-spike.md Step 10's 303-target
                 // real-corpus run hit this for a meaningful fraction of targets and still reproduced
                 // the honest build exactly.
+                failedTargets.append((targetInfo.targetName, String(describing: error)))
                 continue
             }
             succeededTargetCount += 1
@@ -282,6 +292,13 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             "SwiftBuild direct: resolved compiler arguments for \(map.count) file(s) across "
                 + "\(succeededTargetCount)/\(workspaceInfo.targetInfos.count) target(s)"
         )
+        if !failedTargets.isEmpty {
+            writeStderr(
+                "SwiftBuild direct: \(failedTargets.count) target(s) failed generateIndexingFileSettings "
+                    + "(skipped, likely not buildable under this destination): "
+                    + failedTargets.map(\.name).sorted().joined(separator: ", ")
+            )
+        }
         cachedModuleNames = moduleNames
         return map
     }

@@ -400,8 +400,8 @@ disqualifies it the way the platform-selection bug disqualified the CLI-based me
 Remaining before this could become a real, shippable feature (not further spiking): a documented
 decision on the `swift-build` dependency (weight, pinning strategy, whether to vendor or depend on
 a tagged release instead of a local clone), a real (non-spike) `CompilerArgumentsProviding`
-conformer with tests, and the standard Гипотеза(done)->Спайк(done)->Документация(done)->Код->Тесты->
-Результаты->PR cycle for turning it into a shipped, flag-gated feature.
+conformer with tests, and the standard Hypothesis(done)->Spike(done)->Documentation(done)->Code->Tests->
+Results->PR cycle for turning it into a shipped, flag-gated feature.
 
 **Forward-looking caveat, not a blocker on this spike's own conclusion**: Step 10b traced *why* the
 oracle resolved/unknown gap exists (two independent phenomena, not causally linked) and confirmed
@@ -420,10 +420,14 @@ same convention as `--experimental-index-store-module-filter`):
 - **`Sources/ProjectResolution/SWBBuildServiceLocating.swift`** -- `SWBBuildServiceLocating`
   protocol + `LiveSWBBuildServiceLocator`, mirroring `ToolchainLocating.swift`'s exact shape
   (`xcode-select -p`-relative, injected `ProcessRunning`/`FileSystemQuerying`, no hardcoded Xcode
-  path). 5 unit tests (`SWBBuildServiceLocatingTests.swift`), including the real bug this caught
-  during implementation: `fileExists(at:)` deliberately excludes directories in this project's own
-  `FileSystemQuerying`, and `.bundle` *is* a directory -- the first draft used the wrong check and
-  would have failed on every real Xcode install; caught by a test before it ever ran for real.
+  path). 5 unit tests (`SWBBuildServiceLocatingTests.swift`), including a real bug this caught
+  during *this step's own* implementation, in code that's new here, not a regression of anything
+  Step 6 already validated (that step proved the *path-discovery* mechanism itself, `xcode-select
+  -p`-relative with no hardcoded path -- a different concern from this one): the first draft of
+  this new locator's own existence check used `fileExists(at:)`, which deliberately excludes
+  directories in this project's own `FileSystemQuerying`, and `.bundle` *is* a directory -- that
+  draft would have failed on every real Xcode install; caught by a test before it ever ran for
+  real, never shipped or observed against a live system.
 - **`Sources/ProjectResolution/SwiftBuildCompilerArgumentsProvider.swift`** -- the real
   `CompilerArgumentsProviding` conformer, with its parsing (`parseIndexingFileSettings`, raw
   `[[String: SWBPropertyListItem]]` -> `[file: args]` + module names) and arena-path construction
@@ -449,4 +453,105 @@ same convention as `--experimental-index-store-module-filter`):
   seven -- both are within the same already-understood, already-benign nondeterminism, not a new
   finding).
 
-Ready for PR.
+Ready for PR. (This closed out PR #103/#104's own shipped feature; Step 13 below is a separate,
+still-open follow-up investigation, not a reopening of this conclusion.)
+
+## Step 13 -- WordPress-iOS's residual ~12% divergence (post-#106), traced further but not yet closed
+
+Referenced from PR #106's own commit message as "UPDATE 8" before this section existed -- #106
+fixed `preferredArguments`'s target-selection heuristic for a file compiled by more than one
+target (a real WordPress-iOS shape: `WordPressShareExtension`/`WordPressDraftActionExtension`/
+`JetpackShareExtension`/`JetpackDraftActionExtension` all share one
+`PBXFileSystemSynchronizedRootGroup`), but its own commit message already flagged that the fix
+alone didn't close the edge-level gap. Continued here, against the real WordPress-iOS corpus (497
+targets, 5553 files), rather than left as an open note.
+
+**Environment note, not a project finding**: every long-running invocation in this session's own
+real corpus runs was externally `SIGKILL`ed by `launchd` mid-run ("teardown of process-scoped
+services after host exited"), repeatedly, at intervals as short as ~5 minutes -- confirmed via
+`log show`, affecting unrelated processes (Safari, mDNSResponder helpers) too, so a host/session-
+level condition outside this project's own control, not a tool bug. `caffeinate` did not prevent
+it (rules out plain idle sleep). Real full-corpus runs only completed on retry.
+
+**Reproducibility baseline established first**: two independent honest (`xcodebuild -verbose`)
+runs against the identical, unchanged private index store are **byte-for-byte identical, 0
+missing/extra/changed edges** across the entire 6617-edge report -- `DeclarationLinker`'s own
+bulk-linking tie-break (`disambiguate`) is confirmed fully deterministic for this corpus, not a
+source of run-to-run noise. This matters because it rules out "just nondeterminism" as the
+explanation for anything found below.
+
+**The honest run's own new finding**: even a from-scratch honest run on this corpus prints "55%
+of cross-isolation edges have unresolved isolation" -- traced to `LiveXcodeCompilerArgumentsProvider`'s
+own `-verbose` clean-build failing to capture compiler invocations for a large fraction of this
+497-target corpus's own targets (plausibly many CocoaPods targets not cleanly buildable under a
+forced iphonesimulator destination + disabled code signing), independent of this feature's own
+flag entirely -- an orthogonal, pre-existing honest-path limitation on a corpus this large, not
+something this investigation set out to fix.
+
+**Edge-level diff (honest vs. flagged, both against the identical index store)**: 834 total
+differing edges (344 honest-only, 425 flagged-only, 65 changed) -- **100% confined to exactly 21
+files**, all under the four shared-target directories above. Confirms the divergence is real,
+narrow, and exactly where #106's own commit said it would be.
+
+**#106's own fix confirmed correct, directly, not by inference**: a live, isolated probe --
+constructing a real `SwiftBuildCompilerArgumentsProvider` against this same corpus and calling
+`compilerArguments(forFile:)` directly for six of the 21 diverging files -- returned
+`WordPressShareExtension` every time (6/6), including three files whose edges diverged in the
+full-pipeline run. Calling `LocalDeclarationLiveFallback.resolveOne` directly with this provider,
+at the exact (file, line, column) of one diverging declaration
+(`ShareCategoriesPickerViewController.indentationLevelForCategory`), reproduced the **honest run's
+own USR byte-for-byte**
+(`s:23WordPressShareExtension0C30CategoriesPickerViewControllerC27indentationLevelForCategory...`)
+-- not the `WordPressDraftActionExtension`-qualified USR the full `flagged4.json` run actually
+produced for that identical declaration. Repeated 3 more times independently: no flakiness, same
+correct answer every time.
+
+**Where this leaves it, honestly**: the target-selection *logic* (#106) is directly verified
+correct, in isolation, every time it was tested. Yet the real, full-pipeline
+`--experimental-swift-build-compiler-args --oracle-workers 8` run against the real corpus produced
+a *different, wrong* answer for the same declaration. Two candidate explanations for what the
+isolated probe couldn't exercise were formed and **both directly tested and falsified**, not left
+as unconfirmed theories:
+
+1. **Query-flakiness hypothesis, falsified.** Added per-target failure logging to
+   `SwiftBuildCompilerArgumentsProvider.runAsync`'s previously-silent `catch`/`continue` branch
+   (now reports `writeStderr` with every failed target's own name once, alongside the existing
+   summary line) and re-ran the full pipeline under real load. Result: **497/497 targets
+   succeeded** -- zero failures, `WordPressShareExtension` included -- yet the edge-level diff
+   reproduced **exactly** the same 344/425/65 split and the same 351/29
+   `WordPressDraftActionExtension`/`WordPressShareExtension` `callerUSR` module skew as the first
+   run. Deterministic and load-independent, not flaky. This hypothesis is closed, ruled out.
+2. **Worker-subprocess-dispatch hypothesis, falsified.** Called
+   `LocalDeclarationLiveFallback.resolveInParallel` directly with `workerCount: 8` and a real
+   `workerExecutablePath` (the actual built binary, so this exercises genuine
+   `swift-isolation-map --local-declaration-worker-input ...` subprocess respawns, not a
+   simulation) against the same diverging declaration (`ShareCategoriesPickerViewController
+   .indentationLevelForCategory`, padded to 10 total items so the parallel path's own
+   `count >= workerCount` guard actually fires instead of falling back to the sequential path).
+   Both `resolveSequentially` and `resolveInParallel` returned the identical, **correct**
+   `WordPressShareExtension`-qualified USR. The worker-subprocess mechanism itself -- JSON
+   serialization of `compilerArgsByFile`, the real subprocess respawn, `StaticCompilerArgumentsProviding`
+   reconstructing the cache on the other side -- is confirmed correct at this scale.
+
+Both of the concrete, testable explanations for "isolated probe correct, full run wrong" have now
+been eliminated with direct evidence, not just reasoned around. What remains is either something
+that only manifests at the **real 36002-item, ~4500-items-per-worker scale** (unlike the 10-item
+probe above) -- e.g. `sourcekitd`'s own internal AST-cache behavior under sustained load within one
+worker's long sequential loop over many files -- or a mechanism this investigation hasn't
+identified yet outside `LocalDeclarationLiveFallback` entirely (e.g. `MultiTargetDeclarationAliasing`
+-style USR aliasing rewriting an already-correct answer post hoc). Neither is confirmed; both are
+speculation at this point, flagged as such rather than presented as findings.
+
+**Status**: real, narrow, well-localized (21 files, 834 edges out of 6617), fully deterministic
+across repeated full runs (not flaky). Root cause of the *selection logic* (#106) is closed
+(correct). Root cause of *why the full pipeline doesn't reliably reach that correct answer* is
+still open after ruling out the two most concrete candidate mechanisms with direct evidence --
+next step, if picked back up, needs either a scale-faithful repro (thousands of items through one
+worker, not ten) or instrumentation inside `sourcekitd`'s own request path, since black-box
+probing at small scale has now been exhausted without reproducing the bug.
+
+This write-up itself is complete as an investigation record -- not a claim that the underlying
+root cause is closed. Nothing in this step's own code changes (the diagnostic logging added to
+`SwiftBuildCompilerArgumentsProvider.runAsync`) needs to block on the open question above; that
+logging is a real, defensive improvement (a previously-silent failure mode is now visible) that
+stands on its own merits regardless of how the root cause investigation concludes.
