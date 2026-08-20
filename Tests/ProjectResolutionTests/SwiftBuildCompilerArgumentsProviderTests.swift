@@ -123,6 +123,45 @@ func matchesSimulatorPlatformRejectsMissingSDKFlag() {
     #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(["-module-name", "M"]))
 }
 
+@Test("preferredArguments picks the single candidate whose target name is a path component of the file -- the real WordPress-iOS shape (WordPressShareExtension vs WordPressDraftActionExtension)")
+func preferredArgumentsPicksTheFilesOwnHomeTarget() {
+    let filePath = "/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/Extensions/WPStyleGuide+Share.swift"
+    let candidates = [
+        (targetName: "WordPressDraftActionExtension", args: ["-module-name", "WordPressDraftActionExtension"]),
+        (targetName: "WordPressShareExtension", args: ["-module-name", "WordPressShareExtension"])
+    ]
+
+    let chosen = SwiftBuildCompilerArgumentsProvider.preferredArguments(candidates: candidates, filePath: filePath)
+
+    #expect(chosen == ["-module-name", "WordPressShareExtension"])
+}
+
+@Test("preferredArguments falls back to the first candidate when no target name matches the file's own path -- the overwhelmingly common one-file-one-target case")
+func preferredArgumentsFallsBackToFirstWhenNoNameMatches() {
+    let filePath = "/Users/dev/App/Sources/Feature.swift"
+    let candidates = [
+        (targetName: "App", args: ["-module-name", "App"]),
+        (targetName: "AppTests", args: ["-module-name", "AppTests"])
+    ]
+
+    let chosen = SwiftBuildCompilerArgumentsProvider.preferredArguments(candidates: candidates, filePath: filePath)
+
+    #expect(chosen == ["-module-name", "App"])
+}
+
+@Test("preferredArguments falls back to the first candidate when more than one target name matches -- an ambiguous case with no principled tiebreak, kept deterministic rather than guessed at")
+func preferredArgumentsFallsBackToFirstWhenMultipleNamesMatch() {
+    let filePath = "/Users/dev/Workspace/Shared/Shared/Utility.swift"
+    let candidates = [
+        (targetName: "Shared", args: ["-module-name", "SharedFirst"]),
+        (targetName: "Shared", args: ["-module-name", "SharedSecond"])
+    ]
+
+    let chosen = SwiftBuildCompilerArgumentsProvider.preferredArguments(candidates: candidates, filePath: filePath)
+
+    #expect(chosen == ["-module-name", "SharedFirst"])
+}
+
 @Test("Arena paths are subpaths of the given derivedDataPath, matching the on-disk layout a real -derivedDataPath build produces")
 func arenaInfoDerivesRealOnDiskLayout() {
     let derivedDataPath = URL(fileURLWithPath: "/Users/dev/Library/Caches/swift-isolation-map/DerivedData/MyApp-abcd1234/MyScheme/generic_platform_iOS_Simulator/default")

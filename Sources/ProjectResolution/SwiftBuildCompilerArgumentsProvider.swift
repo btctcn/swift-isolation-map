@@ -221,7 +221,11 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         params.overrides.commandLine = overrides
 
         let delegate = SwiftBuildIndexingDelegate()
-        var map: [String: [String]] = [:]
+        // Every target's response for a given file is kept (not just the first one seen) --
+        // `preferredArguments` below needs every candidate to pick the file's real home target
+        // when more than one target compiles the same file, a real WordPress-iOS shape (see that
+        // function's own doc comment).
+        var candidatesByPath: [String: [(targetName: String, args: [String])]] = [:]
         var moduleNames: Set<String> = []
         var succeededTargetCount = 0
         for targetInfo in workspaceInfo.targetInfos {
@@ -261,12 +265,18 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             // paths that were never built here at all. Filtering by the args' own real `-sdk` value
             // (not by target/product-type metadata, which would need its own separate query) keeps
             // exactly the files this DerivedData can actually answer for.
-            for (path, args) in targetMap where map[path] == nil && Self.matchesSimulatorPlatform(args) {
-                map[path] = args
+            for (path, args) in targetMap where Self.matchesSimulatorPlatform(args) {
+                candidatesByPath[path, default: []].append((targetInfo.targetName, args))
             }
             moduleNames.formUnion(targetModuleNames)
         }
         try await session.close()
+
+        var map: [String: [String]] = [:]
+        map.reserveCapacity(candidatesByPath.count)
+        for (path, candidates) in candidatesByPath {
+            map[path] = Self.preferredArguments(candidates: candidates, filePath: path)
+        }
 
         writeStderr(
             "SwiftBuild direct: resolved compiler arguments for \(map.count) file(s) across "
@@ -285,6 +295,34 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
     static func matchesSimulatorPlatform(_ args: [String]) -> Bool {
         guard let sdkIndex = args.firstIndex(of: "-sdk"), sdkIndex + 1 < args.count else { return false }
         return args[sdkIndex + 1].lowercased().contains("iphonesimulator")
+    }
+
+    /// Pure: picks which target's arguments answer for a file that more than one target compiles --
+    /// a real WordPress-iOS shape (docs/task-swift-build-prepare-for-indexing-spike.md UPDATE 7):
+    /// `WordPressShareExtension` and `WordPressDraftActionExtension` both compile 14 files that
+    /// live under `.../WordPress/WordPressShareExtension/Sources/...` (the second extension reuses
+    /// the first's sources via target membership, not its own copy). Before this fix, whichever
+    /// target's response the merge loop saw first (an arbitrary `workspaceInfo.targetInfos`
+    /// enumeration order, not stable across runs or meaningful) silently won -- confirmed the hard
+    /// way against a real full-corpus diff against the honest `-verbose`-log baseline: 100% of a
+    /// real 834-edge divergence traced to exactly these 14 files getting `WordPressDraftAction
+    /// Extension`'s args (which left the file's own type isolation `unspecified`/`isUnknown`)
+    /// instead of `WordPressShareExtension`'s (which resolved it correctly). The file's own real
+    /// home target is the one whose name is a path component of the file itself -- `-sdk`/`-target`
+    /// carry no such signal, but the file's own on-disk location under a target-named directory
+    /// does, and Xcode's own convention (a target's default source directory shares its name) makes
+    /// this reliable without needing project-model membership data this API doesn't expose per file.
+    /// Falls back to whichever candidate came first (this provider's existing, already-validated
+    /// behavior for every corpus but this one) when no candidate's name matches, or more than one
+    /// does -- both real, harmless cases: a file living outside any target-named directory, or two
+    /// same-named targets in different subprojects.
+    static func preferredArguments(candidates: [(targetName: String, args: [String])], filePath: String) -> [String] {
+        let pathComponents = Set(filePath.split(separator: "/").map(String.init))
+        let matches = candidates.filter { pathComponents.contains($0.targetName) }
+        if matches.count == 1 {
+            return matches[0].args
+        }
+        return candidates[0].args
     }
 
     /// Pure: extracts `[file: arguments]` and every real `-module-name` seen from one target's raw
