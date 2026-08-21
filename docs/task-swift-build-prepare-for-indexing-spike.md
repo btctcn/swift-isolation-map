@@ -1191,3 +1191,53 @@ from being buried under yet another expensive, not-yet-executed run.
 
 **Full test suite**: 537 tests, all passing (Package.swift/`Sources/diagnostic-probe` fully reverted
 before running).
+
+## Step 23 -- A third theory tested with a fresh, full instrumented honest/flagged pair: disambiguate's
+## winner for the callee declarations themselves is also identical between runs; the mechanism is
+## narrower than any of Steps 19-22's three disproven candidates
+
+`DeclarationLinker.buildUSRRewriteMap` was temporarily instrumented (same pattern as Step 19, reverted
+via `git checkout --` after use) to log every declaration's disambiguation candidates/winner for the
+three files this specific edge touches: `ShareExtensionEditorViewController.swift` (the caller),
+`ShareExtensionAbstractViewController.swift` (`shareData`'s declaring file), and `ShareData.swift`
+(`sharedImageDict`'s declaring file). Unlike Steps 19-22, this required a genuine new full corpus
+pair -- the live-instrumented `DeclarationLinker.link()` code path itself needed observing, not just
+its static index-store/compiler-args inputs -- run sequentially (never in parallel, given the shared
+private DerivedData), `honest10` then `flagged10`.
+
+**Reproducibility check, first**: `honest10.json`/`flagged10.json`'s edges at
+`ShareExtensionEditorViewController.swift:1127` reproduce Step 21's exact pattern -- honest has 7 (3
+Share-qualified-caller `isUnknown` + 4 Draft-qualified-caller real crossings), flagged has 3 (Draft-
+qualified-caller only, missing both the Share triplet and Draft's own `shareData`→`MainActor` edge).
+Not a one-off artifact of the specific `honest9`/`flagged9` run.
+
+**Theory C, tested and disproven: "`disambiguate`'s tie-break picks a different winner for `shareData`/
+`sharedImageDict` between the two runs."** The instrumented log shows, for both declarations, in
+*both* `honest10` and `flagged10`: identical two-candidate sets (Share-qualified and Draft-qualified),
+identical winner (`WordPressShareExtension`'s real USR, in both cases) -- byte-for-byte the same
+`usrRewriteMap` outcome Step 19 already found for a different declaration
+(`ShareModularViewController.swift:549`). This directly extends Step 19's finding to a *second,
+independent* pair of declarations, closing the possibility that Step 19's result was itself a fluke
+of that one location.
+
+**What this leaves**: three separate candidate mechanisms are now disproven with direct evidence
+(Theory A: raw index store lacks a target's records: Step 22; Theory B: `SwiftBuildCompilerArguments
+Provider` resolves the wrong target's args: Step 22; Theory C: `disambiguate`'s tie-break differs:
+Steps 19 + 23). Since `usrRewriteMap`'s value for `shareData`/`sharedImageDict` is confirmed identical
+in both runs, `knownUSRs` (`Set(usrRewriteMap.values)`) contains the *same* real USR for these two
+declarations in both runs too -- meaning whatever excludes Share's `shareData` edge and Draft's
+`shareData` edge from `flagged10`'s final output (while both survive in `honest10`) is not explained
+by anything `buildUSRRewriteMap`/`link()`'s fold-in loop does differently between the two runs. The
+remaining candidate sites are downstream of `link()` entirely: `byUSR`'s merge step (`Self.merged`,
+`resolveInheritanceViaBaseOfRelation`, `resolveExtensionContainingTypeViaChildOfRelation`) or
+`IsolationInferenceEngine`'s own `resolveIsolation`/`crossIsolationEdges` decision for these specific
+USRs -- neither instrumented yet. Distinguishing between them needs a direct log of `byUSR`'s actual
+recorded isolation value for both `shareData` real USRs (Share's and Draft's) in each run, not just
+which one won `usrRewriteMap` -- since Step 23 confirms the *winning* USR is the same, but the
+*resolved isolation value* attached to it (or backfilled onto the *losing* one via `MultiTarget
+DeclarationAliasing`) still ends up differing in the two runs' final output. Not attempted in this
+step, to report this cleanly bounded negative result rather than launch a fourth full corpus run in
+the same sitting.
+
+**Full test suite**: 537 tests, all passing (`DeclarationLinker.swift`'s instrumentation fully
+reverted before running).
