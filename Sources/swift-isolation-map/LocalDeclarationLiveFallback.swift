@@ -93,6 +93,23 @@ enum LocalDeclarationLiveFallback {
             return await resolveSequentially(unresolved: unresolved, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem)
         }
 
+        // Real, reproduced deadlock (docs/task-swift-build-prepare-for-indexing-spike.md Step 13,
+        // confirmed via `sample`'s own backtrace, not theorized): a `CompilerArgumentsProviding`
+        // conformer whose first call is expensive and cold (`SwiftBuildCompilerArgumentsProvider`'s
+        // own `NSLock`-guarded, semaphore-bridged `SWBBuildService` query) can never safely be
+        // called for the *first* time by more than one of this function's own concurrent workers
+        // below at once: every "loser" blocks on that same lock on its own cooperative-pool
+        // thread (these workers all run inside `withTaskGroup`), and once enough of them do that
+        // simultaneously, every pool thread ends up parked on the lock with none left free to run
+        // the *winner's* own inner work -- a permanent hang, not a slowdown. Production almost
+        // never hits this only by accident (`detectConfiguredDefaultIsolation` happens to warm the
+        // same shared instance's cache, sequentially, earlier in `SwiftIsolationMap.run()`) --
+        // this call makes that safety a real, local guarantee of this function itself, not
+        // something depending on a caller's own unrelated ordering. Harmless when the cache is
+        // already warm (an instant cache hit) or when this provider has no real first-time cost at
+        // all (`LiveXcodeCompilerArgumentsProvider`/`StaticCompilerArgumentsProviding`).
+        _ = try? compilerArguments.compilerArguments(forFile: unresolved[0].location.file)
+
         let chunks = OracleWorker.balancedChunks(
             items: unresolved.map { (targetUSR: $0.placeholder, file: $0.location.file, line: $0.location.line, column: $0.location.column) },
             workerCount: workerCount

@@ -555,3 +555,77 @@ root cause is closed. Nothing in this step's own code changes (the diagnostic lo
 `SwiftBuildCompilerArgumentsProvider.runAsync`) needs to block on the open question above; that
 logging is a real, defensive improvement (a previously-silent failure mode is now visible) that
 stands on its own merits regardless of how the root cause investigation concludes.
+
+## Step 14 -- A real, separate deadlock found and fixed while pursuing the two Step 13 leads
+
+Pursuing Step 13's own two remaining leads (scale-faithful repro; instrumentation) surfaced a
+different, real, independently significant bug -- not the original one, but confirmed and fixed on
+its own merits rather than left as a distraction.
+
+**Scale-faithful repro, both variants, still didn't reproduce the original bug.** A sequential
+5401-item repro (one process, ~30 min, matching one real worker's own item count) resolved the
+target declaration correctly every time. A genuinely concurrent repro (8 real worker subprocesses,
+driven through `swift test --filter`) hung indefinitely instead -- twice, once for 11 hours before
+being killed.
+
+**The hang was real, not slow progress -- confirmed via `sample`, not assumed.** A backtrace of the
+hung process showed the exact shape: one thread parked in
+`SwiftBuildCompilerArgumentsProvider.run()`'s `semaphore.wait()` (line 107, the winner of
+`loadIfNeeded()`'s `NSLock`, waiting for its own inner `Task` to run `runAsync()`), and every other
+concurrent thread parked on that same `NSLock` (`loadIfNeeded()` line 62) -- all on cooperative-pool
+threads, since every caller here originates from `LocalDeclarationLiveFallback.resolveInParallel`'s
+own `withTaskGroup`. With enough concurrent first-callers, every pool thread ends up parked on the
+lock, leaving none free to run the winner's own inner `Task` -- a permanent hang. The exact same
+"libdispatch cooperative-pool exhaustion" class already fixed once in this project
+(`LiveProcessRunner`'s own doc comment, a prior real deadlock from blocking on `DispatchQueue
+.global()`-submitted work).
+
+**Why production doesn't normally hit this**: `SwiftIsolationMap.run()` calls
+`detectConfiguredDefaultIsolation` (line 298), a sequential loop over every source file, *before*
+`resolveLocalDeclarationFallback`'s own concurrent dispatch (line 405) -- its first call warms the
+same shared provider instance's cache well before any concurrent access begins. This is accidental
+protection from calling-order, not a structural guarantee.
+
+**First fix attempt, tested and falsified**: wrapping `run()`'s `Task { await self.runAsync() }` in
+`Thread.detachNewThread` (mirroring `LiveProcessRunner`'s own fix shape as closely as possible) did
+**not** fix the hang -- re-confirmed via the identical `sample` backtrace afterward. The reasoning
+error, caught by testing rather than trusted on inspection: that change only moved *which* thread
+spawns the `Task`, not *which* thread blocks -- the calling thread (from `withTaskGroup`, a
+cooperative-pool thread) still parks directly on `semaphore.wait()`/`lock.lock()` either way, so
+pool exhaustion is unchanged. `LiveProcessRunner`'s own fix works for a structurally different
+reason: it moves the *actual blocking work* (`readDataToEndOfFile()`, a plain synchronous call with
+no `async` body needing a pool thread of its own) onto a dedicated thread entirely, not just the
+act of spawning something. That shape doesn't transfer to a case where the awaited work is itself
+genuine `async` Swift code that must run on the cooperative pool no matter which thread requests it.
+
+**Real fix, verified against the exact cold-race condition that hung before**: a single warm-up
+call, `_ = try? compilerArguments.compilerArguments(forFile: unresolved[0].location.file)`, added to
+`LocalDeclarationLiveFallback.resolveInParallel` immediately before it builds chunks/spawns workers
+-- makes the same protection `detectConfiguredDefaultIsolation` provides today only by accident
+into a real, local guarantee of this function itself. Verified empirically, not just by inspection:
+a standalone (non-`swift test`) reproduction harness -- built as a temporary `diagnostic-probe`
+executable target, after `swift test --filter`'s own `swiftpm-testing-helper` wrapper was ruled out
+as a confound by comparing hung-via-test vs. instant-via-standalone-binary behavior for the same
+repro -- hung with the exact same `sample`-confirmed backtrace *without* this call, and completed in
+~60s the moment the same warm-up call was added ahead of concurrent dispatch. The standalone probe
+could not, in the end, link directly against the real `LocalDeclarationLiveFallback.resolveInParallel`
+itself (a `.executableTarget` depending on another `.executableTarget`'s public symbols failed to
+link in this SwiftPM/toolchain version even after a fully clean rebuild, both release and debug,
+despite the identical dependency style already working for `swift-isolation-mapTests`'s own
+`@testable import` -- a real, reproducible environment limitation, not a stale-cache artifact, and
+not investigated further since it wasn't this task's own goal) -- so the probe re-implemented the
+identical dispatch shape (same provider class, same real worker-subprocess wire format, same
+real built binary spawned in `--local-declaration-worker-input` mode) rather than calling the
+production function directly. The fix landed in the real function; the verification is of an
+architecturally identical harness, not the exact call site -- noted as a real gap, not glossed over.
+
+**Full test suite**: 537 tests, all passing, ~60-90s (no regression from this fix).
+
+**Status**: this specific deadlock is fixed and merits its own consideration for landing regardless
+of Step 13's original question, which remains open. It does not, on its own, explain Step 13's
+original "wrong module" divergence -- it's a hang, not a wrong-but-valid answer, and production's
+own call ordering was already accidentally immune to it before this fix made that immunity
+structural. Step 13's own two leads (scale-faithful repro, sourcekitd instrumentation) were both
+attempted; the first is now exhausted (both sequential and, after this fix, genuinely concurrent
+scale repros complete without reproducing the original divergence); the second (sourcekitd request
+-path instrumentation) has not yet been attempted.
