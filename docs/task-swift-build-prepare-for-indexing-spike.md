@@ -254,7 +254,7 @@ actually is, and that distinction needed to be shown, not asserted. Checked dire
    (100%) of Run-A-only nodes, and 1,408/1,424 (98.9%) of Run-C-only nodes, are in `*Tests.swift`/
    `Mock.swift`-style test-support files** -- the exact fingerprint of this project's own already-
    documented, independently-tracked `DeclarationExtractor` local-declaration-leak bug
-   ([[project_local_declaration_leak_and_first_run_oracle_mystery.md]]: local `let`/`var` bindings
+   (this project's own local-declaration-leak task, tracked separately: local `let`/`var` bindings
    inside function/test bodies leak as phantom type members, and *which* ones survive linking is
    run-to-run nondeterministic, tied to live-fallback timing/ordering, not to the compiler-argument
    source). This node churn predates this spike and is orthogonal to it.
@@ -834,13 +834,22 @@ that swapped node explains the asymmetry the way line 549 did.
 | swapped variant resolves to a *different* isolation from its caller -- would itself be a genuine crossing, yet doesn't appear as a reported edge in the other run -- unexplained by this step's mechanism | 203 | 160 |
 
 **This step's own mechanism accounts for roughly 1-3% of the checked edges (4/315, 12/385), not the
-majority.** The largest bucket (34-55%) directly contradicts this step's claim that "both variants
-of the same physical call site plausibly exist in `rawCallGraph` in every run" (Step 15's own
-phrasing, repeated here) -- for most locations, only one of the two duplicate raw edges is ever
-constructed in a given run's own `linked.callGraph`, not both, meaning whatever decides *that*
-(likely something in the same `knownUSRs`-driven fold-in Step 15 found, varying per file/declaration
-in a way this investigation hasn't mapped) is doing more work than the query-strict-match mechanism
-this step describes. The second-largest bucket (42-64%) isn't explained at all yet.
+majority.** The other two buckets' own ranking doesn't hold up consistently, checked directly rather
+than eyeballed: "no node at all" is honest's own *smaller* bucket (108/315 = 34%, vs. 203/315 = 64%
+"unexplained") but flagged's *larger* one (213/385 = 55%, vs. 160/385 = 42%) -- the two runs invert
+which bucket dominates, and summed across both (321 "no node" vs. 363 "unexplained" out of 700), the
+"unexplained" bucket is the larger of the two overall, not "no node." Both buckets are real and
+substantial regardless of exact ranking: "no node at all" (321 total) directly contradicts this
+step's own claim that "both variants of the same physical call site plausibly exist in
+`rawCallGraph` in every run" (Step 15's own phrasing, repeated here) -- for a large fraction of
+locations, only one of the two duplicate raw edges is ever constructed in a given run's own
+`linked.callGraph`, not both. "Unexplained" (363 total, the numerically larger bucket) isn't
+explained by anything found so far, including the fold-in mechanism itself -- a swapped variant
+resolving to a genuinely different (crossing) isolation yet not appearing as a reported edge in the
+other run can't be dismissed as "the duplicate was never constructed there" (that's the *other*
+bucket, by construction of this same check) -- something else excludes it, not yet identified. Given
+its size, this bucket deserves at least equal priority to `knownUSRs`-membership as the next thing to
+chase, not secondary billing.
 
 **Status, honestly restated**: `ExternalIsolationBackfill.query()`'s strict-USR-equality mechanism is
 real, confirmed by direct instrumentation, and a genuine contributing factor for a real fraction of
@@ -889,8 +898,12 @@ doesn't exist as a node in the other run at all).
 `RawIndexStoreClient.definedSymbols(inFile:)` was checked by `grep`-ing the *printed* output of a
 probe that only ever printed `.prefix(30)` of the 540-candidate array -- never the full list the
 array itself held. A corrected probe, dumping the **complete** module-tagged count for all 540
-candidates, found the true split: **267 `WordPressShareExtension` / 267 `WordPressDraftActionExtension`**
--- almost perfectly symmetric, not zero. Extended across all 21 diverging files: every single one
+candidates, found the true split: **267 `WordPressShareExtension` / 267 `WordPressDraftActionExtension`**,
+plus 6 more not matched by that plain substring check -- tracked down directly, not left as an
+unexplained ~1%: 3+3 more of each, from a `WordPressUI`-module extension nesting `ShareExtension`/
+`DraftActionExtension` as an inner type-namespace (`SiteIconViewModel.ShareExtension`/`.DraftActionExtension`)
+rather than as the top-level module prefix the substring check was looking for. **The real total is
+270/270 -- exactly symmetric**, not "almost." Extended across all 21 diverging files: every single one
 shows the same near-50/50 pattern, not just this one. There is no "declaration-scan says it doesn't
 exist, call-graph-scan says it does" inconsistency in the raw index data (Step 15's own framing,
 now struck through there) -- both scans agree throughout that both targets' compiled units are
@@ -917,9 +930,24 @@ placeholder keys across different files/declarations sharing a bare syntactic na
 a real bug in this session's own diagnostic code, not the tool, caught by the crash itself rather
 than shipped silently.)
 
-This closes off live-fallback as a candidate explanation for the 34-55%/42-64% buckets Step 16 left
-unexplained: for every one of these 21 files, whenever a declaration's own placeholder needs live
-fallback at all in the flagged run, it resolves to `WordPressShareExtension`, without exception.
+**A real cross-check, not a coincidence left unremarked**: Step 15's own instrumentation (logging
+every successful `resolveOne` call for a file under one of these directories, filtered by the
+*input* file path) counted **316** such calls in its own flagged run. This step's instrumentation
+(filtering `localFallbackOverrides` by the *resolved USR* containing one of the same four module
+names) counts **316** here too, in a different flagged run (`flagged9`, not the one Step 15 used).
+These aren't independent measurements that happened to land on the same number -- `resolveOne`'s
+own `file` parameter *is* `location.file` for every item in `unresolved`/`unresolvedPlaceholders`
+(the same declarations), and every one of Step 15's logged calls succeeded and (per this step)
+resolves to `WordPressShareExtension`, so both filters select the identical underlying set: every
+successful live-fallback resolution for a declaration whose own placeholder lives in one of these
+21 files. The match across two separately-run flagged invocations is exactly what this project's
+own confirmed determinism for the flagged path (Step 13) predicts, and is real, if partial,
+cross-validation that both rounds of instrumentation measured what they claimed to.
+
+This closes off live-fallback as a candidate explanation for the still-unexplained fraction of
+Step 16's own edge-level divergence: for every one of these 21 files, whenever a declaration's own
+placeholder needs live fallback at all in the flagged run, it resolves to `WordPressShareExtension`,
+without exception.
 Since bulk linking (`disambiguate`, index-store-driven, no compiler-args dependency) is the only
 other path a declaration's identity can take, **the remaining asymmetry must come from bulk
 linking's own tie-break differing between the honest and flagged processes** for at least some of
@@ -930,8 +958,9 @@ binary reproduce identically) yet differ from each other. Not yet resolved: whet
 per-process nondeterminism in how the raw index-store scan populates `candidatesByLocation`'s own
 array order (a hash-seeded `Dictionary`/`Set` somewhere in `RawIndexStoreClient`'s aggregation would
 be consistent with "stable within a process, unstable across independently-launched processes"),
-or something else entirely. This is now the single sharpest remaining open question for
-[[project_wordpress_ios_edge_asymmetry_root_cause]], not a restatement of Step 16's.
+or something else entirely. This is now the single sharpest remaining open question for this
+investigation (tracked in this project's own memory as a standalone open task), not a restatement
+of Step 16's.
 
 **Full test suite**: 537 tests, all passing, ~90s (no regression; all instrumentation reverted after
 use, confirmed via `git diff`/`git status` before this commit).
