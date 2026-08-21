@@ -1036,3 +1036,95 @@ fold-in, purely index-store-driven) has any known flag-dependent input.
 
 **Full test suite**: 537 tests, all passing, ~70-90s (no regression; instrumentation reverted,
 confirmed via `git diff` before this commit).
+
+## Step 20 -- Honest's raw `linked.callGraph` also contains both duplicates; the question narrows
+## to callee-side resolution for never-bulk-linked declarations
+
+Same `RAWEDGE`-style dump Step 16 used for flagged, run against honest this time (Step 16 only
+checked flagged). Killed right after "Linked N declaration(s)..." both times, same technique
+as Step 19.
+
+**Confirmed: honest's own raw `linked.callGraph` contains both module-qualified duplicate edges at
+this location too** -- identical in shape to flagged's (Step 16). Combined with Step 19 (declaration
+identity for the caller, `selectedModulesTableRowAt`, resolves identically -- `WordPressShareExtension`
+-- in both runs), **every input to `crossIsolationEdges()` this investigation can attribute to
+`DeclarationLinker` alone is now confirmed identical between honest and flagged for this location.**
+The remaining difference has to live in `ExternalIsolationBackfill`'s own resolution of the
+*callee* -- `ModulesSection.init(rawValue:)`, a compiler-synthesized enum initializer never
+extracted by `SyntaxAnalysis` and never a bulk-linking winner in either run (neither module variant
+is ever a real `SyntaxAnalysis`-produced declaration to link against) -- which is exactly where
+Step 16's own query-strict-match mechanism operates, using each run's own `compilerArguments(forFile:)`
+for this file.
+
+**What's now confirmed consistent, reconciling an earlier apparent contradiction**: both the
+`WordPressShareExtension`- and `WordPressDraftActionExtension`-qualified *caller* nodes
+(`selectedModulesTableRowAt`) carry real, identical isolation (`globalActor(MainActor)`) and real
+location (line 548) in *both* runs -- this is `MultiTargetDeclarationAliasing`'s own suffix-match
+backfill (Step 15), copying the bulk-linked winner's info to its sibling-target USR, and is itself
+index-store-driven with no compiler-args dependency, so it behaves identically regardless of flag.
+The *callee* side is where the two runs actually diverge: each run's own `ExternalIsolationBackfill
+.query()` only ever succeeds (strict USR match against a live `cursorinfo` result) for whichever
+target's args that run's own provider supplies for this file, and aliasing does not appear to
+propagate a live-query-backfilled callee's isolation across to its sibling's USR the way it does for
+an already-bulk-linked declaration -- each module variant of the callee is resolved (or not)
+independently.
+
+**Narrowed, not yet closed**: the open question is no longer "why does bulk linking or raw-edge
+construction differ" (both ruled out, Steps 19-20) -- it's specifically why `query()`'s per-file
+target choice differs between honest and flagged for files like this one, and why that's sufficient
+to explain the *majority* of the divergence when Step 16's own quantitative check (looking only at
+"does the swapped variant end up with the *same* isolation as its caller") found just 1-3%. The
+likely reconciliation, not yet directly verified: Step 16's check was too narrow -- it only counted
+cases where the swapped callee's isolation happened to *equal* the caller's (making it trivially
+non-crossing), not the broader "does the callee resolve to *anything* at all" question this step's
+own reasoning suggests is the real determinant (an edge whose callee is `isUnknown` always survives
+`crossIsolationEdges()`, regardless of what the isolation value is once resolved). Re-running Step
+16's own bucket analysis with this broader criterion, rather than another live corpus run, is the
+next concrete step.
+
+**Full test suite**: 537 tests, all passing (re-confirmed after this step's own revert).
+
+## Step 21 -- Self-caught overgeneralization: raw `linked.callGraph` is NOT always identical between
+## honest and flagged; the broader recheck also fixed a counting bug in Step 16's own bucket labels
+
+Re-ran Step 16's own "no-swap/no-node/same-as-caller" bucket analysis on the existing
+`honest9.json`/`flagged9.json` (no new corpus run -- exactly the check Step 20 itself proposed as
+the next step) with one addition: explicitly counting how many `isUnknown` edges have a `calleeUSR`
+that doesn't contain any of the four shared-target module names at all -- previously silently folded
+into "unexplained" by a `swap_module` helper that returned `nil` for these and was never checked for.
+
+**That correction alone found the real shape of the largest bucket**: 203/315 (honest-only) and
+160/385 (flagged-only) `isUnknown` edges -- exactly Step 16's own "unexplained" numbers -- turn out
+to be cases where the callee is a genuinely unrelated symbol (a real external SDK/dependency type,
+e.g. `Aztec.MediaAttachment`), not a shared-target duplicate at all. Step 16's "swap the callee's
+module" check was the wrong side to swap for this bucket -- the divergence for these edges lives on
+the **caller** side, not the callee.
+
+**Checked one such case directly, and it directly contradicts Steps 19-20's own generalization.**
+At `ShareExtensionEditorViewController.swift:1127`, honest has **7 edges** at this one location --
+3 `WordPressShareExtension`-qualified-caller edges (`globalActor(MainActor)`, `isUnknown: true`) and
+4 `WordPressDraftActionExtension`-qualified-caller edges (`unspecified`, `isUnknown: false`). Flagged
+has only **3 edges** at the identical location -- the `WordPressDraftActionExtension` set only; the
+three `WordPressShareExtension`-qualified edges are **completely absent**, not merely filtered out
+downstream. This means Steps 19 and 20's own conclusion ("`linked.callGraph` contains both
+duplicates identically in both runs") does not hold universally -- it was confirmed for exactly one
+location (`ShareModularViewController.swift:549`) and wrongly generalized to "the raw graph itself
+never differs," the same class of error Step 16's original "closed" claim made and was corrected
+for. Caught here before it was asserted as a closing fact, not after.
+
+**What this narrows the question to, honestly**: `knownUSRs`'s exact membership (or something else
+in the fold-in construction, Step 15) genuinely differs between honest and flagged for *some*
+files/declarations but not others -- confirmed true for at least these two concrete, contrasting
+examples. What specifically distinguishes a location where both duplicates survive
+(`ShareModularViewController.swift:549`) from one where only one target's copy ever enters
+`linked.callGraph` at all (`ShareExtensionEditorViewController.swift:1127`) is not yet identified.
+This is now the precise open question -- not "does the raw graph differ" (it demonstrably can), but
+"what specific condition makes it differ for this file and not that one."
+
+**Status**: genuine progress (the "unexplained" bucket's real shape found, a self-made
+overgeneralization caught and corrected before being asserted as closed), but the core mechanism
+remains open. Next step would need direct instrumentation of `knownUSRs`'s own membership for both
+files' callees, comparing honest vs. flagged -- not attempted here, given the cost of each additional
+full-corpus run against this real, large project in a session with its own recurring external
+instability (documented above, now understood to be unrelated contention from a separate concurrent
+build on the same machine).
