@@ -628,4 +628,100 @@ own call ordering was already accidentally immune to it before this fix made tha
 structural. Step 13's own two leads (scale-faithful repro, sourcekitd instrumentation) were both
 attempted; the first is now exhausted (both sequential and, after this fix, genuinely concurrent
 scale repros complete without reproducing the original divergence); the second (sourcekitd request
--path instrumentation) has not yet been attempted.
+-path instrumentation), attempted next, is what finally found the real mechanism -- see Step 15.
+
+## Step 15 -- The real mechanism: DeclarationLinker.link() conflates a sibling target's own compiled
+## unit with a genuinely external callee
+
+Temporary instrumentation added to `LocalDeclarationLiveFallback.resolveOne` logged every real
+`cursorinfo` request/response for a call site inside the four shared-target directories, to a
+fixed path every worker subprocess could append to (plain stderr is silently discarded there --
+`runWorker` never reads `ProcessResult.standardError`). Re-ran the full flagged pipeline once more
+against WordPress-iOS with this in place.
+
+**First result, surprising and clean**: every single logged query (316 of them) carried
+`argsModule=WordPressShareExtension` -- **zero** `DraftActionExtension`-argued queries, ever, in
+this run. Yet the same run's own report reproduced the identical 344/425/65 divergence, same
+351/29 module skew, as every prior attempt. `SwiftBuildCompilerArgumentsProvider`'s own args are
+provably not the vehicle for *any* of these declarations' final identity.
+
+**Checked directly, not assumed: how many of the 483 distinct diverging `(file, line)` locations
+were even live-fallback-queried at all?** Only 63 -- **13%**. The other 420 (87%) never call
+`resolveOne` in this run. Whatever's producing the wrong module for the large majority of this
+divergence lives entirely outside the compiler-arguments/live-fallback path this whole investigation
+(Step 13, the original `#106` fix, Step 14's deadlock) had been focused on.
+
+**Checked the real index store directly for one such declaration**
+(`ShareModularViewController.swift`, `WordPressShareExtension`'s own real on-disk file):
+`RawIndexStoreClient.definedSymbols(inFile:)` returns 540 real candidates for this file -- **zero**
+of them `DraftActionExtension`-qualified. Confirmed stable across three independent scans in the
+same process, including one with a real `SwiftBuildCompilerArgumentsProvider` query (a full
+497-target `SWBBuildService` session) run in between -- ruling out any filesystem-ordering
+perturbation from that activity as a contributing factor. **This file's own declarations are never
+indexed under `WordPressDraftActionExtension` at all**, by this measure.
+
+**Yet `RawIndexStoreClient.callSites(inFile:)`, the exact same file, returns 1680 call-graph edges
+-- 840 of them real, `DraftActionExtension`-qualified caller/callee USRs**, real method bodies
+(`viewDidLoad`, `loadContentIfNeeded`, ...) with real line numbers. The index store's own
+declaration-scan and call-graph-scan disagree about whether `WordPressDraftActionExtension`'s own
+compiled unit of this file exists at all -- it does, for call sites; it doesn't, for declarations
+-- an internal inconsistency in the raw index data itself (or in how `indexstore`'s own definition
+-vs-reference role marking behaves for an `@objc`-bridged class compiled into a *non-owning*
+sibling target), not something this project's own code invented.
+
+**The real bug, found by reading `DeclarationLinker.link()` with this in hand**
+(`Sources/IndexStoreIntegration/DeclarationLinker.swift:325-346`):
+
+```swift
+let knownUSRs = Set(usrRewriteMap.values)
+var rawCallGraph: [CallGraphEdge] = []
+for realUSR in knownUSRs {
+    rawCallGraph.append(contentsOf: indexStore.callGraphEdges(forUSR: realUSR))
+}
+// ...
+let filesToQuery = Set(allDeclarations.compactMap { $0.location?.file })
+for file in filesToQuery {
+    for edge in indexStore.callSites(inFile: file) where !knownUSRs.contains(edge.calleeUSR) {
+        rawCallGraph.append(edge)
+    }
+}
+```
+
+The second loop's own comment states its real purpose plainly: fold in edges whose callee
+`callGraphEdges(forUSR:)`'s reverse lookup can't find, because the callee is genuinely **external**
+(SDK/compiled-dependency code, never itself a `knownUSR`) -- exactly what the compiled-dependency
+oracle needs. But the condition (`calleeUSR` absent from `knownUSRs`) cannot distinguish "genuinely
+external" from "a sibling target's own compiled duplicate of a call this project already resolved
+under a *different* module-qualified USR" -- and `knownUSRs` only ever contains **one**
+module-qualified variant per shared declaration (`WordPressShareExtension`'s, per `disambiguate`'s
+own single-winner tie-break, Step 13's own established fact). Every real `WordPressDraftActionExtension`
+-qualified edge for a shared file is, by this test, indistinguishable from a real external call --
+so it gets folded into `rawCallGraph` **as its own, separate, wrongly-identified edge**, standing
+alongside the correct `WordPressShareExtension`-qualified edge for the identical physical call site.
+This is a real, distinct gap from the already-fixed `MultiTargetDeclarationAliasing`
+(`docs/task-multi-target-declaration-aliasing.md`) -- that fix backfills a *missing declaration's*
+isolation info once its USR is already known to be a sibling-target duplicate (by mangled-suffix
+match), so the duplicate edge's own isolation resolves correctly instead of `isUnknown: true` --
+but it never touches the duplicate **edge's own identity**, so the edge itself survives, under the
+wrong module, exactly as a second, real, but wrongly-attributed entry in the call graph.
+
+**What's still open, honestly**: this explains where a `DraftActionExtension`-qualified edge for a
+`WordPressShareExtension` source line comes from at all (a real, distinct duplicate, folded in by
+this over-broad "not yet known" test) -- both variants of the same physical call site plausibly
+exist in `rawCallGraph` in *every* run, honest and flagged alike, since this whole mechanism is
+index-store-driven and flag-independent, matching honest's own confirmed determinism (Step 13). Not
+yet traced: *why only one of the two duplicates survives into the final cross-isolation report, and
+why which one survives differs between honest and flagged* -- both edges, once `MultiTargetDeclarationAliasing`
+backfills the duplicate's isolation, should carry the *same* real isolation facts and so should
+either both appear or both be filtered by `IsolationInferenceEngine.crossIsolationEdges()` on equal
+terms. Something downstream still picks one over the other differently per run; not yet identified.
+
+**Status**: root mechanism for the *existence* of wrong-module duplicate edges is found and
+well-evidenced, not the same thing as Step 13's original divergence being fully closed. A real fix
+candidate for the mechanism itself: the fold-in loop should skip an edge whose `calleeUSR`, rewritten
+through the same mangled-suffix logic `MultiTargetDeclarationAliasing` already uses, matches an
+already-`knownUSR` -- i.e., recognize a sibling-target duplicate *before* folding it in, not paper
+over its isolation after the fact. Not implemented here -- this step is the investigation record,
+not the fix; a real fix would need its own real-corpus before/after per this project's own standard
+discipline, and this session's own recurring external-kill instability (Step 13) makes another
+full WordPress-iOS run for that purpose a real cost to plan for, not undertake casually.
