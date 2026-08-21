@@ -725,3 +725,83 @@ over its isolation after the fact. Not implemented here -- this step is the inve
 not the fix; a real fix would need its own real-corpus before/after per this project's own standard
 discipline, and this session's own recurring external-kill instability (Step 13) makes another
 full WordPress-iOS run for that purpose a real cost to plan for, not undertake casually.
+
+## Step 16 -- Closed: why only one duplicate survives, and why it differs between honest and flagged
+
+Continuing directly from Step 15's own open question. Temporary instrumentation added right after
+`linker.link(...)` in `SwiftIsolationMap.swift`, dumping every raw (pre-cross-isolation-filter)
+`linked.callGraph` edge at two known probe locations in `ShareModularViewController.swift` (line
+549: `selectedModulesTableRowAt` calling `ModulesSection.init(rawValue:)`). One more full flagged
+run against WordPress-iOS.
+
+**Confirmed directly**: `linked.callGraph` contains **both** duplicate edges at line 549 --
+`WordPressShareExtension`-qualified caller/callee *and* `WordPressDraftActionExtension`-qualified
+caller/callee, four raw edges total (two call sites, two module variants each). Step 15's own
+mechanism (the naive "not yet known" fold-in) is confirmed to produce both, exactly as reasoned
+there, not just plausibly.
+
+**Then checked node isolation for both variants, both runs, directly**:
+
+| | `WordPressShareExtension` callee | `WordPressDraftActionExtension` callee |
+|---|---|---|
+| honest | `unspecified` (unresolved) | **`nonisolated`** (resolved) |
+| flagged | **`nonisolated`** (resolved) | `unspecified` (unresolved) |
+
+Exactly inverted between the two runs. Since `AnalysisReportBuilder`/`IsolationInferenceEngine`
+apply no dedup at all (confirmed reading both, Step 15) and both duplicate edges' *nodes* are real
+and present in both runs, the edge that "survives" into the final cross-isolation report in each
+run is simply whichever duplicate's callee isolation resolves to something other than `unspecified`
+-- both would otherwise be equally "crossing" and both would appear (checked -- neither is suppressed
+by `build()`'s own carve-outs, all three are gated `!isUnknown` and this callee is `isUnknown` for
+whichever variant fails to resolve).
+
+**Root cause of the inversion, found by re-reading `ExternalIsolationBackfill.query()`
+(`ExternalIsolationBackfill.swift:1108-1145`)**: this is a *second*, entirely separate consumer of
+`compilerArguments.compilerArguments(forFile:)` -- Step 13/15's own instrumentation only ever
+covered `LocalDeclarationLiveFallback.resolveOne`, never this one. `query()` runs a real `cursorinfo`
+request at the *call site's* own (file, line, column) using whatever args this run's own provider
+returns for that file, then calls `USRMatching.select(from: result, targetUSR:)` -- a **strict USR
+-string-equality** search among the real result's candidates. `cursorinfo`, given one target's own
+compiler arguments, only ever reports that same target's own module-qualified USRs. So:
+
+- The module-qualified `calleeUSR` variant that happens to **match** whichever target this run's
+  own compiler-arguments provider picked for this file resolves successfully (a real symbol-graph
+  fact, `nonisolated`).
+- The *other* module-qualified variant can never match (`cursorinfo` never reports that module's
+  USR when queried with the other module's args) -- permanently `.unknown`, regardless of how many
+  times it's queried.
+
+**Why honest and flagged pick opposite targets for the identical file**: `SwiftBuildCompilerArgumentsProvider`
+(flagged) has `preferredArguments`'s home-directory-match heuristic (#106) -- confirmed correct for
+this file (`WordPressShareExtension`) in Step 13/15's own direct probes. `LiveXcodeCompilerArgumentsProvider`
+(honest) has **no equivalent logic at all** -- confirmed by re-reading `XcodeBuildLogCompilerArgumentsProvider
+.swift`'s `runVerboseBuild`: `parsed[file] = fullArguments` is a bare dictionary assignment inside a
+loop over every real `swiftc` invocation `-verbose`'s own log contains, for every target that
+compiled it -- whichever target's invocation the real `xcodebuild` build happens to log **last**
+silently wins, with no target-name preference of any kind. For this specific file, on this specific
+corpus, that arbitrary last-wins order happens to land on `WordPressDraftActionExtension`.
+
+**The full picture, closed**: both runs are equally "arbitrary" for a file compiled by more than
+one target -- flagged picked its one answer via a real, principled heuristic (#106); honest picked
+its own, different answer via raw build-log ordering, a mechanism that was never fixed because it
+was never known to need fixing (the whole spike's premise was that the *honest* path was the
+ground truth flagged had to match). Both duplicate edges are real, both are semantically valid
+(the same source line, from two real target compilations), and `ExternalIsolationBackfill.query()`'s
+strict-equality USR matching -- correct and necessary for its own real purpose, distinguishing
+genuinely different declarations -- has no way to know these two USRs name "the same call, from two
+targets" rather than two unrelated symbols. Step 13's original ~12% divergence is not a regression
+this spike introduced, and not a bug `SwiftBuildCompilerArgumentsProvider` itself has -- it's a
+pre-existing multi-target ambiguity that the honest path was silently just as arbitrary about, only
+never noticed because nothing had ever compared it against a second, independently-arbitrary answer
+before.
+
+**Status**: closed. Root cause identified, evidenced end-to-end from the original edge-level diff
+(Step 13) through the raw call-graph duplication (Step 15) to the exact query mechanism and why it
+inverts between runs (this step). Two real fix directions, neither implemented here (this remains
+an investigation record): (1) `LiveXcodeCompilerArgumentsProvider` could gain the same home
+-directory-match preference `SwiftBuildCompilerArgumentsProvider` already has, making honest at
+least as principled as flagged (though still just one arbitrary-but-motivated choice for a
+genuinely multi-target file); (2) Step 15's own fix candidate (recognize a sibling-target duplicate
+via mangled-suffix match *before* folding it into the call graph at all) would remove the duplicate
+-edge ambiguity at its source, independent of which target's args any provider picks. Either would
+need its own real-corpus before/after per this project's standard discipline before landing.
