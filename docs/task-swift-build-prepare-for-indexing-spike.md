@@ -1308,3 +1308,72 @@ a fifth honest/flagged pair.
 
 **Full test suite**: 537 tests, all passing (`SwiftIsolationMap.swift`'s instrumentation fully
 reverted before running).
+
+## Step 25 -- Root cause confirmed and fixed: `LiveXcodeCompilerArgumentsProvider` had no home-
+## directory heuristic; real-corpus verification shows the fix closes 98.3% of the divergence
+
+A cheap, temporary args-dump-and-exit hook (`SWIFT_ISOLATION_MAP_STEP25_DUMP_ARGS`, added right
+after `compilerArguments` becomes available in `SwiftIsolationMap.swift`'s `run()`, before the
+expensive parsing/oracle phases -- reverted via `git checkout --` after use) directly answered Step
+24's remaining question: what compiler arguments does **honest**'s own path resolve for
+`ShareExtensionEditorViewController.swift` (the caller's file)?
+
+**Answer: `-module-name WordPressDraftActionExtension`.** Honest's `LiveXcodeCompilerArgumentsProvider`
+resolves this shared file to the *wrong* sibling target's compiler arguments -- confirmed directly,
+not inferred. The symmetric check (`--experimental-swift-build-compiler-args` against the identical
+file, same dump hook) returns `-module-name WordPressShareExtension`, the file's real physical home,
+exactly as `SwiftBuildCompilerArgumentsProvider.preferredArguments` (#106) is designed to do.
+
+**Root cause, in full**: `LiveXcodeCompilerArgumentsProvider.runVerboseBuild` (`Sources/
+ProjectResolution/XcodeBuildLogCompilerArgumentsProvider.swift`) parsed every `xcodebuild -verbose`
+compile invocation into a flat `[file: arguments]` dictionary with a plain overwriting assignment
+(`parsed[file] = fullArguments`) -- whichever target's compile line the log happened to print *last*
+silently won, for every file compiled by more than one target. This is exactly the bug #106 already
+fixed for the `SwiftBuildCompilerArgumentsProvider` (flagged) path, in 2026-08-20 -- but the *honest*
+path never got the equivalent fix, because nothing in this investigation had, until Step 24, actually
+traced a concrete divergence back to it. Once honest resolves the wrong target's args for a shared
+file, any live oracle query needing real compiler args for that file (Step 24's example: resolving
+`Aztec.TextViewAttachmentDelegate`'s own global-actor status for a same-context conformance) queries
+`sourcekitd` under the *wrong* compiled context -- explaining why that query's outcome (and therefore
+`unknownUSRs` membership, and therefore `AnalysisReportBuilder`'s suppression decision) differed
+between the two paths even though every statically-resolved fact (`disambiguate`'s winner,
+`linked.callGraph`, `linked.declarations`, `resolveIsolation`'s computed value) was already confirmed
+identical in Steps 19-24.
+
+**The fix**: `runVerboseBuild` now collects every invocation that mentions a given file (not just the
+last one), keyed by that invocation's own `-module-name`, and picks among them using the *exact same*
+`SwiftBuildCompilerArgumentsProvider.preferredArguments` function #106 already validated -- both
+providers live in the same `ProjectResolution` target, so this is direct reuse, not a parallel
+reimplementation. A new test, `liveXcodeProviderPrefersTheHomeTargetForAFileCompiledByMultipleTargets`
+(`Tests/ProjectResolutionTests/XcodeCompilerArgsTests.swift`), reproduces the exact WordPress-iOS
+shape (two sibling targets' compile lines for the same shared file, Draft's printed *second* in the
+log, matching the real bug) and confirms the file now resolves to its home target
+(`WordPressShareExtension`), not whichever line came last.
+
+**Real-corpus verification** (`docs/task-cross-cutting-infra-needs-real-corpus-verification`-style,
+not just the fixture test above -- a change to shared compiler-args-resolution infra needs it): a
+fresh full honest run against the identical corpus/scheme (`honest-fix1.json`) compared against the
+freshest flagged baseline (`flagged11.json`) using the same edge-identity key Steps 13-24 already
+used:
+
+```
+honest edges: 6347, flagged edges: 6361
+shared: 6347, missing (honest-only): 0, extra (flagged-only): 14, changed: 0
+```
+
+**Divergence dropped from 834 edges to 14 -- a 98.3% reduction**, and honest's own edge set is now a
+strict subset of flagged's (zero edges honest has that flagged doesn't, zero edges present-but-
+different in both). The traced example itself (`ShareExtensionEditorViewController.swift:1127`) now
+shows exactly the same 3 edges in both honest and flagged, byte-identical, confirming the fix directly
+resolves the specific case Steps 19-24 traced end-to-end.
+
+**The remaining 14 edges are a separate, newly-surfaced, much smaller issue, not yet investigated**:
+all 14 are at `Classes/System/ApiCredentials+BuildSecrets.swift` (7 real call sites, each producing a
+pair of opposite-direction-labeled entries) -- a single-target file (`extension ApiCredentials`,
+calling into `BuildSettingsKit`'s `BuildSecrets`), nothing to do with the multi-target shared-file
+shape this step's fix addresses. Isolation resolves as `nonisolated -> unspecified`/`unspecified ->
+nonisolated` depending on which side is "unspecified" in which run -- a real, but distinct and far
+smaller, discrepancy. Recorded here as a new, separate open item, not conflated with this step's own
+closed finding.
+
+**Full test suite**: 538 tests (537 + this step's new test), all passing.

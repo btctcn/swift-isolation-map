@@ -154,6 +154,61 @@ func liveXcodeProviderExpandsFileListAndMapsEveryFileToTheSameArguments() throws
     #expect(argsA.contains("/Users/dev/SQLumen/SQLumen/Core/DDLService.swift"))
 }
 
+// Real WordPress-iOS shape (docs/task-swift-build-prepare-for-indexing-spike.md Step 25):
+// `WordPressShareExtension` and `WordPressDraftActionExtension` both compile the same 14 files
+// under `.../WordPress/WordPressShareExtension/Sources/...` -- Draft's own invocation is listed
+// *second* here, deliberately, matching the real, reproduced bug: before the fix, whichever
+// invocation the `-verbose` log happened to print last silently won via a plain dictionary
+// overwrite, with no regard for which target the file actually "belongs" to.
+private let shareExtensionCompileLine = """
+    builtin-Swift-Compilation -- /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name WordPressShareExtension -Onone @/DerivedData/WordPressShareExtension.SwiftFileList -DDEBUG -sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk -target arm64-apple-ios17.0-simulator -swift-version 5 -c -j8 -enable-batch-mode -incremental -working-directory /Users/dev/WordPress-iOS/WordPress -experimental-emit-module-separately -disable-cmo
+    """
+private let draftActionExtensionCompileLine = """
+    builtin-Swift-Compilation -- /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name WordPressDraftActionExtension -Onone @/DerivedData/WordPressDraftActionExtension.SwiftFileList -DDEBUG -sdk /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk -target arm64-apple-ios17.0-simulator -swift-version 5 -c -j8 -enable-batch-mode -incremental -working-directory /Users/dev/WordPress-iOS/WordPress -experimental-emit-module-separately -disable-cmo
+    """
+
+private let sharedFilePath = "/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Shared.swift"
+
+private let sharedFileListContents = """
+\(sharedFilePath)
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding1.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding2.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding3.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding4.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding5.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding6.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding7.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding8.swift
+/Users/dev/WordPress-iOS/WordPress/WordPressShareExtension/Sources/UI/Padding9.swift
+"""
+
+@Test("A file physically homed under one target's own directory, compiled by two sibling targets, resolves to that home target's own arguments -- not whichever the -verbose log happened to print last (the real WordPress-iOS bug, docs/task-swift-build-prepare-for-indexing-spike.md Step 25)")
+func liveXcodeProviderPrefersTheHomeTargetForAFileCompiledByMultipleTargets() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    fileSystem.addFile(at: URL(fileURLWithPath: "/DerivedData/WordPressShareExtension.SwiftFileList"), contents: sharedFileListContents)
+    fileSystem.addFile(at: URL(fileURLWithPath: "/DerivedData/WordPressDraftActionExtension.SwiftFileList"), contents: sharedFileListContents)
+    runner.stub(
+        executable: "xcodebuild",
+        arguments: ["-verbose", "-scheme", "WordPress", "-workspace", "/WordPress-iOS/WordPress.xcworkspace", "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO", "build"],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: shareExtensionCompileLine + "\n" + draftActionExtensionCompileLine,
+            standardError: ""
+        )
+    )
+    let provider = LiveXcodeCompilerArgumentsProvider(
+        container: .xcworkspace(URL(fileURLWithPath: "/WordPress-iOS/WordPress.xcworkspace")),
+        scheme: "WordPress",
+        processRunning: runner,
+        fileSystem: fileSystem
+    )
+
+    let args = try provider.compilerArguments(forFile: sharedFilePath)
+    let moduleNameIndex = try #require(args.firstIndex(of: "-module-name"))
+    #expect(args[args.index(after: moduleNameIndex)] == "WordPressShareExtension")
+}
+
 @Test("realModuleNames() extracts the real -module-name value from this run's own build, for RawIndexStoreClient's allowedModuleNames filter (docs/task-index-store-module-scoping.md)")
 func realModuleNamesExtractsModuleNameFromRealBuildLine() throws {
     let runner = FakeProcessRunner()
