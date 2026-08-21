@@ -964,3 +964,34 @@ of Step 16's.
 
 **Full test suite**: 537 tests, all passing, ~90s (no regression; all instrumentation reverted after
 use, confirmed via `git diff`/`git status` before this commit).
+
+## Step 18 -- An eye-catching lead (316=316, mirrored modules) tested directly and falsified
+
+Ran the *honest* path with the identical override-logging instrumentation Step 17 used for
+flagged, against a fresh `honest9`/`flagged9` pair (both completed cleanly this time, after several
+kills from an unrelated environmental cause -- a real, concurrent Xcode Archive build of a
+different project on the same machine, confirmed via `ps`/`pmset -g log` showing `xcodebuild`/
+`caffeinate` `ClientDied` roughly every 1-3 minutes and load averages above 30 on an 8-core machine;
+not investigated further, not this project's own concern).
+
+**First result, striking**: honest's own 316 live-fallback overrides for these 21 files are **100%
+`WordPressDraftActionExtension`-qualified, zero `WordPressShareExtension`** -- the exact mirror of
+flagged's own 316-all-Share result from Step 17. Same count, opposite module. Compared the actual
+placeholder *sets*, not just counts: identical, all 316, in both runs (0 only-in-honest, 0
+only-in-flagged). A real, reproducible, and initially very promising-looking pattern.
+
+**Checked directly whether this explains the divergence -- it doesn't.** Extracted the 316 resolved
+USRs from each run and checked how many of the 834 diverging edges have one of them as their own
+`callerUSR`/`calleeUSR`: **zero, in all three buckets (0/344 missing, 0/425 extra, 0/65 changed)**.
+This eye-catching 316=316 mirror is a real, reproducible phenomenon, but a completely separate one
+from the edge-level divergence this investigation is chasing -- not the same declarations, not
+overlapping at all. Looking at the actual overridden declaration names (`keyboardFrame`,
+`selectedIndex`, `userInfo`, mangled with mangled-suffix hashes typical of local/private bindings
+inside function bodies) strongly suggests this is an instance of this project's own already-tracked,
+separate local-declaration-leak bug (`DeclarationExtractor` not scoping to function bodies), not a
+new finding about the WordPress-iOS edge asymmetry.
+
+**Status**: a real result, worth recording so it isn't rediscovered and chased again, but a dead
+end for this specific question. Item 1 (why bulk linking's own tie-break -- not live-fallback,
+already ruled out project-wide in Step 17 -- differs between honest and flagged for the actual
+834 diverging edges) remains open, exactly as before this step.
