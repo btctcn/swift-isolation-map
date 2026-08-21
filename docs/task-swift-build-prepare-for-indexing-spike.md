@@ -663,11 +663,22 @@ same process, including one with a real `SwiftBuildCompilerArgumentsProvider` qu
 perturbation from that activity as a contributing factor. **This file's own declarations are never
 indexed under `WordPressDraftActionExtension` at all**, by this measure.
 
+**Correction (Step 17): this "zero" claim was wrong, caught later, not left standing.** The probe
+that produced it only ever printed the first 30 of the 540 candidates (`.prefix(30)`) and grepped
+*that printed output*, never the full in-memory array `candidateSummary()` actually returned. A
+later, real check of the complete list (Step 17) found the true split is **267
+`WordPressShareExtension` / 267 `WordPressDraftActionExtension`** -- close to perfectly symmetric,
+not zero. The same check across all 21 diverging files found the identical near-50/50 pattern in
+every one of them. There is no declaration/call-graph-scan inconsistency in the raw index data --
+both scans agree throughout. This project's own "compile every line, don't extrapolate" discipline
+applies to this investigation's own probes too; the paragraph below (the "internal inconsistency"
+framing) is kept for the historical record but is **not accurate** -- see Step 17.
+
 **Yet `RawIndexStoreClient.callSites(inFile:)`, the exact same file, returns 1680 call-graph edges
 -- 840 of them real, `DraftActionExtension`-qualified caller/callee USRs**, real method bodies
-(`viewDidLoad`, `loadContentIfNeeded`, ...) with real line numbers. The index store's own
+(`viewDidLoad`, `loadContentIfNeeded`, ...) with real line numbers. ~~The index store's own
 declaration-scan and call-graph-scan disagree about whether `WordPressDraftActionExtension`'s own
-compiled unit of this file exists at all -- it does, for call sites; it doesn't, for declarations
+compiled unit of this file exists at all -- it does, for call sites; it doesn't, for declarations~~
 -- an internal inconsistency in the raw index data itself (or in how `indexstore`'s own definition
 -vs-reference role marking behaves for an `@objc`-bridged class compiled into a *non-owning*
 sibling target), not something this project's own code invented.
@@ -865,3 +876,62 @@ takes only `extractionResults` and a `[String: String]` override map -- no path,
 destination parameter of any kind reaches it, directly or transitively (confirmed by its own
 signature, not inferred). The fold-in bug this step traces is structurally unreachable from that
 threading fix's own code paths -- independent, not coincidentally correlated.
+
+## Step 17 -- Correction to Step 15's own probe, and confirmation that live-fallback overrides are
+## never the source of a `DraftActionExtension`-qualified survivor
+
+Continuing directly from the still-open question (Step 16: what decides whether a duplicate raw
+edge is even *constructed* asymmetrically per run, for the 34-55% of cases where the counterpart
+doesn't exist as a node in the other run at all).
+
+**A real methodological error found and corrected first, not glossed over.** Step 15's claim that
+`ShareModularViewController.swift` has "zero `DraftActionExtension`-qualified" candidates in
+`RawIndexStoreClient.definedSymbols(inFile:)` was checked by `grep`-ing the *printed* output of a
+probe that only ever printed `.prefix(30)` of the 540-candidate array -- never the full list the
+array itself held. A corrected probe, dumping the **complete** module-tagged count for all 540
+candidates, found the true split: **267 `WordPressShareExtension` / 267 `WordPressDraftActionExtension`**
+-- almost perfectly symmetric, not zero. Extended across all 21 diverging files: every single one
+shows the same near-50/50 pattern, not just this one. There is no "declaration-scan says it doesn't
+exist, call-graph-scan says it does" inconsistency in the raw index data (Step 15's own framing,
+now struck through there) -- both scans agree throughout that both targets' compiled units are
+fully, symmetrically indexed. This project's own "compile every line, don't extrapolate" standard
+applies to this investigation's own diagnostic code too, and this is a real instance of it not
+being followed the first time -- caught on a second look, not defended.
+
+**What this changes**: `DeclarationLinker.disambiguate`'s tie-break between two real, equally valid
+candidates (same name, same location, one per target) is genuinely choosing between two
+legitimate declarations for a large fraction of these files' own content -- not defaulting past a
+one-sided gap. Whatever governs its pick per-location is the real open question, not "why does only
+one target get indexed at all" (which doesn't happen).
+
+**Confirmed, directly, not assumed: live-fallback overrides are never the vehicle for a
+`WordPressDraftActionExtension`-qualified survivor in the flagged run.** Instrumented
+`SwiftIsolationMap.run()` to dump every entry in `localFallbackOverrides` (the live-fallback results
+actually passed to `linker.link(_:usrRewriteMapOverrides:)`) whose resolved USR falls under one of
+the four shared-target directories, across all 21 files -- not the single probe location Step 16
+used. Result: **316 matching overrides, all 316 `WordPressShareExtension`-qualified, zero
+`WordPressDraftActionExtension`.** (First attempt at this crashed the run outright --
+`Dictionary(uniqueKeysWithValues:)` on `unresolvedPlaceholders`, which really does contain duplicate
+placeholder keys across different files/declarations sharing a bare syntactic name, e.g.
+`syntactic:Fastfile`; fixed to `Dictionary(_:uniquingKeysWith:)` before the real, successful rerun --
+a real bug in this session's own diagnostic code, not the tool, caught by the crash itself rather
+than shipped silently.)
+
+This closes off live-fallback as a candidate explanation for the 34-55%/42-64% buckets Step 16 left
+unexplained: for every one of these 21 files, whenever a declaration's own placeholder needs live
+fallback at all in the flagged run, it resolves to `WordPressShareExtension`, without exception.
+Since bulk linking (`disambiguate`, index-store-driven, no compiler-args dependency) is the only
+other path a declaration's identity can take, **the remaining asymmetry must come from bulk
+linking's own tie-break differing between the honest and flagged processes** for at least some of
+these declarations -- a genuine puzzle, since `disambiguate` reads only `RawIndexStoreClient`
+output and `declaration.name`, neither of which the experimental flag touches, and both honest and
+flagged were separately confirmed internally deterministic (repeated invocations of the same
+binary reproduce identically) yet differ from each other. Not yet resolved: whether this is real
+per-process nondeterminism in how the raw index-store scan populates `candidatesByLocation`'s own
+array order (a hash-seeded `Dictionary`/`Set` somewhere in `RawIndexStoreClient`'s aggregation would
+be consistent with "stable within a process, unstable across independently-launched processes"),
+or something else entirely. This is now the single sharpest remaining open question for
+[[project_wordpress_ios_edge_asymmetry_root_cause]], not a restatement of Step 16's.
+
+**Full test suite**: 537 tests, all passing, ~90s (no regression; all instrumentation reverted after
+use, confirmed via `git diff`/`git status` before this commit).
