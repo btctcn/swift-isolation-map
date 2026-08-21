@@ -995,3 +995,44 @@ new finding about the WordPress-iOS edge asymmetry.
 end for this specific question. Item 1 (why bulk linking's own tie-break -- not live-fallback,
 already ruled out project-wide in Step 17 -- differs between honest and flagged for the actual
 834 diverging edges) remains open, exactly as before this step.
+
+## Step 19 -- Item 1 (bulk linking's tie-break) directly tested and disproven; the divergence lives
+## in edge selection, not declaration identity
+
+Instrumented `DeclarationLinker.buildUSRRewriteMap` itself (not a downstream consumer) to log the
+full candidate list and winning pick for `selectedModulesTableRowAt` -- the exact declaration whose
+edge at `ShareModularViewController.swift:549` has anchored this investigation since Step 13. Ran
+honest and flagged back to back (each killed intentionally right after its own "Linked N
+declaration(s)..." log line, well before the expensive live-fallback/oracle phases -- this
+instrumentation only needs bulk linking to have run once).
+
+**Result: identical in both runs.** `candidates=[WordPressShareExtension-USR, WordPressDraftActionExtension-USR]`,
+`winner=WordPressShareExtension-USR` -- same candidate order, same pick, in honest and flagged
+alike. **Item 1 is directly disproven, not just unconfirmed**: bulk linking's own tie-break for this
+declaration does not differ between the two paths at all. Separately confirmed this declaration is
+in neither run's `unresolvedPlaceholders` set (Step 18's own logs), so live-fallback never touches
+it either -- its own identity is settled by bulk linking alone, identically, in both runs.
+
+**Yet the actual `flagged9.json` report still shows this exact edge's `callerUSR` as
+`WordPressDraftActionExtension`-qualified** (re-checked directly against the fresh `flagged9.json`
+from Step 18, not assumed stale). Since the declaration's own resolved identity
+(`ownUSRByLocation`, feeding `link()`'s `ownUSR` computation, Step 15's own read of the code)
+is confirmed `WordPressShareExtension` in both runs, **the edge's `callerUSR` cannot be coming from
+the declaration's own identity at all -- it's coming directly from the raw index-store call-graph
+data** (`callGraphEdges`/`callSites`, Step 15's fold-in), which genuinely contains a separate,
+real `WordPressDraftActionExtension`-qualified edge for the identical physical call site (confirmed
+Step 16). The divergence was never about *which module a declaration's own identity resolves to* --
+both runs agree on that. It's entirely about **which of the two real, independently-valid duplicate
+raw edges ends up in the final `crossIsolationEdges()` output**, and that selection is not decided
+by `disambiguate` at all.
+
+**This redirects item 1 into item 3** (this investigation's own `knownUSRs`-membership lead,
+already on the checklist) rather than resolving it independently -- the two questions turn out to
+be the same question. Not yet answered: what specifically makes the `WordPressDraftActionExtension`
+-qualified duplicate of this edge the one that's `isUnknown`-eligible and survives filtering in
+flagged, while the `WordPressShareExtension`-qualified duplicate survives in honest, given both
+sides' own declarations resolve identically in both runs and neither edge's construction (Step 15's
+fold-in, purely index-store-driven) has any known flag-dependent input.
+
+**Full test suite**: 537 tests, all passing, ~70-90s (no regression; instrumentation reverted,
+confirmed via `git diff` before this commit).
