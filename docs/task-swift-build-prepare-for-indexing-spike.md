@@ -563,8 +563,11 @@ different, real, independently significant bug -- not the original one, but conf
 its own merits rather than left as a distraction.
 
 **Scale-faithful repro, both variants, still didn't reproduce the original bug.** A sequential
-5401-item repro (one process, ~30 min, matching one real worker's own item count) resolved the
-target declaration correctly every time. A genuinely concurrent repro (8 real worker subprocesses,
+5401-item repro (one process, ~30 min) resolved the target declaration correctly every time. 5401
+is this probe's own actual constructed count (600 sample files x 9 probed lines each, plus the one
+target item) -- deliberately built to meet or exceed Step 13's own back-of-envelope ~4500-per-worker
+estimate (36002 unresolved / 8 workers), not a re-measurement of that estimate; the two numbers are
+independent and both real, not in tension. A genuinely concurrent repro (8 real worker subprocesses,
 driven through `swift test --filter`) hung indefinitely instead -- twice, once for 11 hours before
 being killed.
 
@@ -707,14 +710,25 @@ wrong module, exactly as a second, real, but wrongly-attributed entry in the cal
 
 **What's still open, honestly**: this explains where a `DraftActionExtension`-qualified edge for a
 `WordPressShareExtension` source line comes from at all (a real, distinct duplicate, folded in by
-this over-broad "not yet known" test) -- both variants of the same physical call site plausibly
-exist in `rawCallGraph` in *every* run, honest and flagged alike, since this whole mechanism is
-index-store-driven and flag-independent, matching honest's own confirmed determinism (Step 13). Not
-yet traced: *why only one of the two duplicates survives into the final cross-isolation report, and
-why which one survives differs between honest and flagged* -- both edges, once `MultiTargetDeclarationAliasing`
-backfills the duplicate's isolation, should carry the *same* real isolation facts and so should
-either both appear or both be filtered by `IsolationInferenceEngine.crossIsolationEdges()` on equal
-terms. Something downstream still picks one over the other differently per run; not yet identified.
+this over-broad "not yet known" test). Whether both variants of a given physical call site actually
+exist in `rawCallGraph` in *every* run turned out to be true for the one location checked directly
+(Step 16) but **false for the majority of the other 833 diverging edges** (Step 16's own later
+quantitative re-check) -- so this mechanism is confirmed as *a* real source of duplicate edges, not
+yet confirmed as *the* explanation for why the raw duplicate itself is asymmetric per file/run in
+most cases. Not yet traced: *why only one of the two duplicates survives into the final
+cross-isolation report, and why which one survives differs between honest and flagged*, for the
+large majority where the counterpart doesn't even show up as a node in the other run at all --
+something upstream of `crossIsolationEdges()`'s own filtering (most likely `knownUSRs`'s exact,
+per-file-varying membership) decides this, not yet mapped. See Step 16 for the full, honest
+accounting of what does and doesn't generalize.
+
+**Note on the 13%/87% split above and Step 16's separate mechanism**: these operate on different
+axes, not the same question. The 63/483 vs. 420/483 split here is about whether a *declaration's own
+identity* (its placeholder-to-real-USR resolution) required live-fallback at all. `ExternalIsolationBackfill
+.query()` (Step 16) resolves the *isolation* of a caller/calleeUSR already absent from `declarations`
+-- a question that applies uniformly to edges regardless of which side of this 13%/87% split their
+caller's own identity came from. The two percentages aren't a partition of which mechanism "covers"
+which edges; both mechanisms can matter for the same edge, at different points in the pipeline.
 
 **Status**: root mechanism for the *existence* of wrong-module duplicate edges is found and
 well-evidenced, not the same thing as Step 13's original divergence being fully closed. A real fix
@@ -726,7 +740,7 @@ not the fix; a real fix would need its own real-corpus before/after per this pro
 discipline, and this session's own recurring external-kill instability (Step 13) makes another
 full WordPress-iOS run for that purpose a real cost to plan for, not undertake casually.
 
-## Step 16 -- Closed: why only one duplicate survives, and why it differs between honest and flagged
+## Step 16 -- One representative case fully traced; does not generalize to the full 834-edge divergence
 
 Continuing directly from Step 15's own open question. Temporary instrumentation added right after
 `linker.link(...)` in `SwiftIsolationMap.swift`, dumping every raw (pre-cross-isolation-filter)
@@ -781,27 +795,73 @@ compiled it -- whichever target's invocation the real `xcodebuild` build happens
 silently wins, with no target-name preference of any kind. For this specific file, on this specific
 corpus, that arbitrary last-wins order happens to land on `WordPressDraftActionExtension`.
 
-**The full picture, closed**: both runs are equally "arbitrary" for a file compiled by more than
-one target -- flagged picked its one answer via a real, principled heuristic (#106); honest picked
-its own, different answer via raw build-log ordering, a mechanism that was never fixed because it
-was never known to need fixing (the whole spike's premise was that the *honest* path was the
-ground truth flagged had to match). Both duplicate edges are real, both are semantically valid
-(the same source line, from two real target compilations), and `ExternalIsolationBackfill.query()`'s
-strict-equality USR matching -- correct and necessary for its own real purpose, distinguishing
-genuinely different declarations -- has no way to know these two USRs name "the same call, from two
-targets" rather than two unrelated symbols. Step 13's original ~12% divergence is not a regression
-this spike introduced, and not a bug `SwiftBuildCompilerArgumentsProvider` itself has -- it's a
-pre-existing multi-target ambiguity that the honest path was silently just as arbitrary about, only
-never noticed because nothing had ever compared it against a second, independently-arbitrary answer
-before.
+**For this one location (line 549)**, both runs are equally "arbitrary" for a file compiled by more
+than one target -- flagged picked its one answer via a real, principled heuristic (#106); honest
+picked its own, different answer via raw build-log ordering (`LiveXcodeCompilerArgumentsProvider`
+has no equivalent preference logic at all -- confirmed by re-reading `XcodeBuildLogCompilerArgumentsProvider
+.swift`'s `runVerboseBuild`: `parsed[file] = fullArguments` is a bare dictionary assignment inside a
+loop over every real `swiftc` invocation the `-verbose` log contains for this file, across every
+target that compiled it -- whichever invocation the real build happens to log **last** silently
+wins). `ExternalIsolationBackfill.query()`'s strict-equality USR matching -- correct and necessary
+for its own real purpose, distinguishing genuinely different declarations -- has no way to know
+these two USRs name "the same call, from two targets" rather than two unrelated symbols, so exactly
+one resolves and the other stays permanently `.unknown`.
 
-**Status**: closed. Root cause identified, evidenced end-to-end from the original edge-level diff
-(Step 13) through the raw call-graph duplication (Step 15) to the exact query mechanism and why it
-inverts between runs (this step). Two real fix directions, neither implemented here (this remains
-an investigation record): (1) `LiveXcodeCompilerArgumentsProvider` could gain the same home
--directory-match preference `SwiftBuildCompilerArgumentsProvider` already has, making honest at
-least as principled as flagged (though still just one arbitrary-but-motivated choice for a
-genuinely multi-target file); (2) Step 15's own fix candidate (recognize a sibling-target duplicate
-via mangled-suffix match *before* folding it into the call graph at all) would remove the duplicate
--edge ambiguity at its source, independent of which target's args any provider picks. Either would
-need its own real-corpus before/after per this project's standard discipline before landing.
+**This was reported as "closed" in an earlier version of this step -- premature, caught on review,
+not left standing.** The finding above was drawn from a single representative call site (two call
+sites in one file, four raw edges) and generalized to a claim about the entire 834-edge divergence
+without checking it. A real re-check, using data already on disk (`honest4.json`/`flagged7.json`, no
+new corpus run needed) rather than another expensive one: for every `isUnknown: true` edge in the
+344 honest-only and 425 flagged-only sets (315 and 385 of them respectively -- the large majority),
+swap the caller/callee USRs' module name to what the *other* run would have used, and check whether
+that swapped node explains the asymmetry the way line 549 did.
+
+| outcome | honest-only (of 315) | flagged-only (of 385) |
+|---|---|---|
+| swapped variant resolves to the *same* isolation as its own caller (naturally non-crossing, matching this step's own line-549 mechanism) | 4 | 12 |
+| swapped variant's callee has **no node at all** in the other run (the duplicate raw edge apparently never gets constructed there in the first place -- contradicts this step's own "both duplicates always exist in every run" claim) | 108 | 213 |
+| swapped variant resolves to a *different* isolation from its caller -- would itself be a genuine crossing, yet doesn't appear as a reported edge in the other run -- unexplained by this step's mechanism | 203 | 160 |
+
+**This step's own mechanism accounts for roughly 1-3% of the checked edges (4/315, 12/385), not the
+majority.** The largest bucket (34-55%) directly contradicts this step's claim that "both variants
+of the same physical call site plausibly exist in `rawCallGraph` in every run" (Step 15's own
+phrasing, repeated here) -- for most locations, only one of the two duplicate raw edges is ever
+constructed in a given run's own `linked.callGraph`, not both, meaning whatever decides *that*
+(likely something in the same `knownUSRs`-driven fold-in Step 15 found, varying per file/declaration
+in a way this investigation hasn't mapped) is doing more work than the query-strict-match mechanism
+this step describes. The second-largest bucket (42-64%) isn't explained at all yet.
+
+**Status, honestly restated**: `ExternalIsolationBackfill.query()`'s strict-USR-equality mechanism is
+real, confirmed by direct instrumentation, and a genuine contributing factor for a real fraction of
+the divergence -- not invented, not withdrawn. But it is not the whole explanation, and this step's
+earlier "closed" framing overstated what one representative case proved. Step 15's own root
+mechanism (the naive `knownUSRs`-absence fold-in test) remains the correctly-identified *source* of
+duplicate edges existing at all; *why* the raw duplicate is asymmetric per-run for most locations,
+and what specifically determines it, is still open. Continuing this properly would need either
+per-file instrumentation across a representative sample of the remaining 20 files (not one), or
+direct inspection of `knownUSRs`'s own exact membership across files -- both real work, not
+attempted here. Two fix directions from Step 15 remain the actionable candidates regardless of
+which exact per-edge mechanism explains survival: (1) give `LiveXcodeCompilerArgumentsProvider` the
+same home-directory-match preference `SwiftBuildCompilerArgumentsProvider` already has; (2) recognize
+a sibling-target duplicate via mangled-suffix match *before* folding it into the call graph at all,
+removing the duplicate-edge ambiguity at its source regardless of which target's args any provider
+picks. Either needs its own real-corpus before/after per this project's standard discipline before
+landing -- not undertaken here.
+
+**Terminology note**: this project's own prior memory record of the still-open PR #104 finding
+described it as a "multi-target shared-file compiler-args merge ambiguity." Steps 15/16 found the
+real mechanism is not a compiler-args-merge issue at all -- it's (a) `DeclarationLinker.link()`'s
+own `knownUSRs`-absence fold-in test conflating a sibling target's duplicate with a genuinely
+external callee, and (b) `ExternalIsolationBackfill.query()`'s strict USR-equality matching, for at
+least a real fraction of cases. Anything referencing the older "compiler-args merge" phrasing
+(changelog, PR description, project memory) should be corrected to point here instead, not repeat
+it.
+
+**Independence from PR #104's own two pre-existing `-derivedDataPath`-threading fixes**: those fixes
+touched `LiveXcodeBulkExtractionEnvironmentProvider`, `resolveDeterministicSimulatorDestination`, and
+`SwiftVersionDetection.xcodeLanguageMode` -- build-settings/destination resolution, all upstream of
+where an index store gets built or located. `DeclarationLinker.link(_:usrRewriteMapOverrides:)`
+takes only `extractionResults` and a `[String: String]` override map -- no path, environment, or
+destination parameter of any kind reaches it, directly or transitively (confirmed by its own
+signature, not inferred). The fold-in bug this step traces is structurally unreachable from that
+threading fix's own code paths -- independent, not coincidentally correlated.
