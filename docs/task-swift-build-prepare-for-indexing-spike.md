@@ -1241,3 +1241,70 @@ the same sitting.
 
 **Full test suite**: 537 tests, all passing (`DeclarationLinker.swift`'s instrumentation fully
 reverted before running).
+
+## Step 24 -- Root mechanism found: a single `unknownUSRs` membership flag on the *caller's* own USR,
+## not on any callee or on `linked.callGraph`/`declarations` construction at all
+
+A fourth full instrumented `honest11`/`flagged11` pair, this time logging directly inside
+`SwiftIsolationMap.swift` (temporary, reverted via `git checkout --`) right after `linker.link()` and
+again after `mergedDeclarations`/`IsolationInferenceEngine` construction -- for the exact two USRs
+this edge's caller resolves to (`ShareCaller`, `DraftCaller`).
+
+**A fourth declaration checked, disambiguate still identical**: before touching `SwiftIsolationMap
+.swift`, Step 23's own instrumentation (still in the honest10/flagged10 logs, no new run needed) was
+re-checked for the CALLER method itself (`textView(_:attachment:imageAt:onSuccess:onFailure:)`,
+declared at `ShareExtensionEditorViewController.swift:1120`) -- byte-identical candidates and winner
+(`WordPressShareExtension`) in both runs, same as the three declarations checked in Steps 19/23. Four
+independent declarations now confirm `disambiguate`'s tie-break is not merely "usually" stable but
+consistently, deterministically favors `WordPressShareExtension` for this whole shared-source-
+directory group, in every run tested.
+
+**Everything up to and including the raw call graph is confirmed byte-identical, in-process, in both
+runs**: `linked.callGraph` has exactly 8 edges at this location in both `honest11` and `flagged11`
+(matching Step 22's separate on-disk snapshot, but this time observed live, inside each run's own
+process); `linked.declarations[ShareCallerUSR]` is present with a real location in both;
+`linked.declarations[DraftCallerUSR]` is absent in both; `mergedDeclarations` shows the identical
+shape in both; `engine.resolveIsolation(for: ShareCallerUSR)` returns `globalActor(name: "MainActor")`
+in **both**; `resolveIsolation(for: DraftCallerUSR)` returns `.unspecified` in **both**. Every single
+value checked at this point in the pipeline is identical between honest and flagged.
+
+**The one and only difference found**: `externalResolution.unknownUSRs.contains(ShareCallerUSR)` is
+**`true` in `honest11`, `false` in `flagged11`** -- `DraftCallerUSR` is `false` in both (never a work
+item at all, since it never appears as anyone's `calleeUSR` and never won `usrRewriteMap`, matching
+Steps 19/23's disambiguate finding).
+
+**Why this one flag decides the entire edge count at this location**:
+`AnalysisReportBuilder.swift` computes `isUnknown = unknownUSRs.contains(edge.callerUSR) ||
+unknownUSRs.contains(edge.calleeUSR)` (line 67) and then explicitly suppresses a report-worthy-
+looking edge under exactly one condition (line 80): `isIsolated(callerIsolation), case .nonisolated =
+calleeIsolation, !isUnknown` -- "a known-isolated caller reaching a known-nonisolated callee is
+usually not a real risk, *unless* something about this edge is already uncertain." `ShareCallerUSR`'s
+own isolation (`globalActor(MainActor)`) is identical in both runs, and its three non-`shareData`
+callees (`sharedImageDict`, `updateValue`, `identifier`) all resolve to `.nonisolated` identically in
+both runs too -- so in `honest11`, `isUnknown=true` (from the caller side) exempts these 3 edges from
+the suppression rule and they survive into the report (matching the real `isUnknown: true` edges
+observed in `honest9`/`honest10`/`honest11`'s own JSON). In `flagged11`, `isUnknown=false`, the
+suppression rule fires, and all 3 are silently dropped -- explaining the "flagged has 3, honest has 7"
+split down to the exact boolean that causes it. (`shareData`'s own Share-caller edge was never in
+either run's output at all, for an unrelated, already-understood reason: its callee also resolves to
+`globalActor(MainActor)`, identical to the caller, so `crossIsolationEdges()`'s own base filter
+excludes it before `isUnknown` is even consulted.)
+
+**What remains genuinely open**: *why* `ShareCallerUSR` ends up in `unknownUSRs` in one run and not
+the other. `unknownUSRs` is populated by `ExternalIsolationBackfill.resolve()`'s **declaration-level**
+work-item path (`collectDeclarationLevelWorkItems`, not the edge-level path Step 15-22 already
+examined) -- specifically the conformance-resolution branch, since this caller is a member of
+`extension ShareExtensionEditorViewController: TextViewAttachmentDelegate` (an external Aztec-
+framework protocol) and SE-0316's same-context-witness rule needs that protocol's own global-actor
+status resolved, either from the bulk symbol-graph cache or a live `sourcekitd` query -- both of which
+ultimately depend on `compilerArguments` (the flag-dependent provider). This declaration-level
+resolution succeeding in computing the *correct* isolation value in both runs, while still landing in
+`unknownUSRs` in one but not the other, means whatever's uncertain here is a bookkeeping/pathway
+difference (the query took a different route, or the same conclusion arrived by a different,
+partially-uncertain route), not a difference in the final resolved fact. Not instrumented in this
+step -- would need direct logging inside `collectDeclarationLevelWorkItems`/`applyDeclarationLevelOutcomes`
+for `TextViewAttachmentDelegate`'s own USR and the bulk-cache/live-query outcome recorded for it, in
+a fifth honest/flagged pair.
+
+**Full test suite**: 537 tests, all passing (`SwiftIsolationMap.swift`'s instrumentation fully
+reverted before running).
