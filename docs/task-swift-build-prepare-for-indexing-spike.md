@@ -1128,3 +1128,66 @@ files' callees, comparing honest vs. flagged -- not attempted here, given the co
 full-corpus run against this real, large project in a session with its own recurring external
 instability (documented above, now understood to be unrelated contention from a separate concurrent
 build on the same machine).
+
+## Step 22 -- Two candidate theories directly tested and disproven against the still-live private
+## DerivedData, without a new corpus run; the real mechanism remains open
+
+The private, composite-keyed DerivedData (docs/task-private-derived-data-hypothesis.md) from Step
+20-21's `honest9`/`flagged9` pair was still on disk and untouched
+(`~/Library/Caches/swift-isolation-map/DerivedData/WordPress-d294721d/WordPress/generic_platform_
+iOS_Simulator/default`), with `honest9` the more recent of the two real `xcodebuild` builds (17:18
+vs. `flagged9`'s 15:34). This let two concrete theories get tested directly against the live index
+store and the live `SwiftBuildCompilerArgumentsProvider`, with no new corpus run at all -- a
+temporary standalone `diagnostic-probe` executable target (same established pattern as prior steps,
+reverted after use via `git checkout --`/`rm -rf`) linked `RawIndexStoreClient` and
+`SwiftBuildCompilerArgumentsProvider` directly.
+
+**Theory A, tested and disproven: "the raw index store itself only has one target's records for
+this file/location."** Querying `definedSymbols(inFile:)`/`callSites(inFile:)` directly against the
+live store for `ShareExtensionEditorViewController.swift:1127` returned **8 raw call-site edges** --
+both the `WordPressShareExtension`-qualified and `WordPressDraftActionExtension`-qualified caller/
+callee pairs, for all 4 callees (`shareData`, `sharedImageDict`, `updateValue`, `identifier`),
+right now, in the exact same frozen state that `flagged9`'s CLI run (which reported only 3 Draft-
+only edges at this location) would have read from. This means the divergence documented in Step 21
+is **not** explainable by the raw index data itself lacking the Share-side records -- confirmed
+directly, not inferred. It also clarifies a modeling error in Step 21 itself: `honest9.json`/
+`flagged9.json`'s per-location edge counts are the CLI's own **final, fully-filtered**
+`crossIsolationEdges()` output, not a dump of `linked.callGraph` -- the "7 vs. 3 edges" comparison
+was already comparing post-filter results, not raw graph construction, so Step 21's framing
+("`knownUSRs`/fold-in differs between runs") was itself an unverified inference, not a directly
+observed fact.
+
+**Theory B, tested and disproven: "flagged's compiler-args resolution picks the wrong (Draft)
+target for this file, so `SyntaxAnalysis` never sees Share's isolation at all."** This was the
+natural next suspect -- item 4(a)'s "home-directory heuristic" fix (#106) landed 2026-08-20 10:11,
+before `flagged9` ran (2026-08-21 15:34), so it should already have been active. Querying
+`SwiftBuildCompilerArgumentsProvider.compilerArguments(forFile:)` directly, right now, for both
+`ShareExtensionEditorViewController.swift` (the caller's file) and `ShareExtensionAbstractViewController.swift`
+(`shareData`'s declaring file) returns `-module-name WordPressShareExtension` for **both** --
+`preferredArguments`'s home-directory match is correctly picking Share, not Draft, exactly as #106
+intends. `flagged9.log`'s own `SwiftBuild direct: resolved compiler arguments for 5553 file(s)
+across 497/497 target(s)` line confirms no target failed that run either, ruling out the transient-
+failure fallback path `preferredArguments`'s own doc comment describes. Yet `flagged9.json`'s actual
+output for this location shows the **Draft**-qualified declarations resolving correctly and the
+Share-qualified ones missing entirely -- the opposite of what Theory B would predict. This is a
+real, currently unexplained contradiction, not glossed over: whatever picks which target's
+*isolation* ends up recorded in `declarations`/`byUSR` for this specific class/property is
+demonstrably not simply "whichever target's compiler args `SwiftBuildCompilerArgumentsProvider`
+prefers for that file."
+
+**What remains**: with both the raw-graph-differs theory and the wrong-target-args theory directly
+falsified against live data, the remaining candidate sites are `DeclarationLinker.disambiguate`'s
+tie-break winner itself (Step 19 found it identical for *one* location,
+`ShareModularViewController.swift:549` -- not yet re-checked for this location or in general) and
+whatever in `byUSR`'s construction/merge (`Self.merged`, `resolveInheritanceViaBaseOfRelation`,
+`resolveExtensionContainingTypeViaChildOfRelation`) could cause the *same* declaration to end up
+attributed to a different real USR's isolation across two runs against the same shared index data.
+Distinguishing between these needs direct instrumentation of `usrRewriteMap`'s value for `shareData`/
+`sharedImageDict`'s own declarations specifically (not just the caller, as Step 19 checked), compared
+honest vs. flagged -- which does require a new instrumented live run, since the live `Declaration
+Linker.link()` code path itself (not just its static index-store inputs) is what needs observing.
+Not attempted in this step, to keep the two disproofs above -- genuinely informative on their own --
+from being buried under yet another expensive, not-yet-executed run.
+
+**Full test suite**: 537 tests, all passing (Package.swift/`Sources/diagnostic-probe` fully reverted
+before running).
