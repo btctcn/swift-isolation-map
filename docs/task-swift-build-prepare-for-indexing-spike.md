@@ -1506,6 +1506,18 @@ crossing into a resolved `nonisolated` callee, a real, non-`isUnknown` finding),
 since its query failed), so caller (`nonisolated`) ≠ callee (`unspecified`) -- a genuine crossing,
 reported with `isUnknown: true`.
 
+**Why exactly 14, not 4x7=28 -- the two never-winning targets checked directly, not left as an
+inferred consequence.** `WordPressNotificationServiceExtension` and `WordPressDraftActionExtension`
+never occupy `candidates[0]` in either provider (honest's log order and flagged's `targetInfos`
+order both put `WordPress`/`WordPressShareExtension` first, never these two) -- by this step's own
+mechanism, their seven-edge groups should therefore be `.unknown` identically in both runs, landing
+in the diff's "shared" bucket rather than its "missing"/"extra" ones. Checked directly rather than
+left as a should-follow-from-the-mechanism claim: `honest26q.json` and `flagged11.json`'s edge sets
+for both groups, restricted to this file, are the exact same 7 keys each, with an identical
+`(risk, callerIsolation, calleeIsolation, isUnknown)` tuple on every one -- zero mismatches. That
+confirms the 14-edge residual is entirely the `WordPress`/`WordPressShareExtension` pair (7 + 7);
+the other two targets' groups are genuinely inert to which one "wins" the file's arg resolution.
+
 **Status: understood, not a correctness bug, and not fixable the way Step 25's was.** Every edge on
 both sides of this residual is either a real, confidently-resolved crossing, or an edge honestly
 marked `isUnknown: true` -- this project's own explicit "not a confirmed risk" signal, working
@@ -1513,11 +1525,13 @@ exactly as designed for a genuinely unresolvable case. There is no home-director
 a file with no target-named path component at all, so Step 25's fix has nothing to attach to here.
 The two providers picking different "first" candidates for this specific, narrow shape (files
 outside every target's own directory, shared by targets whose own declarations live in per-target
-*generated* sources outside the scanned root) is real but small -- 14 edges out of the original 834,
-already down from 98.3% to effectively fully accounted for. A genuine future improvement (not
-undertaken here, no correctness need drives it) would be making both providers agree on what "first"
-means for this fallback case -- e.g., sorting candidates by target name -- so the *set* of "unknown"
-edges is at least identical between the two paths, even though which one is "confidently resolved"
-would remain arbitrary by construction.
+*generated* sources outside the scanned root) is real but small -- 14 edges out of the original 834.
+**To be clear about which step did what**: Step 25's fix is what produced the 834 -> 14 reduction
+(98.3%); this step doesn't change that count at all, it only establishes that the 14 left over are
+legitimate (real crossings or honestly-flagged uncertainty), not an unexplained remainder of the
+same bug. A genuine future improvement (not undertaken here, no correctness need drives it) would be
+making both providers agree on what "first" means for this fallback case -- e.g., sorting candidates
+by target name -- so the *set* of "unknown" edges is at least identical between the two paths, even
+though which one is "confidently resolved" would remain arbitrary by construction.
 
 **Full test suite**: 538 tests, all passing (instrumentation fully reverted before running).
