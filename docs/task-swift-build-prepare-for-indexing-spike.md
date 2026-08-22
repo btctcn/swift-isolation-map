@@ -868,14 +868,33 @@ removing the duplicate-edge ambiguity at its source regardless of which target's
 picks. Either needs its own real-corpus before/after per this project's standard discipline before
 landing -- not undertaken here.
 
-**Terminology note**: this project's own prior memory record of the still-open PR #104 finding
-described it as a "multi-target shared-file compiler-args merge ambiguity." Steps 15/16 found the
-real mechanism is not a compiler-args-merge issue at all -- it's (a) `DeclarationLinker.link()`'s
-own `knownUSRs`-absence fold-in test conflating a sibling target's duplicate with a genuinely
-external callee, and (b) `ExternalIsolationBackfill.query()`'s strict USR-equality matching, for at
-least a real fraction of cases. Anything referencing the older "compiler-args merge" phrasing
-(changelog, PR description, project memory) should be corrected to point here instead, not repeat
-it.
+**Terminology note (superseded -- see the correction immediately below before citing this
+anywhere)**: this project's own prior memory record of the still-open PR #104 finding described it
+as a "multi-target shared-file compiler-args merge ambiguity." Steps 15/16 found the real mechanism
+is not a compiler-args-merge issue at all -- it's (a) `DeclarationLinker.link()`'s own `knownUSRs`-
+absence fold-in test conflating a sibling target's duplicate with a genuinely external callee, and
+(b) `ExternalIsolationBackfill.query()`'s strict USR-equality matching, for at least a real fraction
+of cases. Anything referencing the older "compiler-args merge" phrasing (changelog, PR description,
+project memory) should be corrected to point here instead, not repeat it.
+
+**Correction (added after Step 25): this note is itself now the outdated one -- do not cite it,
+cite Step 25 instead.** Steps 19-25 (further down this document) directly re-tested both (a) and (b)
+against the real dominant divergence and found neither holds up as the actual cause: **(a)** Steps
+19/23/24 directly instrumented `disambiguate`'s winner and `linked.callGraph`/`linked.declarations`
+for four independent declarations, in-process, in both the honest and flagged runs, and found them
+byte-identical every time -- the `knownUSRs`-absence fold-in this note blames is confirmed to
+produce duplicate edges (that part was always correct), but produces the *same* duplicates
+identically in both runs, so it cannot be the source of *divergence* between them. **(b)** Step 16's
+own quantitative recheck (a few paragraphs above this one) already found the strict-USR-match
+mechanism explains only ~1-3% of the 834-edge divergence -- a real, confirmed mechanism, but not "a
+real fraction" in the sense of a dominant one, and Step 25 never needed it to explain the other
+~98%. The actual dominant mechanism (Step 25, closing 98.3% of the divergence) is, ironically,
+exactly the "compiler-args merge/selection" shape this note originally set out to correct away from
+-- just in a different provider than PR #104 touched: `LiveXcodeCompilerArgumentsProvider` (the
+honest path) had no equivalent of `SwiftBuildCompilerArgumentsProvider`'s (#106's) home-directory
+target-preference heuristic, so it could -- and, for the traced example, did -- resolve a shared
+file to the wrong sibling target's compiler arguments. Any changelog/PR/memory text citing this
+document for "why the two paths diverge" should point to Step 25, not to this paragraph.
 
 **Independence from PR #104's own two pre-existing `-derivedDataPath`-threading fixes**: those fixes
 touched `LiveXcodeBulkExtractionEnvironmentProvider`, `resolveDeterministicSimulatorDestination`, and
@@ -885,6 +904,21 @@ takes only `extractionResults` and a `[String: String]` override map -- no path,
 destination parameter of any kind reaches it, directly or transitively (confirmed by its own
 signature, not inferred). The fold-in bug this step traces is structurally unreachable from that
 threading fix's own code paths -- independent, not coincidentally correlated.
+
+**This independence check was against the mechanism this step (Step 16) itself was investigating,
+not against the fix Step 25 eventually landed -- extended here for completeness, since a reviewer
+correctly pointed out the gap.** Step 25's actual fix lives in `LiveXcodeCompilerArgumentsProvider
+.runVerboseBuild`, the *same function* `resolveDeterministicSimulatorDestination` is called from
+(line ~138, to build the `-destination` flag for the `xcodebuild` invocation) -- so this one
+genuinely needed checking, unlike `DeclarationLinker` which never touches this file at all. Reading
+`runVerboseBuild` directly: `destination`'s only use is constructing `arguments` for `processRunning
+.run(executable: "xcodebuild", ...)` (line ~191), *before* the process runs. The fix's own logic --
+collecting every invocation mentioning a file into `candidatesByPath` and picking among them via
+`preferredArguments` -- reads only `result.standardOutput` (the build log text `xcodebuild` already
+produced) and never reads `destination` itself. The fix would behave identically no matter what
+`resolveDeterministicSimulatorDestination` returned -- independent for the same reason `Declaration
+Linker` was, just confirmed against the real landed-fix location instead of the mechanism an earlier
+step guessed would need fixing.
 
 ## Step 17 -- Correction to Step 15's own probe, and confirmation that live-fallback overrides are
 ## never the source of a `DraftActionExtension`-qualified survivor
@@ -1367,13 +1401,34 @@ different in both). The traced example itself (`ShareExtensionEditorViewControll
 shows exactly the same 3 edges in both honest and flagged, byte-identical, confirming the fix directly
 resolves the specific case Steps 19-24 traced end-to-end.
 
-**The remaining 14 edges are a separate, newly-surfaced, much smaller issue, not yet investigated**:
-all 14 are at `Classes/System/ApiCredentials+BuildSecrets.swift` (7 real call sites, each producing a
-pair of opposite-direction-labeled entries) -- a single-target file (`extension ApiCredentials`,
-calling into `BuildSettingsKit`'s `BuildSecrets`), nothing to do with the multi-target shared-file
-shape this step's fix addresses. Isolation resolves as `nonisolated -> unspecified`/`unspecified ->
-nonisolated` depending on which side is "unspecified" in which run -- a real, but distinct and far
-smaller, discrepancy. Recorded here as a new, separate open item, not conflated with this step's own
-closed finding.
+**Methodology correction (user review caught this): "honest edges: 6347" above is not the same
+quantity as Step 13's "6617"-edge baseline, and comparing them directly is wrong.** The diff script
+behind this whole section (and every prior honest-vs-flagged comparison since Step 13) deduplicates
+by a `(callerUSR, calleeUSR, file, line)` key -- built as a Python dict comprehension, so two report
+entries sharing an identical key silently collapse to one. Checked directly, after this review: both
+`honest9.json` (pre-fix) and `honest-fix1.json` (post-fix) contain exactly **337** such duplicate-
+key report entries (189 and 190 distinct locations respectively, 177 of them the same location in
+both) -- every checked instance is a byte-for-byte exact duplicate row (same isolation, same
+`explanation`, same `risk`), not two different findings that happen to collide. This is a real,
+pre-existing report-generation characteristic, present *before* Step 25's fix and apparently
+unrelated to it (near-identical count on both sides of the fix) -- not investigated further here,
+genuinely out of scope for this document, but worth its own follow-up. The **raw** edge-array
+length -- the one Step 13's "6617" figure actually was -- moved **6617 -> 6684 (+67, +1.0%)**, not
+"6617 -> 6347 (-4%)" as an unwary reading of this section could conclude. The 834 -> 14 *difference*
+computed above is unaffected by this (deduplication is applied identically to both operands of a
+diff, so it cancels out of a delta even though it distorts each side's own printed total) -- but the
+absolute counts printed alongside it should never have been read against Step 13's differently-
+computed baseline, and this document didn't call that out until now.
+
+**The remaining 14 edges are a separate, newly-surfaced issue -- Step 25's own characterization of
+it was itself wrong, corrected below (Step 26)**: all 14 are at `Classes/System/
+ApiCredentials+BuildSecrets.swift`. This paragraph originally called it "a single-target file... 
+nothing to do with the multi-target shared-file shape this step's fix addresses" -- that was
+incorrect, caught during Step 26's own investigation (see below): the file is compiled by (at least)
+four sibling targets (`WordPress`, `WordPressNotificationServiceExtension`,
+`WordPressDraftActionExtension`, `WordPressShareExtension`), confirmed directly via the raw index
+store. It just isn't fixable by *this* step's own home-directory heuristic, because the file
+physically lives under `Classes/System/`, not under any target-named directory at all -- there is no
+path-component signal for `preferredArguments` to match against, for either provider. See Step 26.
 
 **Full test suite**: 538 tests (537 + this step's new test), all passing.
