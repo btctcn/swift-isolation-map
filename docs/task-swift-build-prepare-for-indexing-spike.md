@@ -1432,3 +1432,92 @@ physically lives under `Classes/System/`, not under any target-named directory a
 path-component signal for `preferredArguments` to match against, for either provider. See Step 26.
 
 **Full test suite**: 538 tests (537 + this step's new test), all passing.
+
+## Step 26 -- The remaining 14-edge residual explained: `ApiCredentials+BuildSecrets.swift` has no
+## home-directory signal for *any* target, so both providers' documented, accepted fallback picks a
+## different one -- not a new bug, and not fixable the way Step 25's was
+
+Direct instrumentation, in two passes (both reverted via `git checkout --` after use): first, the
+same cheap args-dump-and-exit hook Step 25 used, targeting this file specifically for both honest
+(post-fix) and flagged; second, logging directly inside `ExternalIsolationBackfill.query()` --
+resolved module name, `CursorInfoResult.all`'s raw USR list, and the final match/outcome -- filtered
+to this file's own edge-level work items, for a full honest run (`honest26q.json`).
+
+**The file has no home-directory match for any target.** `Classes/System/ApiCredentials+BuildSecrets
+.swift` is compiled by (at least) four sibling targets -- confirmed via the raw index store
+(`definedSymbols`/`callSites`): `WordPress` (the main app), `WordPressNotificationServiceExtension`,
+`WordPressDraftActionExtension`, `WordPressShareExtension`. Its own path has no target-named
+component at all (`Classes/System/`, not any of the four target directories), so `preferredArguments`
+-- reused by both providers since Step 25 -- can never find a unique path-component match here. Both
+providers fall through to their own documented, pre-existing fallback ("whichever candidate came
+first"), exactly as designed for this exact shape ("a file living outside any target-named
+directory" -- `preferredArguments`'s own doc comment, unchanged since #106). The two providers'
+`candidates[0]` mean different things, though: honest's `runVerboseBuild` orders candidates by
+whichever `xcodebuild -verbose` compile line printed first (confirmed: **`WordPressShareExtension`**,
+via the args dump), while flagged's `SwiftBuildCompilerArgumentsProvider` orders them by
+`workspaceInfo.targetInfos`'s own enumeration (confirmed: **`WordPress`**) -- an independent
+ordering with no reason to agree.
+
+**Why this produces exactly the residual pattern seen**: `client`/`secret`/`zendeskAppId`/
+`zendeskUrl`/`zendeskClientId`/`encryptedLogKey`/`debuggingKey` are static properties whose *only*
+physical declaration is a per-target *generated* source file under each target's own DerivedSources
+(a build-time secrets-injection step -- the real, hand-written file this project's own source tree
+has, `WordPress/Credentials/Secrets-example.swift`, is a placeholder template, never the compiled
+one) -- outside `projectRoot`, so `SyntaxAnalysis` never sees any of the four targets' own
+declarations for these seven properties at all. None of them ever appear in `linked.declarations`
+directly, and `MultiTargetDeclarationAliasing`'s suffix-based backfill (`collectEdgeLevelWorkItems`)
+requires an already-linked sibling with a real location to alias *from* -- there is none for any of
+these seven properties, in any run. Every reference to them becomes a genuine edge-level oracle work
+item, queried at the one real call site inside `toSecrets()` (this shared file), using whichever
+target `compilerArguments(forFile:)` resolved for the *whole file* (memoized once, not per query).
+Confirmed directly from `honest26q`'s query log: querying `WordPressShareExtension`'s own
+`debuggingKey` returns `result.all.usrs == ["...WordPressShareExtension...debuggingKey..."]` and
+resolves (`RESOLVED via symbolGraph -> nonisolated`) -- `sourcekitd`, compiled under Share's own
+context (honest's resolved module for this file), only ever sees Share's own variant at this
+position. Querying any *other* target's `debuggingKey` targetUSR at the identical (file, line,
+column) returns that exact same one-element result list -- `USRMatching`'s strict equality never
+matches a different target's USR, so every other target's own property query fails (`NO MATCH ->
+.unknown`), confirmed for all three other targets in the same log.
+
+**This deterministically produces one "confidently resolved" target's group and three "unknown"
+groups for whichever target's properties don't match the winning args -- but whether a given
+target's group appears in the *report* at all depends on a second, independent question: does that
+target's own `toSecrets()` (the caller) *also* happen to resolve to the identical isolation as its
+properties?** `toSecrets()`'s own isolation is governed by a completely separate mechanism (not this
+file's own arg resolution at all): `MultiTargetDeclarationAliasing`'s mangled-suffix match against
+whichever target's `toSecrets()` won `disambiguate` (confirmed: `WordPressNotificationServiceExtension`,
+first in the raw index store's own candidate order, both runs -- consistent with the entire session's
+findings that `disambiguate` never varies by run), or an independent live query wherever else that
+target's own `toSecrets()` is *called from* (a properly home-directory-resolvable file, if one
+exists). Confirmed directly: `WordPressShareExtension`'s own `toSecrets()` is called from
+`MainShareViewController.swift:67` (physically under `WordPressShareExtension/`, correctly resolved
+by the Step 25 fix in both providers) and resolves to `nonisolated` there -- identical to what its own
+`debuggingKey` etc. resolve to at this file, in honest. Caller and callee agreeing means **no
+isolation crossing at all** -- `IsolationInferenceEngine.crossIsolationEdges()`'s own base filter
+(`resolveIsolation(caller) != resolveIsolation(callee)`) excludes the entire group *before* `isUnknown`
+even enters the picture. That's why honest shows zero `WordPressShareExtension`-qualified edges here
+(this run's winning target for this file's arg resolution), not "unknown" ones. In flagged, the
+winning target for this file is `WordPress` instead: `WordPress`'s own properties resolve
+successfully (unspecified caller -- unaliased, no suffix match, no separate call site found --
+crossing into a resolved `nonisolated` callee, a real, non-`isUnknown` finding), while
+`WordPressShareExtension`'s properties now fail (flagged's memoized args for this file are
+`WordPress`'s, not Share's) *and* its own caller is still `nonisolated` from the same independent
+`MainShareViewController.swift` route -- but this time the callee stays unresolved (`unspecified`,
+since its query failed), so caller (`nonisolated`) ≠ callee (`unspecified`) -- a genuine crossing,
+reported with `isUnknown: true`.
+
+**Status: understood, not a correctness bug, and not fixable the way Step 25's was.** Every edge on
+both sides of this residual is either a real, confidently-resolved crossing, or an edge honestly
+marked `isUnknown: true` -- this project's own explicit "not a confirmed risk" signal, working
+exactly as designed for a genuinely unresolvable case. There is no home-directory signal to add for
+a file with no target-named path component at all, so Step 25's fix has nothing to attach to here.
+The two providers picking different "first" candidates for this specific, narrow shape (files
+outside every target's own directory, shared by targets whose own declarations live in per-target
+*generated* sources outside the scanned root) is real but small -- 14 edges out of the original 834,
+already down from 98.3% to effectively fully accounted for. A genuine future improvement (not
+undertaken here, no correctness need drives it) would be making both providers agree on what "first"
+means for this fallback case -- e.g., sorting candidates by target name -- so the *set* of "unknown"
+edges is at least identical between the two paths, even though which one is "confidently resolved"
+would remain arbitrary by construction.
+
+**Full test suite**: 538 tests, all passing (instrumentation fully reverted before running).
