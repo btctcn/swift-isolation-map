@@ -198,14 +198,30 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
 
         let result = try processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil)
 
-        var parsed: [String: [String]] = [:]
+        // Every invocation that mentions a given file is kept (not just the first/last one seen)
+        // -- `SwiftBuildCompilerArgumentsProvider.preferredArguments`'s own doc comment explains
+        // why: `WordPressShareExtension`/`WordPressDraftActionExtension` both compile the same 14
+        // files under `.../WordPress/WordPressShareExtension/Sources/...`, and this provider used
+        // to let whichever target's compile line the `-verbose` log happened to print *last* win
+        // via a plain dictionary overwrite -- an arbitrary artifact of xcodebuild's own build-graph
+        // ordering for this run, not a meaningful choice (confirmed the hard way,
+        // docs/task-swift-build-prepare-for-indexing-spike.md Step 25: a real run resolved this
+        // exact shared-file group to `WordPressDraftActionExtension`'s args, silently feeding every
+        // downstream live oracle query -- e.g. an external protocol conformance's own isolation --
+        // the *wrong* target's compiled context, producing a real, reproducible divergence against
+        // the `--experimental-swift-build-compiler-args` path, which already got this right via
+        // #106). Reusing the identical `preferredArguments` home-directory heuristic here closes
+        // the same gap for this provider, using each invocation's own `-module-name` as the
+        // candidate's identity -- the same real string `indexstore_unit_reader_get_module_name`
+        // reports for the same compiled unit, and identical to the target name for every real
+        // target this project has hit so far (see the module-name-collection comment below for the
+        // one confirmed case, `Ls.net.ru`, where they'd differ -- irrelevant here since that
+        // project has no shared-file target group to disambiguate in the first place).
+        var candidatesByPath: [String: [(targetName: String, args: [String])]] = [:]
         var moduleNames: Set<String> = []
         for invocation in CompilerArgsLogParser.parseXcodeSwiftCompileInvocations(buildLog: result.standardOutput) {
             let files = try expandFileList(at: invocation.sourceFileListPath)
             let fullArguments = invocation.arguments + files
-            for file in files {
-                parsed[file] = fullArguments
-            }
             // The real, compiled module name for this target -- `RawIndexStoreClient
             // .allowedModuleNames`'s own doc comment explains what this set feeds. Read directly
             // from this same real `-verbose` line rather than derived from the target name shown
@@ -213,10 +229,21 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
             // (Swift module names can't contain characters a target name can, e.g. `Ls.net.ru`'s
             // own real module name is `Ls_net_ru`) -- `-module-name`'s own value is the same string
             // `indexstore_unit_reader_get_module_name` reports for the same compiled unit.
+            var moduleName = ""
             if let moduleNameIndex = invocation.arguments.firstIndex(of: "-module-name"),
                invocation.arguments.index(after: moduleNameIndex) < invocation.arguments.endIndex {
-                moduleNames.insert(invocation.arguments[invocation.arguments.index(after: moduleNameIndex)])
+                moduleName = invocation.arguments[invocation.arguments.index(after: moduleNameIndex)]
+                moduleNames.insert(moduleName)
             }
+            for file in files {
+                candidatesByPath[file, default: []].append((targetName: moduleName, args: fullArguments))
+            }
+        }
+
+        var parsed: [String: [String]] = [:]
+        parsed.reserveCapacity(candidatesByPath.count)
+        for (file, candidates) in candidatesByPath {
+            parsed[file] = SwiftBuildCompilerArgumentsProvider.preferredArguments(candidates: candidates, filePath: file)
         }
 
         // A non-zero `xcodebuild` exit code alone does not invalidate compiler-invocation lines
