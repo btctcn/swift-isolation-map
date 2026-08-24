@@ -169,8 +169,29 @@ public final class SwiftPMBulkExtractionEnvironmentProvider: BulkExtractionEnvir
             )
         }
         let binPath = URL(fileURLWithPath: binPathResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-        // .build/<triple>/{debug,release}/ -- the triple is the bin directory's own parent.
-        let target = binPath.deletingLastPathComponent().lastPathComponent
+        // .build/<triple>/{debug,release}/ -- the triple is the bin directory's own parent, but
+        // SwiftPM's own build-directory naming deliberately omits the OS version component
+        // (confirmed directly: a real `arm64-apple-macosx` folder name, never
+        // `arm64-apple-macosx13.0`) -- using it bare as `-target` leaves the *compiler's own*
+        // default apply instead, which is not "whatever this machine's SDK actually supports," but
+        // a fixed, ancient baseline (confirmed directly: `swift symbolgraph-extract -target
+        // arm64-apple-macosx ...` against a real `.macOS(.v13)`-declared dependency's own
+        // `.swiftmodule` fails outright with "compiling for macOS 10.4, but module 'X' has a
+        // minimum deployment target of macOS 13.0" -- silently discarding that module's isolation
+        // data via this function's own existing fail-soft contract, for every SwiftPM dependency
+        // with any realistic platform minimum, found chasing Issue #40's own real-corpus
+        // verification). The real SDK's own current version is always a safe, valid target here
+        // (symbolgraph-extract only reads declarations, never checks runtime availability against
+        // it) -- appended directly, since the triple's own arch-vendor-os prefix is otherwise
+        // already correct.
+        let sdkVersionResult = try processRunning.run(executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-version"], workingDirectory: nil)
+        guard sdkVersionResult.exitCode == 0 else {
+            throw BulkExtractionEnvironmentError.settingsUnavailable(
+                reason: "xcrun --sdk macosx --show-sdk-version exited \(sdkVersionResult.exitCode): \(sdkVersionResult.standardError)"
+            )
+        }
+        let sdkVersion = sdkVersionResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = binPath.deletingLastPathComponent().lastPathComponent + sdkVersion
 
         let sdkResult = try processRunning.run(executable: "xcrun", arguments: ["--show-sdk-path"], workingDirectory: nil)
         guard sdkResult.exitCode == 0 else {

@@ -775,3 +775,22 @@ func linkAppliesUsrRewriteMapOverrides() throws {
     let rescued = try #require(withOverride.declarations["s:realWidgetFromLiveQuery"], "a live-fallback override must rewrite the declaration to its real USR, exactly as a successful bulk-index match would have")
     #expect(rescued.name == "Widget")
 }
+
+// MARK: - Issue #40: additionalGlobalActorNames feeds Rule A's closure classification
+
+@Test("link(additionalGlobalActorNames:) lets Rule A recognize a closure attribute this run's own syntactic scan could never see (a real @globalActor declared in a compiled dependency)")
+func additionalGlobalActorNamesFeedsClosureClassification() {
+    let fake = FakeIndexStoreQuerying()
+    let record = ClosureLiteralRecord(
+        file: "/f.swift", startLine: 1, startColumn: 1, endLine: 3, endColumn: 1,
+        signatureAttributeName: "ThirdPartyActor", enclosingCallReceiver: nil, enclosingCallMember: nil
+    )
+    let extractionResult = ExtractionResult(declarations: [], protocolGlobalActorNames: [:], closureLiteralRecords: [record])
+
+    let withoutDiscoveredName = DeclarationLinker(indexStore: fake).link([extractionResult])
+    #expect(withoutDiscoveredName.closuresByFile["/f.swift"]?.first?.isolationOverride == nil, "without the discovered name, this project's own syntactic scan has no way to know ThirdPartyActor is a real global actor -- Rule A correctly falls back to unknown/inherits")
+
+    let withDiscoveredName = DeclarationLinker(indexStore: fake).link([extractionResult], additionalGlobalActorNames: ["ThirdPartyActor"])
+    #expect(withDiscoveredName.closuresByFile["/f.swift"]?.first?.isolationOverride == .globalActor(name: "ThirdPartyActor"))
+    #expect(withDiscoveredName.globalActorNames.contains("ThirdPartyActor"), "also exposed on LinkedAnalysis itself, so ExternalIsolationBackfill's own live-oracle GlobalActorNameValidation checks get the same expanded set for free")
+}

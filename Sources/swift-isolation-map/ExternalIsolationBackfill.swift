@@ -100,7 +100,8 @@ enum ExternalIsolationBackfill {
         environmentProvider: BulkExtractionEnvironmentProviding,
         bulkModuleNames: [String] = BulkSymbolGraphExtractor.defaultModules,
         oracleWorkerCount: Int = 1,
-        oracleWorkerExecutablePath: String? = nil
+        oracleWorkerExecutablePath: String? = nil,
+        precomputedBulkResolution: BulkSymbolGraphResolution? = nil
     ) async -> ExternalIsolationResolution {
         var backfilled: [String: DeclarationInfo] = [:]
         var updated: [String: DeclarationInfo] = [:]
@@ -115,12 +116,27 @@ enum ExternalIsolationBackfill {
         let phaseTimingEnabled = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_PHASE_TIMING"] != nil
         let bulkPhaseStart = phaseTimingEnabled ? Date() : nil
 
-        let bulkResolution = bulkSymbolGraphCache(
+        // Issue #40: `SwiftIsolationMap.run()` already needs this same bulk extraction *before*
+        // `DeclarationLinker.link()` runs (to fold `discoveredGlobalActorNames` into the accept-
+        // list Rule A's `classify()` needs), so it computes it once, early, and passes the result
+        // straight through here -- recomputing it a second time would double the one-time bulk-
+        // extraction cost (a real, measured few seconds, per `BulkSymbolGraphExtractor`'s own doc
+        // comment) for no benefit. `nil` (every existing caller, including every test in
+        // `ExternalIsolationBackfillTests.swift`) preserves this function's original, self-
+        // contained behavior exactly.
+        let bulkResolution = precomputedBulkResolution ?? bulkSymbolGraphCache(
             environmentProvider: environmentProvider, processRunning: processRunning,
             fileSystem: fileSystem, moduleNames: bulkModuleNames
         )
         let bulkCache = bulkResolution.isolationByUSR
         let bulkProtocolUSRs = bulkResolution.protocolUSRs
+        // Issue #40: unioned locally (not just relying on `linked.globalActorNames` already being
+        // expanded) so this function's own live-oracle `GlobalActorNameValidation` calls below are
+        // correct even for a caller that didn't thread `discoveredGlobalActorNames` through
+        // `DeclarationLinker.link()` itself (every existing test in
+        // `ExternalIsolationBackfillTests.swift`, plus any future caller) -- `linked.globalActorNames`
+        // alone would silently miss a name this run's own bulk phase just discovered.
+        let expandedGlobalActorNames = linked.globalActorNames.union(bulkResolution.discoveredGlobalActorNames)
 
         if let bulkPhaseStart {
             eprint("PHASE-TIMING bulk-symbol-graph-phase: \(Date().timeIntervalSince(bulkPhaseStart))s")
@@ -217,7 +233,7 @@ enum ExternalIsolationBackfill {
                 compilerArguments: compilerArguments,
                 workerExecutablePath: oracleWorkerExecutablePath,
                 processRunning: processRunning,
-                knownGlobalActorNames: linked.globalActorNames
+                knownGlobalActorNames: expandedGlobalActorNames
             )
             for (usr, outcome) in parallelOutcomes {
                 outcomes[usr] = outcome
@@ -227,7 +243,7 @@ enum ExternalIsolationBackfill {
                 outcomes[item.targetUSR] = await query(
                     targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
                     compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
-                    knownGlobalActorNames: linked.globalActorNames
+                    knownGlobalActorNames: expandedGlobalActorNames
                 )
             }
         }
@@ -254,7 +270,7 @@ enum ExternalIsolationBackfill {
 
         await resolveSyntacticPlaceholderNeeds(
             placeholderNeeds, linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
-            bulkCache: bulkCache, backfilled: &backfilled, unknown: &unknown
+            bulkCache: bulkCache, knownGlobalActorNames: expandedGlobalActorNames, backfilled: &backfilled, unknown: &unknown
         )
 
         if let placeholderPhaseStart {
@@ -961,6 +977,7 @@ enum ExternalIsolationBackfill {
         sourceKitD: SourceKitDQuerying,
         fileSystem: FileSystemQuerying,
         bulkCache: [String: IsolationKind],
+        knownGlobalActorNames: Set<String>,
         backfilled: inout [String: DeclarationInfo],
         unknown: inout Set<String>
     ) async {
@@ -972,7 +989,7 @@ enum ExternalIsolationBackfill {
             let outcome = await query(
                 targetUSR: need.declarationUSR, file: need.location.file, line: need.location.line, utf8Column: need.location.column,
                 compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
-                knownGlobalActorNames: linked.globalActorNames
+                knownGlobalActorNames: knownGlobalActorNames
             )
             switch outcome {
             case .resolved(let isolation):

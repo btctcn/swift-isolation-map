@@ -31,13 +31,28 @@ import ProjectResolution
 /// matters: SE-0316's "conformance to a global-actor-qualified protocol" rule applies only when the
 /// conformed-to name is itself a protocol annotated with a global actor -- never when it's a class
 /// that merely happens to be global-actor-isolated via its own hierarchy.
-public struct BulkSymbolGraphResolution {
+public struct BulkSymbolGraphResolution: Sendable {
     public let isolationByUSR: [String: IsolationKind]
     public let protocolUSRs: Set<String>
+    /// Issue #40: bare names of every type this extraction found declared with a literal
+    /// `@globalActor` attribute on its *own* declaration -- confirmed directly against real
+    /// compiler output (`swift symbolgraph-extract`) that this is an unambiguous, single-fragment
+    /// signal (`{"kind":"attribute","spelling":"@globalActor"}`), distinct from the name-matching
+    /// heuristic `GlobalActorNameValidation` needs elsewhere: a type's *own* declaration either
+    /// carries this literal compiler keyword or it doesn't, no property-wrapper/result-builder
+    /// confusability possible (that ambiguity only exists for an attribute *usage* site, which
+    /// only ever has a fragment naming the referenced type, never a copy of that type's own
+    /// declaration). Meant to be unioned into `knownGlobalActorNames` upstream (`DeclarationLinker
+    /// .link`'s `additionalGlobalActorNames`) so a real global actor declared in a compiled
+    /// dependency -- invisible to this project's own syntactic scan by construction -- still
+    /// enters the accept-list `ClosureIsolationExtractor.classify`/`GlobalActorNameValidation`
+    /// both already trust, rather than needing a second, separate validation mechanism.
+    public let discoveredGlobalActorNames: Set<String>
 
-    public init(isolationByUSR: [String: IsolationKind], protocolUSRs: Set<String>) {
+    public init(isolationByUSR: [String: IsolationKind], protocolUSRs: Set<String>, discoveredGlobalActorNames: Set<String> = []) {
         self.isolationByUSR = isolationByUSR
         self.protocolUSRs = protocolUSRs
+        self.discoveredGlobalActorNames = discoveredGlobalActorNames
     }
 }
 
@@ -114,13 +129,15 @@ public enum BulkSymbolGraphExtractor {
 
         var merged: [String: IsolationKind] = [:]
         var mergedProtocolUSRs: Set<String> = []
+        var mergedGlobalActorNames: Set<String> = []
         for result in resultBuffer.results {
             for (usr, isolation) in result.isolationByUSR {
                 merged[usr] = isolation
             }
             mergedProtocolUSRs.formUnion(result.protocolUSRs)
+            mergedGlobalActorNames.formUnion(result.discoveredGlobalActorNames)
         }
-        return BulkSymbolGraphResolution(isolationByUSR: merged, protocolUSRs: mergedProtocolUSRs)
+        return BulkSymbolGraphResolution(isolationByUSR: merged, protocolUSRs: mergedProtocolUSRs, discoveredGlobalActorNames: mergedGlobalActorNames)
     }
 
     static func extract(
@@ -173,13 +190,27 @@ public enum BulkSymbolGraphExtractor {
             var containerOfMember: [String: String] = [:]
             var superclassOfType: [String: String] = [:]
             var protocolUSRs: Set<String> = []
+            // Issue #40: a type's *own* declaration fragments carry a literal, single-fragment
+            // `{"kind":"attribute","spelling":"@globalActor"}` when it's declared with that
+            // keyword -- confirmed directly against real `symbolgraph-extract` output (unlike the
+            // two-fragment `"@"` + name-with-`preciseIdentifier` shape a *use* of the type as an
+            // isolation attribute produces elsewhere, e.g. on some other declaration's own
+            // fragments). Collected from `pathComponents` (the symbol's own bare name, e.g.
+            // `["ThirdPartyActor"]` for a top-level type) rather than parsed out of the fragment
+            // text, matching this file's own "never text/substring scanning" discipline.
+            var discoveredGlobalActorNames: Set<String> = []
             for file in symbolFiles {
                 guard let data = try? fileSystem.readData(at: file),
                       let document = try? JSONDecoder().decode(BulkSymbolGraphDocument.self, from: data) else { continue }
                 for symbol in document.symbols {
-                    fragmentsByUSR[symbol.identifier.precise] = symbol.declarationFragments ?? []
+                    let fragments = symbol.declarationFragments ?? []
+                    fragmentsByUSR[symbol.identifier.precise] = fragments
                     if symbol.kind?.identifier == "swift.protocol" {
                         protocolUSRs.insert(symbol.identifier.precise)
+                    }
+                    if fragments.contains(where: { $0.kind == "attribute" && $0.spelling == "@globalActor" }),
+                       let name = symbol.pathComponents?.last {
+                        discoveredGlobalActorNames.insert(name)
                     }
                 }
                 for relationship in document.relationships {
@@ -191,17 +222,26 @@ public enum BulkSymbolGraphExtractor {
                 }
             }
 
-            // `GlobalActorNameValidation`'s allowlist needs the *project's own* real
-            // `@globalActor`-declared names -- meaningless here: this scans bulk-extracted SDK/
-            // dependency modules (UIKit, AppKit, ...), never the analyzed project's own source, so
-            // there is no project-local set to check against. Left empty deliberately: only the
-            // fixed `MainActor` fast path applies to bulk-extracted data. A real custom global
-            // actor declared *inside* a bulk-extracted SDK module's own symbols is vanishingly
-            // rare in practice (Apple's own frameworks essentially never define one), so this
-            // trades a theoretical, unobserved false negative for immunity to the exact
-            // fabricated-isolation failure mode (arbitrary property wrappers/result builders on
-            // SDK types) this validation exists to prevent.
-            let bulkKnownGlobalActorNames: Set<String> = []
+            // `GlobalActorNameValidation`'s allowlist originally needed the *project's own* real
+            // `@globalActor`-declared names, meaningless here (this scans bulk-extracted SDK/
+            // dependency modules, never the analyzed project's own source) -- left empty, only the
+            // fixed `MainActor` fast path applying to bulk-extracted data. Issue #40: `this
+            // module's own` discovered names (computed just above, same real compiler signal,
+            // immune to the same StateObject/Router/resultBuilder confusability the name-matching
+            // heuristic exists to prevent -- a literal `@globalActor` keyword on a symbol's own
+            // declaration is unambiguous) now close exactly the real, reproduced gap the old
+            // comment here called "vanishingly rare": a real dependency module declaring its own
+            // custom global actor AND marking its own other APIs with it (confirmed via a minimal
+            // repro -- `thirdPartyIsolatedWork()`'s own fragment, `{"kind":"attribute","spelling":
+            // "ThirdPartyActor",...}`, was previously rejected here and permanently bulk-cached as
+            // `.nonisolated`, short-circuiting the live-oracle path before it ever ran).
+            // **Known, deliberately narrower than the live-oracle path**: this only ever sees names
+            // declared within *this same module's own* extraction -- a global actor declared in
+            // module A and used as a closure/declaration attribute only in a *different* bulk-
+            // extracted module B is not covered (`extractAll`'s per-module jobs run independently);
+            // `ExternalIsolationBackfill`'s live per-declaration query (`expandedGlobalActorNames`,
+            // unioned project-wide) still closes that narrower case when it applies.
+            let bulkKnownGlobalActorNames: Set<String> = discoveredGlobalActorNames
 
             // A type's own isolation, resolved via its superclass chain when its own fragments
             // carry no confirmed signal -- mirrors `IsolationInferenceEngine.resolveInheritedIsolation`'s
@@ -285,7 +325,7 @@ public enum BulkSymbolGraphExtractor {
                 }
                 resolved[usr] = .nonisolated
             }
-            return BulkSymbolGraphResolution(isolationByUSR: resolved, protocolUSRs: protocolUSRs)
+            return BulkSymbolGraphResolution(isolationByUSR: resolved, protocolUSRs: protocolUSRs, discoveredGlobalActorNames: discoveredGlobalActorNames)
         } catch {
             return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: [])
         }
@@ -326,6 +366,13 @@ struct BulkSymbolGraphDocument: Decodable {
         /// from a class-bound protocol's inheritance-clause entry naming an actual class.
         let kind: Kind?
         let declarationFragments: [SymbolGraphDocument.Symbol.Fragment]?
+        /// The symbol's own bare name path (e.g. `["ThirdPartyActor"]` for a top-level type,
+        /// `["Outer", "Inner"]` for a nested one) -- confirmed present in real `symbolgraph-extract`
+        /// output. Defaulted, not required, for the same hand-written-fixture reason as `kind`
+        /// above. `.last` is this symbol's own bare name, used only for Issue #40's global-actor-
+        /// name discovery (see `discoveredGlobalActorNames` above); every other consumer of this
+        /// document keys purely by USR.
+        let pathComponents: [String]?
 
         struct Identifier: Decodable {
             let precise: String

@@ -395,7 +395,35 @@ struct SwiftIsolationMap: ParsableCommand {
             )
         }
         logVerbose("Live fallback resolved \(localFallbackOverrides.count) of \(unresolvedPlaceholders.count) unresolved declaration(s)")
-        let linked = linker.link(extractionResults, usrRewriteMapOverrides: localFallbackOverrides)
+
+        // Issue #40: a real `@globalActor` type declared in a *compiled* dependency is invisible
+        // to `FileWideNameCollector`'s syntactic scan by construction (it never parses that
+        // dependency's source) -- `ClosureIsolationExtractor.classify` (Rule A) and
+        // `GlobalActorNameValidation`'s live-oracle checks both only ever trusted that scan's own
+        // accept-list, so such a name silently fell through to `.nonisolated` on both sides of a
+        // real cross-isolation call, confirmed by a real, compiling minimal repro (not merely
+        // theorized -- see the issue's own comment thread). Bulk symbol-graph extraction
+        // (`BulkSymbolGraphExtractor`) already runs, unconditionally, once per analysis to prime
+        // `ExternalIsolationBackfill`'s isolation cache; it now *also* reports which real types it
+        // found declared with a literal `@globalActor` attribute on their own declaration -- an
+        // unambiguous compiler signal, not a name-matching guess (see `BulkSymbolGraphResolution
+        // .discoveredGlobalActorNames`'s own doc comment). Computed here, before `linker.link(...)`,
+        // specifically so `classify()`'s accept-list -- built *inside* `link()` -- benefits too, not
+        // just the external-declaration oracle path `resolveExternalIsolation` already covers below;
+        // the same `BulkSymbolGraphResolution` is threaded through to `resolveExternalIsolation`
+        // afterward so this one-time bulk pass never runs twice.
+        let bulkEnvironmentProvider = makeBulkExtractionEnvironmentProvider(
+            container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: privateDerivedDataPath
+        )
+        let bulkResolution = bulkSymbolGraphResolution(environmentProvider: bulkEnvironmentProvider, processRunning: processRunning, fileSystem: fileSystem)
+        if !bulkResolution.discoveredGlobalActorNames.isEmpty {
+            logVerbose("Discovered \(bulkResolution.discoveredGlobalActorNames.count) real @globalActor name(s) in compiled dependencies: \(bulkResolution.discoveredGlobalActorNames.sorted().joined(separator: ", "))")
+        }
+
+        let linked = linker.link(
+            extractionResults, usrRewriteMapOverrides: localFallbackOverrides,
+            additionalGlobalActorNames: bulkResolution.discoveredGlobalActorNames
+        )
         logVerbose("Linked \(linked.declarations.count) declaration(s), \(linked.callGraph.count) call-graph edge(s)")
 
         eprint("Resolving external isolation (compiled dependencies)...")
@@ -403,7 +431,8 @@ struct SwiftIsolationMap: ParsableCommand {
         let externalResolution = runAsyncBridge {
             await resolveExternalIsolation(
                 linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
-                oracleWorkers: oracleWorkers, derivedDataPath: derivedDataPathForExternalIsolation
+                oracleWorkers: oracleWorkers, derivedDataPath: derivedDataPathForExternalIsolation,
+                precomputedBulkResolution: bulkResolution
             )
         }
         logVerbose(
@@ -855,6 +884,45 @@ struct SwiftIsolationMap: ParsableCommand {
 
     // MARK: - External isolation (compiled-dependency oracle)
 
+    /// Shared by the early, `link()`-preceding bulk pass (Issue #40's `discoveredGlobalActorNames`
+    /// need) and `resolveExternalIsolation` below -- both need the exact same environment provider
+    /// construction, previously only inlined in the latter.
+    private func makeBulkExtractionEnvironmentProvider(
+        container: ProjectContainer, scheme: String, processRunning: ProcessRunning, fileSystem: FileSystemQuerying, derivedDataPath: URL?
+    ) -> BulkExtractionEnvironmentProviding {
+        switch container {
+        case .swiftPackage(let packageURL):
+            let packageDirectory = packageURL.deletingLastPathComponent()
+            return SwiftPMBulkExtractionEnvironmentProvider(
+                packageDirectory: packageDirectory, processRunning: processRunning, fileSystem: fileSystem
+            )
+        case .xcodeproj, .xcworkspace:
+            return LiveXcodeBulkExtractionEnvironmentProvider(
+                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
+                derivedDataPath: derivedDataPath
+            )
+        }
+    }
+
+    /// Mirrors `ExternalIsolationBackfill`'s own private `bulkSymbolGraphCache` helper exactly
+    /// (fail-soft: an unobtainable environment -- e.g. no real build settings available yet --
+    /// yields an empty resolution, never a thrown error) -- duplicated rather than shared because
+    /// that one stays `private` to keep `ExternalIsolationBackfill`'s own surface area minimal,
+    /// and this call site needs to run *before* `linker.link(...)`, structurally earlier than
+    /// anywhere inside that type's own `resolve()` entry point.
+    private func bulkSymbolGraphResolution(
+        environmentProvider: BulkExtractionEnvironmentProviding, processRunning: ProcessRunning, fileSystem: FileSystemQuerying
+    ) -> BulkSymbolGraphResolution {
+        guard let environment = try? environmentProvider.environment() else {
+            return BulkSymbolGraphResolution(isolationByUSR: [:], protocolUSRs: [])
+        }
+        return BulkSymbolGraphExtractor.extractAll(
+            discoveredModules: environment.discoveredModules,
+            sdkPath: environment.sdkPath, target: environment.target,
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+    }
+
     /// Resolves every USR the analyzed project references but doesn't declare itself (external
     /// superclasses/protocols/call targets in compiled dependencies) via `sourcekitd`, per
     /// docs/task-compiled-dependency-isolation.md. Deliberately fail-soft end to end: if the
@@ -868,23 +936,19 @@ struct SwiftIsolationMap: ParsableCommand {
         processRunning: ProcessRunning,
         fileSystem: FileSystemQuerying,
         oracleWorkers: Int,
-        derivedDataPath: URL?
+        derivedDataPath: URL?,
+        precomputedBulkResolution: BulkSymbolGraphResolution
     ) async -> ExternalIsolationResolution {
         let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
 
-        let environmentProvider: BulkExtractionEnvironmentProviding
-        switch container {
-        case .swiftPackage(let packageURL):
-            let packageDirectory = packageURL.deletingLastPathComponent()
-            environmentProvider = SwiftPMBulkExtractionEnvironmentProvider(
-                packageDirectory: packageDirectory, processRunning: processRunning, fileSystem: fileSystem
-            )
-        case .xcodeproj, .xcworkspace:
-            environmentProvider = LiveXcodeBulkExtractionEnvironmentProvider(
-                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
-                derivedDataPath: derivedDataPath
-            )
-        }
+        // The caller already ran this run's one bulk symbol-graph pass, before `linker.link(...)`
+        // (Issue #40's own `discoveredGlobalActorNames` need) -- an `environmentProvider` is still
+        // constructed and passed to `ExternalIsolationBackfill.resolve` below (it's a required
+        // parameter of that function's own, separately-testable contract), but
+        // `precomputedBulkResolution` means it's never actually invoked a second time.
+        let environmentProvider = makeBulkExtractionEnvironmentProvider(
+            container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: derivedDataPath
+        )
 
         let sourceKitD: SourceKitDClient
         do {
@@ -919,7 +983,8 @@ struct SwiftIsolationMap: ParsableCommand {
             linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
             processRunning: processRunning, environmentProvider: environmentProvider,
             oracleWorkerCount: oracleWorkers,
-            oracleWorkerExecutablePath: oracleWorkers > 1 ? URL(fileURLWithPath: CommandLine.arguments[0]).path : nil
+            oracleWorkerExecutablePath: oracleWorkers > 1 ? URL(fileURLWithPath: CommandLine.arguments[0]).path : nil,
+            precomputedBulkResolution: precomputedBulkResolution
         )
 
         if statsEnabled, let before {

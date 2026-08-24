@@ -106,6 +106,17 @@ struct BulkExtractionEnvironmentProvidingTests {
             executable: "swift", arguments: ["build", "--show-bin-path"],
             result: ProcessResult(exitCode: 0, standardOutput: "/pkg/.build/arm64-apple-macosx/debug\n", standardError: "")
         )
+        // Issue #40's own real-corpus verification: the bin-path triple folder name alone
+        // (`arm64-apple-macosx`) omits the OS version SwiftPM deliberately leaves out of that
+        // directory name -- passing it bare as `-target` left the *compiler's* own ancient default
+        // apply instead of this machine's real SDK version, which `swift symbolgraph-extract`
+        // rejects outright for any dependency declaring a realistic platform minimum (confirmed
+        // directly: "compiling for macOS 10.4, but module 'X' has a minimum deployment target of
+        // macOS 13.0"). The real fix queries the SDK's own version and appends it.
+        runner.stub(
+            executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-version"],
+            result: ProcessResult(exitCode: 0, standardOutput: "15.0\n", standardError: "")
+        )
         runner.stub(
             executable: "xcrun", arguments: ["--show-sdk-path"],
             result: ProcessResult(exitCode: 0, standardOutput: "/Applications/Xcode.app/.../MacOSX.sdk\n", standardError: "")
@@ -115,7 +126,7 @@ struct BulkExtractionEnvironmentProvidingTests {
 
         let provider = SwiftPMBulkExtractionEnvironmentProvider(packageDirectory: packageDirectory, processRunning: runner, fileSystem: fileSystem)
         let environment = try provider.environment()
-        #expect(environment.target == "arm64-apple-macosx")
+        #expect(environment.target == "arm64-apple-macosx15.0")
         #expect(environment.sdkPath == "/Applications/Xcode.app/.../MacOSX.sdk")
         #expect(environment.discoveredModules.contains(
             DiscoveredModule(name: "SomeDependency", extractionFlags: ["-I", "/pkg/.build/arm64-apple-macosx/debug/Modules"])
