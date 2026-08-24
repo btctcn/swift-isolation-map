@@ -283,6 +283,94 @@ struct BulkSymbolGraphExtractorTests {
         #expect(!resolved.protocolUSRs.contains("c:objc(cs)NoKindHere"), "a symbol with no kind field at all (an older/malformed document) must decode without crashing and stay absent from protocolUSRs, never guessed")
     }
 
+    @Test("Issue #40: extract() discovers a type's own literal @globalActor attribute as a real global-actor name")
+    func discoversRealGlobalActorNameFromOwnDeclaration() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // Real shape confirmed via a live `swift symbolgraph-extract` run against a hand-built
+        // `@globalActor public actor ThirdPartyActor { ... }` module: the type's own
+        // declarationFragments carry a single, literal `{"kind":"attribute","spelling":
+        // "@globalActor"}` fragment -- unlike a *use* of that type as an isolation attribute
+        // elsewhere (a two-fragment "@" + name-with-preciseIdentifier shape), this is unambiguous
+        // and needs no name-matching heuristic at all.
+        let json = """
+        {"symbols":[
+            {"identifier":{"precise":"s:18ThirdPartyActorKit0abC0C"},"pathComponents":["ThirdPartyActor"],"declarationFragments":[{"kind":"attribute","spelling":"@globalActor"},{"kind":"keyword","spelling":"actor"}]},
+            {"identifier":{"precise":"c:objc(cs)NotAGlobalActor"},"pathComponents":["NotAGlobalActor"],"declarationFragments":[{"kind":"keyword","spelling":"class"}]}
+        ]}
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent("ThirdPartyActorKit.symbols.json"))
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "ThirdPartyActorKit", sdkPath: "/fake/sdk", target: "arm64-apple-macosx13.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved.discoveredGlobalActorNames == ["ThirdPartyActor"])
+    }
+
+    @Test("Issue #40: extract() resolves a same-module declaration attributed with a discovered custom global actor's name, not just MainActor")
+    func resolvesSameModuleDeclarationAttributedWithDiscoveredGlobalActor() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // Real shape confirmed live: `@ThirdPartyActor public func thirdPartyIsolatedWork() {}`'s
+        // own declaration fragments carry a two-fragment "@" + name-with-preciseIdentifier shape
+        // naming `ThirdPartyActor` -- the same shape a `@StateObject`/`@Router`/... property-wrapper
+        // fragment has (`GlobalActorNameValidation`'s own doc comment). Before this fix,
+        // `bulkKnownGlobalActorNames` was unconditionally empty, so this fragment could never pass
+        // validation and this symbol was permanently bulk-cached as `.nonisolated`, short-
+        // circuiting the live-oracle path before it ever ran (confirmed against a real, compiling
+        // minimal repro -- Issue #40's own comment thread).
+        let json = """
+        {"symbols":[
+            {"identifier":{"precise":"s:18ThirdPartyActorKit0abC0C"},"pathComponents":["ThirdPartyActor"],"declarationFragments":[{"kind":"attribute","spelling":"@globalActor"},{"kind":"keyword","spelling":"actor"}]},
+            {"identifier":{"precise":"s:18ThirdPartyActorKit05thirdB12IsolatedWorkyyF"},"pathComponents":["thirdPartyIsolatedWork()"],"declarationFragments":[{"kind":"attribute","spelling":"@"},{"kind":"attribute","spelling":"ThirdPartyActor","preciseIdentifier":"s:18ThirdPartyActorKit0abC0C"},{"kind":"keyword","spelling":"func"}]}
+        ]}
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent("ThirdPartyActorKit.symbols.json"))
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "ThirdPartyActorKit", sdkPath: "/fake/sdk", target: "arm64-apple-macosx13.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved.isolationByUSR["s:18ThirdPartyActorKit05thirdB12IsolatedWorkyyF"] == .globalActor(name: "ThirdPartyActor"))
+    }
+
+    @Test("Issue #40: extract() does NOT mistake a property wrapper's own class declaration for a global actor -- StateObject counterexample, GlobalActorNameValidation's own real motivating case")
+    func doesNotMistakePropertyWrapperDeclarationForGlobalActor() {
+        let processRunning = FakeProcessRunning()
+        let fileSystem = FakeFileSystemQuerying()
+
+        // `StateObject` is a real SwiftUI property wrapper `struct`, never `@globalActor`-declared
+        // -- its own declaration fragments carry no such attribute at all. Guards the discovery
+        // logic itself against the exact confusion `GlobalActorNameValidation` exists to prevent.
+        let json = """
+        {"symbols":[
+            {"identifier":{"precise":"s:7SwiftUI11StateObjectV"},"pathComponents":["StateObject"],"declarationFragments":[{"kind":"keyword","spelling":"struct"}]}
+        ]}
+        """
+        processRunning.onRun = { arguments in
+            guard let outputDirIndex = arguments.firstIndex(of: "-output-dir") else { return }
+            let outputDir = URL(fileURLWithPath: arguments[arguments.index(after: outputDirIndex)])
+            try? fileSystem.write(data: Data(json.utf8), to: outputDir.appendingPathComponent("SwiftUI.symbols.json"))
+        }
+
+        let resolved = BulkSymbolGraphExtractor.extract(
+            moduleName: "SwiftUI", sdkPath: "/fake/sdk", target: "arm64-apple-macosx13.0",
+            processRunning: processRunning, fileSystem: fileSystem
+        )
+        #expect(resolved.discoveredGlobalActorNames.isEmpty)
+    }
+
     @Test("Live toolchain: bulk-extracting real AppKit from the macOS SDK resolves NSView to @MainActor")
     func liveExtractionResolvesRealAppKitMainActorClass() throws {
         let sdkResult = try LiveProcessRunner().run(executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-path"], workingDirectory: nil)

@@ -113,13 +113,24 @@ public struct DeclarationLinker {
     /// resolution -- take priority over whatever `buildUSRRewriteMap`'s own location-based match
     /// found (or didn't) for the same placeholder: a live, authoritative `sourcekitd` answer for
     /// a specific declaration is never less trustworthy than the bulk index's own miss.
-    public func link(_ extractionResults: [ExtractionResult], usrRewriteMapOverrides: [String: String] = [:]) -> LinkedAnalysis {
+    /// `additionalGlobalActorNames` -- Issue #40 -- lets a caller fold in global-actor names this
+    /// project's own syntactic scan can never see by construction (a real `@globalActor` type
+    /// declared in a *compiled* dependency, discovered instead via `BulkSymbolGraphExtractor
+    /// .discoveredGlobalActorNames`). Unioned in before `classify(_:knownGlobalActorNames:)` ever
+    /// runs below, so Rule A recognizes such a name exactly the same way it already recognizes a
+    /// project-local one -- and before `LinkedAnalysis.globalActorNames` is assembled, so
+    /// `ExternalIsolationBackfill`'s own live-oracle `GlobalActorNameValidation` calls (which read
+    /// `linked.globalActorNames`) get the same expanded set for free, with no separate plumbing.
+    public func link(
+        _ extractionResults: [ExtractionResult], usrRewriteMapOverrides: [String: String] = [:],
+        additionalGlobalActorNames: Set<String> = []
+    ) -> LinkedAnalysis {
         let allDeclarations = extractionResults.flatMap(\.declarations)
 
         var mergedProtocolGlobalActorNames: [String: String] = [:]
         var mergedProtocolRequirementGlobalActorNames: [String: [String: String]] = [:]
         var mergedProtocolInheritedProtocolNames: [String: Set<String>] = [:]
-        var mergedGlobalActorNames: Set<String> = []
+        var mergedGlobalActorNames: Set<String> = additionalGlobalActorNames
         for result in extractionResults {
             mergedProtocolGlobalActorNames.merge(result.protocolGlobalActorNames) { existing, _ in existing }
             for (protocolName, requirementNames) in result.protocolRequirementGlobalActorNames {
