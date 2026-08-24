@@ -100,13 +100,6 @@ OPTIONS:
                               by default -- this tool's own private, per-(project, scheme,
                               destination) index store (see "Where the index store lives" below)
                               never accumulates unrelated targets' units in the first place.
-  --experimental-swift-build-compiler-args
-                              EXPERIMENTAL, may be removed without notice: resolve compiler
-                              arguments via a direct call into swift-build's own SWBBuildService
-                              API instead of an xcodebuild -verbose clean rebuild. Off by default
-                              -- see docs/task-swift-build-prepare-for-indexing-spike.md for the
-                              real-corpus validation (byte-for-byte edge parity, ~35% faster) and
-                              the one still-open risk (Xcode/swift-build protocol version skew).
   --force-reindex             Forces a rebuild, ignoring any existing (even fresh) index store.
   --oracle-workers <N>        Parallelize the external-oracle live-query phase across N worker
                               processes (default: 1, sequential). Real speedup on a large project:

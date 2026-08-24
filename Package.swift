@@ -5,8 +5,8 @@ let package = Package(
     name: "swift-isolation-map",
     platforms: [
         // Bumped from .v13 for `swift-build`'s own minimum (docs/task-swift-build-prepare-for-
-        // indexing-spike.md) -- required by `SwiftBuildCompilerArgumentsProvider`, the
-        // `--experimental-swift-build-compiler-args` conformer.
+        // indexing-spike.md) -- required by `SwiftBuildCompilerArgumentsProvider`, the main
+        // Xcode-project `CompilerArgumentsProviding` conformer.
         .macOS(.v15)
     ],
     products: [

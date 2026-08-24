@@ -1,7 +1,10 @@
 import Foundation
 import SwiftBuild
 
-/// EXPERIMENTAL (`--experimental-swift-build-compiler-args`), may be removed without notice.
+/// The main `CompilerArgumentsProviding` conformer for Xcode projects (promoted from EXPERIMENTAL
+/// once docs/task-swift-build-prepare-for-indexing-spike.md's Steps 13-26 real-corpus-verified it
+/// end to end on WordPress-iOS) -- `LiveXcodeCompilerArgumentsProvider` remains in the tree as a
+/// legacy/fallback conformer, no longer reachable from any CLI flag.
 ///
 /// Real per-file `swiftc` compiler arguments obtained by talking to `SWBBuildService` directly via
 /// the open-source `SwiftBuild` Swift API (`swiftlang/swift-build`), bypassing `xcodebuild`'s CLI
@@ -10,7 +13,11 @@ import SwiftBuild
 /// `-destination`/`-sdk` and default to device for at least one real project, while the
 /// open-source engine underneath it is destination-faithful when driven directly -- confirmed end
 /// -to-end against a real ~2200-file corpus, byte-for-byte edge parity with the honest clean-
-/// rebuild path, ~35% faster (docs/task-swift-build-prepare-for-indexing-spike.md Step 10).
+/// rebuild path, ~35% faster (docs/task-swift-build-prepare-for-indexing-spike.md Step 10). A
+/// second, independent real-corpus run (WordPress-iOS, Steps 13-26) found and fixed the one real
+/// bug in the *honest* path's own compiler-args resolution that this path never had (Step 25); once
+/// fixed, the two paths' remaining divergence was 14 edges out of 834, a separately-confirmed non-
+/// bug shape (Step 26).
 ///
 /// Queries **every** target in the workspace, not just the scheme's own primary target, and merges
 /// their file maps -- scoping to the primary target alone silently missed every file exclusive to
