@@ -505,6 +505,16 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
 
     private var path: [String] = []
     private var emittedTypeNames: Set<String> = []
+    /// Issue #109: incremented on entering a function/initializer/deinitializer/subscript/
+    /// accessor body or a closure literal, decremented on leaving it -- every local `let`/`var`/
+    /// nested `func` declared while this is > 0 is a local to that body, not a member of the
+    /// enclosing type, and must not reach `emitMember` (see `visit`/`visitPost` for
+    /// `CodeBlockSyntax` and `ClosureExprSyntax` below, and the guards in `visit(_
+    /// node: VariableDeclSyntax)` / `visit(_ node: FunctionDeclSyntax)`). Before this fix,
+    /// `DeclarationVisitor` never tracked body descent at all -- confirmed on a real ~2200-file
+    /// corpus (Project Iris) to leak 22.0% of all emitted declarations (9454/43026) as phantom
+    /// members of whatever type happened to be innermost on `path` (docs, issue #109).
+    private var functionBodyDepth = 0
     /// nil while inside a primary type body; possibly non-nil while inside an extension body
     /// (nil if that specific extension carries no attribute of its own) -- see `push`/`pop`.
     private var enclosingExtensionIsolationStack: [IsolationKind?] = []
@@ -609,6 +619,10 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
         kind: SyntacticDeclarationKind,
         isImmutableStoredProperty: Bool = false
     ) {
+        // Issue #109: a declaration reached while inside a function/closure body is local to that
+        // body, not a member of whatever type happens to be innermost on `path` -- see
+        // `functionBodyDepth`'s own doc comment.
+        guard functionBodyDepth == 0 else { return }
         let qualifiedTypeName = SyntacticIdentity.qualifiedName(path)
         // Protocol requirements have no enclosing type scope to qualify against --
         // `DeclarationVisitor` doesn't treat `protocol` as a type scope the way class/struct/
@@ -821,15 +835,42 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
         return .visitChildren
     }
 
+    // Issue #109: a function/initializer/deinitializer/subscript/accessor body is always wrapped
+    // in a `CodeBlockSyntax` (an `if`/`while`/`for`/`do`/`catch` body nested inside one is too,
+    // deliberately not distinguished from the enclosing function's own body -- a local declared
+    // inside a nested control-flow block is exactly as much "local to the function" as one
+    // declared directly in the function's own top-level statement list). A closure literal has no
+    // `CodeBlockSyntax` of its own (`ClosureExprSyntax.statements` is a bare
+    // `CodeBlockItemListSyntax`), hence the separate override below.
+    override func visit(_ node: CodeBlockSyntax) -> SyntaxVisitorContinueKind {
+        functionBodyDepth += 1
+        return .visitChildren
+    }
+    override func visitPost(_ node: CodeBlockSyntax) { functionBodyDepth -= 1 }
+
+    override func visit(_ node: ClosureExprSyntax) -> SyntaxVisitorContinueKind {
+        functionBodyDepth += 1
+        return .visitChildren
+    }
+    override func visitPost(_ node: ClosureExprSyntax) { functionBodyDepth -= 1 }
+
     override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
         // A `let` binding is always a stored property in Swift -- unlike `var`, it can never carry
         // a computed getter/accessor block -- so `bindingSpecifier == .keyword(.let)` alone fully
         // identifies "immutable stored property," no accessor-block check needed.
         let isImmutableStoredProperty = node.bindingSpecifier.tokenKind == .keyword(.let)
         for binding in node.bindings {
-            let name = binding.pattern.trimmedDescription
+            // A stored property's pattern is always a bare identifier -- Swift has no syntax for a
+            // tuple-destructuring stored property declaration, only for a *local* `let`/`var`
+            // (`let (a, b) = ...`), which `functionBodyDepth` above already excludes from ever
+            // reaching here. Guarded independently anyway (Issue #109): `binding.pattern
+            // .trimmedDescription` on a non-identifier pattern (a `TuplePatternSyntax`, a
+            // `WildcardPatternSyntax`) is not a real declaration name, and its own
+            // `positionAfterSkippingLeadingTrivia` is not a resolvable symbol position.
+            guard let identifierPattern = binding.pattern.as(IdentifierPatternSyntax.self) else { continue }
+            let name = identifierPattern.identifier.text
             emitMember(
-                name: name, node: binding, namePosition: binding.pattern.positionAfterSkippingLeadingTrivia,
+                name: name, node: binding, namePosition: identifierPattern.identifier.positionAfterSkippingLeadingTrivia,
                 attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty,
                 isImmutableStoredProperty: isImmutableStoredProperty
             )
