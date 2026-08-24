@@ -11,7 +11,12 @@ func writeStderr(_ message: String, terminator: String = "\n") {
 /// main path since docs/task-swift-build-prepare-for-indexing-spike.md's Steps 13-26 real-corpus-
 /// verified it end to end; this type is no longer reachable from any CLI flag, but kept in the tree
 /// rather than deleted (months of prior production mileage, in case the direct `swift-build` API
-/// path ever needs a fallback).
+/// path ever needs a fallback). The one remaining production call site
+/// (`SwiftIsolationMap.makeCompilerArgumentsProvider`) only falls through here when
+/// `derivedDataPath` is `nil`, which that method's own doc comment already documents as a state
+/// this project's invariants say can't happen for an Xcode container -- deliberately left as a
+/// live (if practically unreachable) fallback rather than a force-unwrap, so the deprecation
+/// warning it now produces there is expected, not a sign of a missed cleanup.
 ///
 /// Real per-file `swiftc` compiler arguments for an Xcode project/workspace, obtained by running
 /// a real `xcodebuild -verbose ... build` and parsing the log -- see
@@ -21,6 +26,7 @@ func writeStderr(_ message: String, terminator: String = "\n") {
 /// the way SwiftPM's `-v` output does. Every file in a target's expanded file list shares that
 /// target's one argument list, mirroring `CompilerArgsLogParser`'s existing whole-module-
 /// optimization fallback for SwiftPM.
+@available(*, deprecated, message: "Superseded by SwiftBuildCompilerArgumentsProvider (the default path for Xcode projects/workspaces since PR #108). Kept only as an unreachable-from-the-CLI legacy fallback -- see this type's own doc comment.")
 public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProviding, @unchecked Sendable {
     private let container: ProjectContainer
     private let scheme: String

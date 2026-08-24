@@ -814,3 +814,62 @@ func phantomGlobalActorInDeadBranchIsNotRecognized() {
     let widget = find(decls, name: "Widget")
     #expect(widget?.explicitIsolation == nil)
 }
+
+// MARK: - Issue #109: local declarations inside a function/closure body must not leak as phantom
+// type members
+
+@Test("A local `let` inside a method body must not be emitted as a phantom member of the enclosing type")
+func localLetInsideMethodBodyIsNotEmittedAsMember() {
+    let decls = declarations("""
+    class Foo {
+        func bar() {
+            let localValue = 1
+        }
+    }
+    """)
+    #expect(find(decls, name: "localValue") == nil, "DeclarationVisitor never tracks descent into a function body (Issue #109), so this local `let` is wrongly emitted via emitMember as a phantom member of Foo")
+}
+
+@Test("A tuple-pattern local `let` inside a method body must not be emitted with the pattern's own text as its name")
+func tuplePatternLocalLetInsideMethodBodyIsNotEmittedAsMember() {
+    let decls = declarations("""
+    class Foo {
+        func bar() {
+            let (constraints, previous) = (1, 2)
+        }
+    }
+    """)
+    // Without the fix, `binding.pattern.trimmedDescription` on a `TuplePatternSyntax` yields the
+    // literal string "(constraints, previous)" as a single phantom member name, and
+    // `binding.pattern.positionAfterSkippingLeadingTrivia` points at the tuple's own opening
+    // parenthesis -- a source position with no resolvable symbol at all.
+    #expect(find(decls, name: "(constraints, previous)") == nil)
+    #expect(find(decls, name: "constraints") == nil)
+    #expect(find(decls, name: "previous") == nil)
+}
+
+@Test("A local `let` inside a closure body must not be emitted as a phantom member of the enclosing type")
+func localLetInsideClosureBodyIsNotEmittedAsMember() {
+    let decls = declarations("""
+    class Foo {
+        func bar() {
+            let closure = {
+                let insideClosure = 2
+            }
+        }
+    }
+    """)
+    #expect(find(decls, name: "insideClosure") == nil)
+}
+
+@Test("A local nested `func` inside a method body must not be emitted as a phantom member of the enclosing type")
+func localNestedFunctionInsideMethodBodyIsNotEmittedAsMember() {
+    let decls = declarations("""
+    class Foo {
+        func bar() {
+            func helper() {}
+        }
+    }
+    """)
+    #expect(find(decls, name: "helper") == nil)
+}
