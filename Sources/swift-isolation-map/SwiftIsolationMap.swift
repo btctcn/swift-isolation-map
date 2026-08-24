@@ -144,18 +144,6 @@ struct SwiftIsolationMap: ParsableCommand {
     @Flag(help: "EXPERIMENTAL, may be removed without notice: re-enable index-store module-name/is_system_unit scoping (allowedModuleNames) of the raw index-store scan. Off by default -- this tool's own private, per-(project, scheme, destination) index store never accumulates unrelated targets' units in the first place.")
     var experimentalIndexStoreModuleFilter: Bool = false
 
-    // Off by default: replaces the `xcodebuild -verbose`/clean-rebuild path with a direct call
-    // into `swift-build`'s own open-source `SWBBuildService` API (docs/task-swift-build-prepare-
-    // for-indexing-spike.md) -- proven, on a real ~2200-file corpus, to reproduce the honest
-    // clean-rebuild path's report byte-for-byte at the edge level, ~35% faster, once
-    // `-showBuildSettingsForIndex`'s own real device/simulator bug (the other doc's Step 6a) is
-    // sidestepped by driving the engine directly instead of through `xcodebuild`'s CLI. Off by
-    // default: this project has one real end-to-end validation, not the months of production
-    // mileage `LiveXcodeCompilerArgumentsProvider` already has -- see that doc's Step 10c for the
-    // one still-open risk (Xcode/`swift-build` protocol version skew), tested once successfully,
-    // not exhaustively.
-    @Flag(help: "EXPERIMENTAL, may be removed without notice: resolve compiler arguments via a direct swift-build/SWBBuildService API call instead of xcodebuild -verbose. Off by default -- see docs/task-swift-build-prepare-for-indexing-spike.md.")
-    var experimentalSwiftBuildCompilerArgs: Bool = false
 
     // Off by default deliberately -- unlike `xcodeIndexingBuildSettings`'s other overrides (which
     // remove artificial obstacles this tool's own internal builds never needed, like code signing),
@@ -540,12 +528,21 @@ struct SwiftIsolationMap: ParsableCommand {
                 packageDirectory: packageURL.deletingLastPathComponent(), processRunning: processRunning
             )
         case .xcodeproj, .xcworkspace:
-            // EXPERIMENTAL (docs/task-swift-build-prepare-for-indexing-spike.md) -- `derivedDataPath`
-            // is unconditionally non-nil for Xcode containers (computed just above this call, see
-            // `privateDerivedDataPath`'s own assignment), so this `if let` only ever falls through to
-            // the honest path in a state this project's own invariants already say can't happen; kept
-            // as a graceful fallback rather than a force-unwrap regardless.
-            if experimentalSwiftBuildCompilerArgs, let derivedDataPath {
+            // The main path since docs/task-swift-build-prepare-for-indexing-spike.md's Steps 1-26:
+            // a direct call into `swift-build`'s own open-source `SWBBuildService` API, bypassing
+            // `xcodebuild -verbose`/clean-rebuild entirely. Real-corpus validated twice -- byte-for-
+            // byte edge parity on a real ~2200-file corpus at Step 10, and again end-to-end on
+            // WordPress-iOS (Steps 13-26): after Step 25 fixed the one real bug `xcodebuild -verbose`
+            // parsing had (no home-directory target preference for a file shared across sibling
+            // targets), the two paths' honest-vs-flagged divergence dropped from 834 to 14 edges
+            // (98.3%), and the residual 14 are a separately-confirmed, non-bug shape (Step 26). Also
+            // ~35% faster. `derivedDataPath` is unconditionally non-nil for Xcode containers
+            // (computed just above this call, see `privateDerivedDataPath`'s own assignment), so this
+            // `if let` only ever falls through to `LiveXcodeCompilerArgumentsProvider` (kept in the
+            // tree as a legacy/fallback path, no longer reachable from any CLI flag) in a state this
+            // project's own invariants already say can't happen -- kept as a graceful fallback rather
+            // than a force-unwrap regardless.
+            if let derivedDataPath {
                 return SwiftBuildCompilerArgumentsProvider(container: container, scheme: scheme, derivedDataPath: derivedDataPath)
             }
             return LiveXcodeCompilerArgumentsProvider(

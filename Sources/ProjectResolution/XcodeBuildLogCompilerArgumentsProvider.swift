@@ -7,6 +7,12 @@ func writeStderr(_ message: String, terminator: String = "\n") {
     FileHandle.standardError.write(Data((message + terminator).utf8))
 }
 
+/// Legacy/fallback conformer for Xcode projects -- `SwiftBuildCompilerArgumentsProvider` is the
+/// main path since docs/task-swift-build-prepare-for-indexing-spike.md's Steps 13-26 real-corpus-
+/// verified it end to end; this type is no longer reachable from any CLI flag, but kept in the tree
+/// rather than deleted (months of prior production mileage, in case the direct `swift-build` API
+/// path ever needs a fallback).
+///
 /// Real per-file `swiftc` compiler arguments for an Xcode project/workspace, obtained by running
 /// a real `xcodebuild -verbose ... build` and parsing the log -- see
 /// docs/priority-3-phase-a-compiler-args.md for the decision record and the empirical finding
@@ -209,8 +215,9 @@ public final class LiveXcodeCompilerArgumentsProvider: CompilerArgumentsProvidin
         // exact shared-file group to `WordPressDraftActionExtension`'s args, silently feeding every
         // downstream live oracle query -- e.g. an external protocol conformance's own isolation --
         // the *wrong* target's compiled context, producing a real, reproducible divergence against
-        // the `--experimental-swift-build-compiler-args` path, which already got this right via
-        // #106). Reusing the identical `preferredArguments` home-directory heuristic here closes
+        // `SwiftBuildCompilerArgumentsProvider` (the main path since Step 25 shipped), which
+        // already got this right via #106). Reusing the identical `preferredArguments` home-
+        // directory heuristic here closes
         // the same gap for this provider, using each invocation's own `-module-name` as the
         // candidate's identity -- the same real string `indexstore_unit_reader_get_module_name`
         // reports for the same compiled unit, and identical to the target name for every real

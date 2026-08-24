@@ -1535,3 +1535,40 @@ by target name -- so the *set* of "unknown" edges is at least identical between 
 though which one is "confidently resolved" would remain arbitrary by construction.
 
 **Full test suite**: 538 tests, all passing (instrumentation fully reverted before running).
+
+## Step 27 -- Promoted to the main path: `--experimental-swift-build-compiler-args` removed,
+## `SwiftBuildCompilerArgumentsProvider` is now the unconditional default for Xcode projects
+
+With Step 25's fix shipped (PR #107) and Step 26 closing out the one remaining residual as
+understood/non-bug, this feature no longer needed to be opt-in. Before removing the flag, a second,
+independent real-corpus verification -- against a genuinely different project from WordPress-iOS,
+not a repeat of the same environment -- was run against Project Iris (`~/ios`, `ls.net.ru` scheme,
+~2227 files):
+
+```
+honest:  total=1821  high=1481  medium=300  low=40   isUnknown=50
+flagged: total=1799  high=1481  medium=278  low=40   isUnknown=28
+key-diff: shared=1758  missing(honest-only)=24  extra(flagged-only)=2  changed=0
+```
+
+high/low identical; the 26-edge divergence (missing + extra) is entirely one file, `Common/
+MindboxNotification.swift`, every edge `isUnknown: true` on both sides. Checked directly (not
+assumed from the pattern alone): this file is compiled by 3 sibling targets and lives under
+`Common/`, not any of the project's 4 real target-named directories (`lsboutiqueContentExtension-
+Release`, `lsboutiqueNotifications-Release`, `Ls.net.ru`, `lsboutiqueTests`) -- the identical "no
+home-directory signal" shape Step 26 found and explained, confirmed by directly dumping each
+provider's resolved `-module-name` for this exact file: honest resolves
+`lsboutiqueContentExtension_Release`, flagged resolves `Ls_net_ru` -- two independently-ordered
+fallbacks disagreeing, exactly as expected, not a new bug. Accepted as an understood residual by the
+user before proceeding.
+
+**Change**: `--experimental-swift-build-compiler-args`/`experimentalSwiftBuildCompilerArgs` removed
+entirely from the CLI. `makeCompilerArgumentsProvider` now unconditionally returns
+`SwiftBuildCompilerArgumentsProvider` for `.xcodeproj`/`.xcworkspace` containers.
+`LiveXcodeCompilerArgumentsProvider` (the `xcodebuild -verbose` path) is kept in the tree as a
+legacy/fallback conformer -- no longer reachable from any CLI flag, but not deleted, per the user's
+own explicit choice (months of prior production mileage, kept in case the direct `swift-build` API
+path ever needs a fallback). Its own test suite (`XcodeCompilerArgsTests.swift`) is unaffected and
+still exercises it directly.
+
+**Full test suite**: 538 tests, all passing.
