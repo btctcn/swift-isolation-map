@@ -338,6 +338,17 @@ touch each file. What it doesn't give you:
 
 ## Known limitations
 
+**A real run may print `<unknown>:0: error: unknown argument: '-enable-anonymous-context-mangled-names'` to stderr.**
+This is a real, reproducible `sourcekitd`/Swift-driver toolchain inconsistency (a debug-build flag
+the driver auto-injects, then its own frontend rejects), not something this tool's own argument
+construction introduces — confirmed harmless to the actual analysis: the same query that prints it
+still returns a correct result. Root-caused, but not deterministically reproducible outside a large
+real corpus, so not yet filed upstream or suppressed (deliberately: the only interception point would
+be redirecting stderr around every oracle query, which is unsafe under `--oracle-workers > 1`'s
+concurrent queries). See
+[`docs/task-anonymous-context-mangled-names-noise.md`](docs/task-anonymous-context-mangled-names-noise.md)
+for the full investigation.
+
 **Compiler-synthesized declarations (default `init()`, `deinit`, `rawValue`/`allCases` accessors,
 ...) are structurally invisible to this tool's extraction pass.** Declaration extraction is built
 on `SwiftSyntax`, a lossless parse of exactly the *source text* in a file — nothing more, nothing
