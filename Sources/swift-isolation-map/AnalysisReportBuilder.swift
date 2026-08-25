@@ -33,10 +33,25 @@ enum AnalysisReportBuilder {
             )
         }
 
-        let edges = engine.crossIsolationEdges().compactMap { edge -> AnalysisEdge? in
+        // Issue #41 (Rule C): iterates every real call-graph edge, not just `engine
+        // .crossIsolationEdges()`'s own pre-filtered subset -- that filter compares *declared*
+        // caller/callee isolation only (`IsolationInferenceEngine`, Priority 1, has no notion of
+        // closures at all), so a call inside `Task.detached { }`/a non-main `DispatchQueue` written
+        // *inside a method already declared on the same actor as its callee* (the design doc's own
+        // motivating `Task.detached { self.someMainActorMethod() }` example) would never even reach
+        // this loop: `declaredCallerIsolation == calleeIsolation` (both the same actor), so `engine
+        // .crossIsolationEdges()` excludes it before any closure override is ever consulted --
+        // confirmed a real, would-have-shipped gap by writing this exact fixture as a test first
+        // and watching it fail. `includeEdge` below is the fix: true when *either* the declared
+        // view crosses (Rule A/B's own case -- unchanged, still shown at whatever risk the closure
+        // override computes) *or* the closure-corrected effective view crosses (Rule C's own new
+        // case, additive). When no closure applies at all, `callerIsolation == declaredCallerIsolation`
+        // makes the two conditions identical, so this is a strict superset of the previous edge set,
+        // never a narrower one -- Rule A/B's existing golden fixtures are unaffected by construction.
+        let edges = engine.callGraph.compactMap { edge -> AnalysisEdge? in
             // §7.2's innermost-enclosing-closure rule (docs/task-closure-isolation-attribution.md):
             // if this call site falls inside a closure the project-wide accept-list recognizes
-            // (Rule A/B), that closure's isolation -- not the declaration's own -- decides this
+            // (Rule A/B/C), that closure's isolation -- not the declaration's own -- decides this
             // edge's risk. Nothing else about `edge.callerUSR`'s declaration changes: the node
             // entry below and every *other* edge from the same declaration still resolve through
             // `engine.resolveIsolation(for:)` untouched (§7.4's invariant).
@@ -45,6 +60,7 @@ enum AnalysisReportBuilder {
                 effectiveCallerIsolation(atLine: edge.location.line, column: edge.location.column, in: $0)
             } ?? declaredCallerIsolation
             let calleeIsolation = engine.resolveIsolation(for: edge.calleeUSR)
+            guard declaredCallerIsolation != calleeIsolation || callerIsolation != calleeIsolation else { return nil }
             let risk = riskLevel(caller: callerIsolation, callee: calleeIsolation)
             // Issue #46: whether this exact call site is syntactically inside a real
             // `await <expr>` expression (`AwaitedCallSiteExtractor`, purely syntactic, no
@@ -65,19 +81,33 @@ enum AnalysisReportBuilder {
             // docs/task-compiled-dependency-isolation.md's binding requirement that "no idea"
             // must never be conflated with a confirmed risk.
             let isUnknown = unknownUSRs.contains(edge.callerUSR) || unknownUSRs.contains(edge.calleeUSR)
-            // An isolated caller reaching a *confirmed* `.nonisolated` callee is never a risk, not
-            // even a low one: `nonisolated` imposes no isolation requirement on its caller, so the
-            // call needs no `await` and can never race, regardless of which actor the caller is
-            // isolated to. Confirmed directly by compilation (both a `@MainActor` class and a
-            // custom `actor` calling a plain nonisolated function: zero diagnostics under
-            // `-strict-concurrency=complete`) -- found auditing the medium-risk bucket against
-            // Project Iris, where this shape alone was ~48% of it. Suppressed entirely rather than
-            // downgraded to a new "no risk" level, per the audit's own conclusion: it isn't
-            // ambiguous, so it doesn't belong in the report at all. Left alone when `isUnknown` --
-            // an oracle-failed lookup that happened to default to `.nonisolated` is a fallback
-            // under uncertainty, not a confirmed fact, so it must still surface, not be silently
-            // treated as proven-safe.
-            if isIsolated(callerIsolation), case .nonisolated = calleeIsolation, !isUnknown {
+            // *Any* caller reaching a *confirmed* `.nonisolated` callee is never a risk, not even a
+            // low one: `nonisolated` imposes no isolation requirement on its caller, so the call
+            // needs no `await` and can never race, regardless of which actor the caller is isolated
+            // to -- or whether the caller is itself nonisolated. Confirmed directly by compilation
+            // (both a `@MainActor` class and a custom `actor` calling a plain nonisolated function:
+            // zero diagnostics under `-strict-concurrency=complete`) -- found auditing the medium-
+            // risk bucket against Project Iris, where this shape alone was ~48% of it. Suppressed
+            // entirely rather than downgraded to a new "no risk" level, per the audit's own
+            // conclusion: it isn't ambiguous, so it doesn't belong in the report at all. Left alone
+            // when `isUnknown` -- an oracle-failed lookup that happened to default to `.nonisolated`
+            // is a fallback under uncertainty, not a confirmed fact, so it must still surface, not
+            // be silently treated as proven-safe.
+            //
+            // Issue #41 (Rule C): originally gated on `isIsolated(callerIsolation)` too, since a
+            // nonisolated-caller/nonisolated-callee pair could never reach this point at all under
+            // the pre-Rule-C edge set (both declared nonisolated -> same declared domain -> not
+            // "crossing" -> excluded upstream, long before this carve-out). Once Rule C started
+            // including edges whose *effective* (closure-corrected) caller isolation is
+            // `.nonisolated` while the *declared* caller was isolated (e.g. a `DispatchQueue.global()
+            // .async { }` inside an otherwise-`@MainActor` method, calling a genuinely nonisolated
+            // function), that narrower gate no longer matched -- confirmed a real, would-have-
+            // shipped regression via this exact real-corpus before/after diff (10 spurious new
+            // `nonisolated -> nonisolated` "medium" edges on Project Iris, all real instances of
+            // this shape). The carve-out's own reasoning already never depended on the caller being
+            // isolated in the first place, so dropping that half of the condition is the correct
+            // fix, not a new judgment call.
+            if case .nonisolated = calleeIsolation, !isUnknown {
                 return nil
             }
             // A callee that's a `let`-bound (always-immutable, never-computed) stored property is
@@ -119,7 +149,7 @@ enum AnalysisReportBuilder {
             )
         }
 
-        // `crossIsolationEdges()` can reference a USR that has no entry in `declarations` at all
+        // The edge loop above can reference a USR that has no entry in `declarations` at all
         // (e.g. a call into un-analyzed/external code -- it resolves to `.unspecified`, which
         // differs from any real isolation, so it still counts as "crossing"). Left alone, that
         // produces an edge whose endpoint has no matching node -- self-inconsistent output that

@@ -111,21 +111,42 @@ public enum ClosureIsolationExtractor {
     }
 }
 
-/// Rule A + Rule B (`docs/task-closure-isolation-attribution.md` §7.3): a closure's effective
-/// isolation, or `nil` for "unknown/inherits" -- no override, fall back to the enclosing
-/// declaration's own resolved isolation exactly as today (§7.5's scope limit). Rule C (the mirror,
-/// de-isolating direction: `Task.detached`, non-`main` `DispatchQueue`s, `@concurrent`) is
-/// deliberately not implemented here -- deferred as a follow-up per §6.1's real-corpus measurement
-/// (zero candidate occurrences found), tracked as its own issue. A closure this function can't
-/// positively classify is not a de-isolating closure by omission; it is simply unclassified, and
-/// `nil` already produces the correct, safe fallback for it.
+/// Rule A + Rule B + Rule C (`docs/task-closure-isolation-attribution.md` §7.3, issue #41): a
+/// closure's effective isolation, or `nil` for "unknown/inherits" -- no override, fall back to the
+/// enclosing declaration's own resolved isolation exactly as today (§7.5's scope limit).
+///
+/// Rule A is checked first and always wins over Rule C's structural checks below: `Task.detached {
+/// @MainActor in ... }`/`DispatchQueue.global().async { @MainActor in ... }` are real, legal Swift
+/// -- detaching from the ambient context, or running on a background queue, doesn't prevent the
+/// closure from still being explicitly isolated to a specific actor. Only when the closure carries
+/// no recognized global-actor attribute of its own does Rule C's own de-isolating evidence apply.
+///
+/// Rule C's own attribute case (`@concurrent`) was confirmed, by direct compilation, to be the
+/// *only* real closure-literal-legal de-isolating attribute spelling -- `nonisolated`,
+/// `nonisolated(nonsending)`, and `@isolated(any)` were each checked and are **not** legal on a
+/// closure literal at all ("'nonisolated' is not supported on a closure"), so no accept-list is
+/// needed here the way Rule A's global-actor names need one: this is exactly one fixed, unambiguous
+/// spelling, not an open set.
 public func classify(_ record: ClosureLiteralRecord, knownGlobalActorNames: Set<String>) -> IsolationKind? {
     if let attributeName = record.signatureAttributeName, knownGlobalActorNames.contains(attributeName) {
         return .globalActor(name: attributeName)
     }
+    if record.signatureAttributeName == "concurrent" {
+        return .nonisolated
+    }
     if record.enclosingCallReceiver == "DispatchQueue.main",
        record.enclosingCallMember == "async" || record.enclosingCallMember == "asyncAfter" {
         return .globalActor(name: "MainActor")
+    }
+    if record.enclosingCallReceiver == "Task", record.enclosingCallMember == "detached" {
+        return .nonisolated
+    }
+    // Mirrors Rule B's own deliberate narrowness (matched on receiver text, not on inferred type --
+    // a custom `DispatchQueue`-typed variable, e.g. `myQueue.async { }`, is not recognized here any
+    // more than Rule B recognizes a `toMain(_:)`-shaped wrapper as `DispatchQueue.main`).
+    if let receiver = record.enclosingCallReceiver, receiver.hasPrefix("DispatchQueue."), receiver != "DispatchQueue.main",
+       record.enclosingCallMember == "async" || record.enclosingCallMember == "asyncAfter" {
+        return .nonisolated
     }
     return nil
 }
