@@ -7,9 +7,10 @@ physically inside an isolated closure literal (`Task { @MainActor in ... }`,
 high-risk boundary, because `IndexStoreDB`'s call graph has no notion of anonymous closures as
 their own isolation scope.
 
-**Status: shipped.** Rules A and B (below) are implemented, tested, and gated against a full,
-real-project re-run. Rule C (the mirror, de-isolating direction) and one accept-list extension are
-deliberately out of scope for this change -- see "Deferred, tracked separately" at the end.
+**Status: shipped.** Rules A, B, and C are all implemented, tested, and gated against a full,
+real-project re-run. Rule C's own implementation record is in "Rule C (issue #41)" below. One
+accept-list extension (issue #40) shipped separately; see "Deferred, tracked separately" at the end
+for what's still open.
 
 ## Step 1 -- Hypothesis
 
@@ -211,17 +212,82 @@ oracle, report) with `--oracle-workers 8`, before and after this change:
 
 Next.
 
-## Deferred, tracked separately
+## Rule C (issue #41)
 
-- **[Issue #41](https://github.com/btctcn/swift-isolation-map/issues/41)**: Rule C, the mirror
-  (de-isolating) direction -- `Task.detached { }`, `.async`/`.asyncAfter` on a non-`main`
-  `DispatchQueue`, and a confirmed de-isolating attribute (`@concurrent`/`nonisolated(nonsending)`,
-  pending the `Attr.def` inventory Step 2 flagged). Deferred on real measured evidence (zero
-  candidate occurrences in Project Iris), not on difficulty -- the classification model already
-  supports it (`IsolationKind.nonisolated` as the override; no shape change needed).
+Implemented after Rules A/B shipped, once real evidence (see below) justified the work.
+
+**Attribute inventory** (the one prerequisite Step 2 flagged as correctness-critical, since a
+missed de-isolating attribute here is a missed false negative, unlike Rule A's fail-safe
+accept-list): checked directly against a real toolchain, not `Attr.def` alone.
+`swift/include/swift/AST/DeclAttr.def`/`TypeAttr.def` list `concurrent`, `nonisolated`, and
+`isolated`(`(any)`) as isolation-related attribute spellings; real compilation narrowed this to
+exactly one closure-literal-legal spelling: `{ @concurrent in ... }` compiles and genuinely
+de-isolates (a `@MainActor` self-call inside it is a hard error). `{ nonisolated in ... }`,
+`{ @nonisolated in ... }`, `{ nonisolated(nonsending) in ... }`, and `{ @isolated(any) in ... }`
+are each rejected outright -- `'nonisolated'/'isolated' is a declaration modifier, not an
+attribute` / `'nonisolated' is not supported on a closure`. No accept-list needed for this rule the
+way Rule A needs one: one fixed, unambiguous spelling, not an open set.
+
+**`Task.detached { }` and non-`main` `DispatchQueue.async`/`.asyncAfter`**: both already produced
+the exact evidence `classify(_:knownGlobalActorNames:)` needs (`enclosingCallReceiver`/
+`enclosingCallMember`) with zero extraction-side changes -- confirmed directly by running the
+existing `ClosureIsolationExtractor.extract` against real probe files, not assumed from the shape
+matching Rule B's own receiver/member capture. Real compilation confirmed the severity split Step 2
+predicted: `Task.detached { self.touch() }` (touch() `@MainActor`) is a hard `error:`; `DispatchQueue
+.global().async { self.touch() }` is only a `warning:`, both still real findings this tool should
+surface.
+
+**A real architectural gap, found only by writing the most valuable fixture first and watching it
+fail** (`Task.detached { self.someMainActorMethod() }`, written inside an already-`@MainActor`
+method calling another `@MainActor` method): `IsolationInferenceEngine.crossIsolationEdges()`
+compares only *declared* caller/callee isolation, with no notion of closures at all -- since both
+sides are declared the same actor, this edge never reached `AnalysisReportBuilder.build()`'s own
+closure-substitution step in the first place. Fixed by iterating `engine.callGraph` directly
+instead of the pre-filtered `crossIsolationEdges()`, including an edge when *either* the declared
+view crosses (Rule A/B's own existing case, unaffected) *or* the closure-corrected effective view
+crosses (Rule C's new case) -- a strict superset of the previous edge set when no closure applies,
+confirmed by the real-corpus gate below showing zero changes to any previously-reported edge.
+
+**A second real regression, also only found via the real-corpus gate, not anticipated in the
+original design**: broadening the edge set the way above also exposed calls whose *effective*
+caller isolation is now `.nonisolated` (via Rule C) reaching a confirmed-`.nonisolated` callee --
+the existing "isolated caller reaching confirmed nonisolated callee is never a risk" suppression
+was gated on `isIsolated(callerIsolation)`, which a nonisolated caller (naturally, or via Rule C)
+never satisfied, so a shape that could never previously reach that carve-out (declared
+nonisolated -> declared nonisolated was never "crossing" under the old declared-only filter) now
+did, and wasn't suppressed -- 10 spurious new "medium" edges on the real-corpus gate below, all real
+instances of exactly this shape. Fixed by dropping the `isIsolated(callerIsolation)` half of that
+condition entirely: the carve-out's own stated reasoning ("nonisolated imposes no isolation
+requirement on its caller... regardless of which actor the caller is isolated to") never actually
+depended on the caller being isolated, so this is the carve-out's own correct, general form, not a
+new judgment call. This also, as a verified-correct side effect, suppresses `unspecified ->
+confirmed nonisolated` edges that predate this change entirely (a caller this tool has no
+declaration for calling a confirmed-safe nonisolated callee, e.g. vendored-dependency-internal
+calls and a real, already-known cross-target-scoping gap in `MindboxNotification.swift` -- spot-
+checked directly against real source, not just counted: every sampled case is a genuine, already-
+safe call into stdlib/SDK primitives, e.g. `Dictionary` subscript/`DispatchQueue.async` itself, not
+a hidden finding).
+
+**Real-corpus gate**, before/after against Project Iris (`--oracle-workers 4`, deduplicated by
+`(callerUSR, calleeUSR, file, line)` per this doc's own established precedent for the pre-existing
+IndexStoreDB duplicate-edge quirk):
+- **0 edges disappeared, 0 common edges changed risk/isolation** -- Rules A/B's existing, tested
+  behavior is completely unaffected.
+- **5 new edges appeared**, all genuine: `nonisolated -> globalActor(MainActor)`, `.high`. Spot-
+  checked at the source, not just counted -- e.g. `MapViewController.mapView(_:regionDidChangeAnimated:)`
+  writes `self?.selectedCoordinateRegion` (a `@MainActor` property) from inside
+  `DispatchQueue.global(qos: .userInitiated).async { }`; `OrdersCell`'s prefetch handler calls
+  `self.model?.loadMore?(callback)` the same way -- real, previously-invisible risk, exactly Rule
+  C's own motivating shape.
+- **244 previously-reported `unspecified -> nonisolated` "medium" edges correctly suppressed** by
+  the carve-out generalization above (see that section for the direct source-level verification this
+  isn't hiding a real finding).
+- `highRiskBoundaries`: 1481 -> 1486 (exactly the 5 new high-risk edges, nothing else moved).
+
+## Resolved, tracked separately
+
 - **[Issue #40](https://github.com/btctcn/swift-isolation-map/issues/40)**: Rule A's accept-list
-  can only ever see global actors declared in *parsed* source. A global actor vended by a compiled
-  dependency (SPM package, binary Pod, XCFramework) falls to unknown/inherits today -- a preserved
-  false positive, never a false negative, and safe to leave as-is (fails toward the safe direction),
-  but resolvable via the external oracle as a follow-up once a real corpus is found that actually
-  exercises it (Project Iris measured zero).
+  originally could only ever see global actors declared in *parsed* source, so a global actor
+  vended by a compiled dependency fell to unknown/inherits. Shipped: `BulkSymbolGraphExtractor` now
+  detects a type's own literal `@globalActor` attribute during the extraction it already runs and
+  threads the discovered names into the same accept-list Rule A/C both trust.

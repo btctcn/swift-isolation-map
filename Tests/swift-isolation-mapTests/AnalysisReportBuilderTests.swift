@@ -241,6 +241,67 @@ struct AnalysisReportBuilderTests {
         #expect(globalEdge.risk == .high)
     }
 
+    // MARK: - Rule C (issue #41): the mirror, de-isolating direction
+
+    @Test("A call inside Task.detached { }, declared inside a @MainActor method, is reported as high risk -- before Rule C, this was silently unprotected: the enclosing declaration's own MainActor isolation would have wrongly \"protected\" it")
+    func callInsideTaskDetachedInsideMainActorMethodIsHighRisk() throws {
+        let mainActorCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .globalActor(name: "MainActor"))
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": mainActorCaller, "usr:callee": mainActorCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 5, column: 5)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        // Task.detached { } itself, lines 4-6, classified nonisolated by Rule C.
+        let closures = [ClassifiedClosure(startLine: 4, startColumn: 1, endLine: 6, endColumn: 1, isolationOverride: .nonisolated)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            closuresByFile: [location.file: closures]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.callerIsolation == "nonisolated")
+        #expect(edge.risk == .high)
+    }
+
+    @Test("A call inside DispatchQueue.global().async { }, declared inside a @MainActor method, is reported as high risk -- the same real gap Rule C closes, non-Task.detached form")
+    func callInsideNonMainDispatchQueueInsideMainActorMethodIsHighRisk() throws {
+        let mainActorCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .globalActor(name: "MainActor"))
+        let mainActorCallee = DeclarationInfo(usr: "usr:callee", name: "onMain", explicitIsolation: .globalActor(name: "MainActor"))
+        let declarations: [String: DeclarationInfo] = ["usr:caller": mainActorCaller, "usr:callee": mainActorCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 5, column: 5)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let closures = [ClassifiedClosure(startLine: 4, startColumn: 1, endLine: 6, endColumn: 1, isolationOverride: .nonisolated)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            closuresByFile: [location.file: closures]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.callerIsolation == "nonisolated")
+        #expect(edge.risk == .high)
+    }
+
+    @Test("A call inside DispatchQueue.global().async { }, declared inside a @MainActor method, targeting a confirmed nonisolated callee, is suppressed entirely -- real regression caught via Project Iris before/after diff: the nonisolated-callee carve-out must key off the *effective* (closure-corrected) caller isolation, not just whether the caller happens to also be nonisolated")
+    func callInsideNonMainDispatchQueueToNonisolatedCalleeIsSuppressed() {
+        let mainActorCaller = DeclarationInfo(usr: "usr:caller", name: "trigger", explicitIsolation: .globalActor(name: "MainActor"))
+        let nonisolatedCallee = DeclarationInfo(usr: "usr:callee", name: "runPerformanceTests", explicitIsolation: .nonisolated)
+        let declarations: [String: DeclarationInfo] = ["usr:caller": mainActorCaller, "usr:callee": nonisolatedCallee]
+        let location = SymbolLocation(file: "Widget.swift", line: 5, column: 5)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: location)]
+        let engine = IsolationInferenceEngine(declarations: declarations, callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let closures = [ClassifiedClosure(startLine: 4, startColumn: 1, endLine: 6, endColumn: 1, isolationOverride: .nonisolated)]
+
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            closuresByFile: [location.file: closures]
+        )
+
+        #expect(report.edges.isEmpty, "calling a confirmed nonisolated function is always safe, regardless of whether the caller is isolated, effectively nonisolated via Rule C, or both -- must never be reported at all")
+    }
+
     // MARK: - Isolated-caller-reaching-confirmed-nonisolated-callee suppression
 
     @Test("An isolated caller (actor or globalActor) reaching a confirmed nonisolated callee is suppressed entirely, not reported as medium")

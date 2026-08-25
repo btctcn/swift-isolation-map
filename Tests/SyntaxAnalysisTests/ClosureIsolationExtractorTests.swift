@@ -135,7 +135,7 @@ struct ClosureIsolationExtractorTests {
     }
 }
 
-@Suite("classify(_:knownGlobalActorNames:): Rule A + Rule B")
+@Suite("classify(_:knownGlobalActorNames:): Rule A + Rule B + Rule C")
 struct ClosureClassificationTests {
     private func record(
         attribute: String? = nil, receiver: String? = nil, member: String? = nil
@@ -176,10 +176,10 @@ struct ClosureClassificationTests {
         #expect(result == .globalActor(name: "MainActor"))
     }
 
-    @Test("Rule B does not match DispatchQueue.global() -- the confirmed-real control case")
+    @Test("Rule B does not match DispatchQueue.global() as MainActor -- the confirmed-real control case (issue #41: now classified nonisolated by Rule C instead of falling to nil)")
     func dispatchGlobalAsyncDoesNotClassifyAsMainActor() {
         let result = classify(record(receiver: "DispatchQueue.global()", member: "async"), knownGlobalActorNames: [])
-        #expect(result == nil)
+        #expect(result != .globalActor(name: "MainActor"))
     }
 
     @Test("Rule B does not propagate through a custom wrapper (toMain) -- confirmed by real compilation in docs/task-closure-isolation-attribution.md §3")
@@ -195,5 +195,43 @@ struct ClosureClassificationTests {
     func plainUnattributedClosureClassifiesAsNil() {
         let result = classify(record(), knownGlobalActorNames: ["MainActor"])
         #expect(result == nil)
+    }
+
+    // MARK: - Rule C (issue #41): the mirror, de-isolating direction
+
+    @Test("Rule C: Task.detached classifies as nonisolated -- confirmed by real compilation: a self-call inside it is a hard error")
+    func taskDetachedClassifiesAsNonisolated() {
+        let result = classify(record(receiver: "Task", member: "detached"), knownGlobalActorNames: [])
+        #expect(result == .nonisolated)
+    }
+
+    @Test("Rule C: DispatchQueue.global().async classifies as nonisolated -- confirmed by real compilation (a warning, not a hard error, but still real)")
+    func dispatchGlobalAsyncClassifiesAsNonisolated() {
+        let result = classify(record(receiver: "DispatchQueue.global()", member: "async"), knownGlobalActorNames: [])
+        #expect(result == .nonisolated)
+    }
+
+    @Test("Rule C: a non-main DispatchQueue's asyncAfter also classifies as nonisolated, mirroring Rule B's own async/asyncAfter pairing")
+    func nonMainDispatchQueueAsyncAfterClassifiesAsNonisolated() {
+        let result = classify(record(receiver: "DispatchQueue.global(qos: .background)", member: "asyncAfter"), knownGlobalActorNames: [])
+        #expect(result == .nonisolated)
+    }
+
+    @Test("Rule C does not match a custom queue variable -- mirrors Rule B's own toMain(_:) narrowness (receiver text, not inferred type)")
+    func customQueueVariableDoesNotClassifyAsNonisolated() {
+        let result = classify(record(receiver: "myQueue", member: "async"), knownGlobalActorNames: [])
+        #expect(result == nil)
+    }
+
+    @Test("Rule C: @concurrent classifies as nonisolated -- confirmed the only real closure-literal-legal de-isolating attribute (nonisolated/nonisolated(nonsending)/@isolated(any) are each not supported on a closure at all)")
+    func concurrentAttributeClassifiesAsNonisolated() {
+        let result = classify(record(attribute: "concurrent"), knownGlobalActorNames: [])
+        #expect(result == .nonisolated)
+    }
+
+    @Test("Rule A wins over Rule C: an explicit recognized global-actor attribute on a Task.detached closure is still that global actor, not nonisolated -- detaching from the ambient context doesn't prevent explicit isolation")
+    func explicitGlobalActorAttributeOnTaskDetachedWinsOverRuleC() {
+        let result = classify(record(attribute: "MainActor", receiver: "Task", member: "detached"), knownGlobalActorNames: ["MainActor"])
+        #expect(result == .globalActor(name: "MainActor"))
     }
 }
