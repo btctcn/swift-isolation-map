@@ -3,7 +3,7 @@
 A static analysis CLI for Swift actor isolation and data-race risk — a whole-project isolation
 map, not a single runtime trace.
 
-Latest release: [0.1.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.1.0).
+Latest release: [0.2.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.2.0).
 
 > **Status: working.** The full pipeline is implemented and tested — project/scheme resolution,
 > index-store discovery and staleness detection, a hybrid `libIndexStore` + `SwiftSyntax`
@@ -411,8 +411,9 @@ boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
-- **v0.2 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin), per-call-site suppression comments (design: `docs/task-suppression-comments.md`).
-- **v0.3 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
+- **v0.2 — shipped.** A direct `swift-build`/`SWBBuildService` API path promoted to the default compiler-argument resolution for Xcode projects — faster and more correct than the `xcodebuild -verbose` path it replaces, byte-for-byte edge-parity verified against two real 2000+-file corpora (the honest path stays in the tree as an unreachable-from-the-CLI fallback). Closure-level isolation attribution completed end to end: a real `@globalActor` declared in a compiled dependency is now recognized, and the full de-isolating mirror direction (`Task.detached`, non-main `DispatchQueue`s, `@concurrent`) is implemented and real-corpus-verified. A real declaration-extraction bug fixed — local `let`/`var`/nested `func`s inside a function or closure body were being misattributed as phantom members of the enclosing type (22% of all declarations on one real ~2200-file corpus). Dozens of further real declaration/USR-matching correctness fixes across Objective-C/Swift interop edge cases (bridged extern constants, protocol witnesses, subscripts, multi-target declaration aliasing, and more), plus index-store scoping and DerivedData isolation hardening for shared/multi-run environments.
+- **v0.3 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin), per-call-site suppression comments (design: `docs/task-suppression-comments.md`).
+- **v0.4 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
 
 ## Contributing
 
