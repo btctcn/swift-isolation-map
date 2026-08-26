@@ -32,6 +32,11 @@ extension RiskLevel: CaseIterable {
     public static var allCases: [RiskLevel] { [.low, .medium, .high] }
 }
 
+extension EdgeSortOption: ExpressibleByArgument {}
+extension EdgeSortOption: CaseIterable {
+    public static var allCases: [EdgeSortOption] { [.file, .severity] }
+}
+
 enum SwiftIsolationMapError: Error, CustomStringConvertible {
     case unrecognizedPath(String)
     case indexStoreMissingAfterRebuild
@@ -88,7 +93,7 @@ private final class ResultBox<T>: @unchecked Sendable {
 
 @main
 struct SwiftIsolationMap: ParsableCommand {
-    static let toolVersion = "0.2.0"
+    static let toolVersion = "0.2.1"
 
     static let configuration = CommandConfiguration(
         commandName: "swift-isolation-map",
@@ -164,6 +169,9 @@ struct SwiftIsolationMap: ParsableCommand {
 
     @Option(help: "Only include edges at or above this risk level in the output: low | medium | high. An edge with unresolved/unknown isolation on either side is always included regardless -- filtering to a stricter severity never hides genuine uncertainty. Default: no filtering, everything is included.")
     var severity: RiskLevel?
+
+    @Option(help: "Sort edges in the output: file (by location.file, then line) | severity (high first). Default: whatever order the analysis produced them in.")
+    var sort: EdgeSortOption?
 
     @Option(help: "Where to write the result (default: stdout)")
     var outFile: String?
@@ -470,10 +478,11 @@ struct SwiftIsolationMap: ParsableCommand {
         warnIfUncertaintyRateIsAnomalouslyHigh(report)
 
         try StalenessOrchestration.writeManifest(StalenessManifest(contentHashesByFilePath: currentHashes), to: manifestURL, fileSystem: fileSystem)
-        // The exit-code decision below is based on `report` itself, not the filtered view --
-        // `--severity` is a presentation choice for this invocation's output, never a way to
-        // change whether the analysis considers the project to have a real high-risk boundary.
-        try writeOutput(AnalysisReportBuilder.filtered(report, minimumSeverity: severity))
+        // The exit-code decision below is based on `report` itself, not the filtered/sorted view --
+        // `--severity`/`--sort` are presentation choices for this invocation's output, never a way
+        // to change whether the analysis considers the project to have a real high-risk boundary.
+        let filteredReport = AnalysisReportBuilder.filtered(report, minimumSeverity: severity)
+        try writeOutput(AnalysisReportBuilder.sorted(filteredReport, by: sort))
 
         throw ExitCode(report.summary.highRiskBoundaries > 0 ? 1 : 0)
     }
