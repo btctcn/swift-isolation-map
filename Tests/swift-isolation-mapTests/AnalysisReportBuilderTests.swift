@@ -557,13 +557,14 @@ struct AnalysisReportBuilderTests {
     private func makeEdge(
         id: String, risk: RiskLevel,
         callerIsolation: String = "actor(A)", calleeIsolation: String = "actor(B)",
-        isUnknown: Bool = false
+        isUnknown: Bool = false,
+        location: AnalysisLocation = AnalysisLocation(file: "T.swift", line: 1)
     ) -> AnalysisEdge {
         AnalysisEdge(
             callerUSR: "usr:caller.\(id)", calleeUSR: "usr:callee.\(id)",
             callerIsolation: callerIsolation, calleeIsolation: calleeIsolation,
             risk: risk, explanation: "test edge \(id)",
-            location: AnalysisLocation(file: "T.swift", line: 1), isUnknown: isUnknown
+            location: location, isUnknown: isUnknown
         )
     }
 
@@ -623,5 +624,46 @@ struct AnalysisReportBuilderTests {
     func filteredLowSeverityKeepsEverything() {
         let report = makeReport(edges: [makeEdge(id: "1", risk: .high), makeEdge(id: "2", risk: .medium), makeEdge(id: "3", risk: .low)])
         #expect(AnalysisReportBuilder.filtered(report, minimumSeverity: .low).edges.count == 3)
+    }
+
+    // MARK: - `--sort` presentation ordering (AnalysisReportBuilder.sorted)
+
+    @Test("sorted(): nil sort (no --sort given) returns the report unchanged")
+    func sortedWithNilOptionIsIdentity() {
+        let report = makeReport(edges: [makeEdge(id: "1", risk: .low), makeEdge(id: "2", risk: .high)])
+        #expect(AnalysisReportBuilder.sorted(report, by: nil) == report)
+    }
+
+    @Test("sorted(): file orders edges by location.file, then by line within the same file")
+    func sortedByFileOrdersByFileThenLine() {
+        let b2 = makeEdge(id: "b2", risk: .low, location: AnalysisLocation(file: "B.swift", line: 2))
+        let a1 = makeEdge(id: "a1", risk: .low, location: AnalysisLocation(file: "A.swift", line: 1))
+        let b1 = makeEdge(id: "b1", risk: .low, location: AnalysisLocation(file: "B.swift", line: 1))
+        let report = makeReport(edges: [b2, a1, b1])
+
+        let result = AnalysisReportBuilder.sorted(report, by: .file)
+
+        #expect(result.edges.map(\.callerUSR) == [a1, b1, b2].map(\.callerUSR))
+    }
+
+    @Test("sorted(): severity orders high before medium before low, then by location.file within the same risk")
+    func sortedBySeverityOrdersHighFirst() {
+        let low = makeEdge(id: "low", risk: .low, location: AnalysisLocation(file: "T.swift", line: 1))
+        let mediumB = makeEdge(id: "mediumB", risk: .medium, location: AnalysisLocation(file: "B.swift", line: 1))
+        let mediumA = makeEdge(id: "mediumA", risk: .medium, location: AnalysisLocation(file: "A.swift", line: 1))
+        let high = makeEdge(id: "high", risk: .high, location: AnalysisLocation(file: "T.swift", line: 1))
+        let report = makeReport(edges: [low, mediumB, mediumA, high])
+
+        let result = AnalysisReportBuilder.sorted(report, by: .severity)
+
+        #expect(result.edges.map(\.callerUSR) == [high, mediumA, mediumB, low].map(\.callerUSR))
+    }
+
+    @Test("sorted(): does not change summary or nodes, only edge order")
+    func sortedLeavesSummaryAndNodesUnchanged() {
+        let report = makeReport(edges: [makeEdge(id: "1", risk: .low), makeEdge(id: "2", risk: .high)])
+        let result = AnalysisReportBuilder.sorted(report, by: .severity)
+        #expect(result.summary == report.summary)
+        #expect(result.nodes == report.nodes)
     }
 }

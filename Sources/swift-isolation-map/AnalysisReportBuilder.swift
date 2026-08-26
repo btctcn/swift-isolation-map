@@ -2,6 +2,14 @@ import IsolationCore
 import OutputFormat
 import SyntaxAnalysis
 
+/// `--sort`'s two orderings. `ExpressibleByArgument`/`CaseIterable` conformances live in
+/// `SwiftIsolationMap.swift` next to `OutputFormatOption`'s (this type has no CLI dependency of
+/// its own, so it's declared here where `AnalysisReportBuilder.sorted` actually uses it).
+enum EdgeSortOption: String {
+    case file
+    case severity
+}
+
 /// Builds the machine-readable `AnalysisReport` from an already-resolved `IsolationInferenceEngine`
 /// (Priority 1, unmodified) plus the Swift-version/rule-set strings `SwiftVersionDetection`
 /// produced. All isolation resolution and cross-isolation-edge detection is delegated to the
@@ -262,6 +270,44 @@ enum AnalysisReportBuilder {
             summary: summary,
             nodes: report.nodes,
             edges: filteredEdges
+        )
+    }
+
+    /// `--sort` is a presentation choice like `--severity`: `edges` otherwise carries whatever
+    /// order `engine.callGraph` happened to produce them in (`build()` above), which is not a
+    /// documented or guaranteed order. `nodes`/`summary` are untouched -- only edge order changes.
+    static func sorted(_ report: AnalysisReport, by sort: EdgeSortOption?) -> AnalysisReport {
+        guard let sort else { return report }
+
+        let sortedEdges: [AnalysisEdge]
+        switch sort {
+        case .file:
+            sortedEdges = report.edges.sorted {
+                ($0.location.file, $0.location.line) < ($1.location.file, $1.location.line)
+            }
+        case .severity:
+            func rank(_ risk: RiskLevel) -> Int {
+                switch risk {
+                case .high: return 0
+                case .medium: return 1
+                case .low: return 2
+                }
+            }
+            sortedEdges = report.edges.sorted {
+                let (lhsRank, rhsRank) = (rank($0.risk), rank($1.risk))
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                return ($0.location.file, $0.location.line) < ($1.location.file, $1.location.line)
+            }
+        }
+
+        return AnalysisReport(
+            schemaVersion: report.schemaVersion,
+            toolVersion: report.toolVersion,
+            swiftVersion: report.swiftVersion,
+            ruleSetUsed: report.ruleSetUsed,
+            summary: report.summary,
+            nodes: report.nodes,
+            edges: sortedEdges
         )
     }
 
