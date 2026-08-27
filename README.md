@@ -134,7 +134,7 @@ Example:
 swift-isolation-map ./MyApp.xcworkspace --scheme MyApp --auto-build --output json --out-file report.json
 ```
 
-### Where the index store lives (EXPERIMENTAL)
+### Where the index store lives
 
 For `.xcodeproj`/`.xcworkspace` projects, this tool never reads from or builds into Xcode's own
 shared `~/Library/Developer/Xcode/DerivedData` — every real `xcodebuild` invocation it makes (the
