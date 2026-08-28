@@ -971,6 +971,36 @@ func plainNonisolatedVarLeavesIsNonisolatedUnsafeFalse() {
     #expect(find(decls, name: "counter")?.isNonisolatedUnsafe == false)
 }
 
+@Test("A class whose ONLY inheritance-clause entry is @unchecked Sendable at offset 0 still sets isUnchecked -- the attribute itself proves it's a conformance, not a superclass (real regression: auth0/Auth0.swift, ActClaim/TransactionStore/SynchronizationBarrier/NonceStorage shape)")
+func singleEntryUncheckedSendableOnClassIsNotMistakenForSuperclass() {
+    let decls = declarations("final class ActClaim: @unchecked Sendable {}")
+    let actClaim = find(decls, name: "ActClaim")
+    #expect(actClaim?.superclassUSR == nil, "the attribute proves this can't be a real superclass reference")
+    #expect(actClaim?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" && $0.isUnchecked } == true)
+}
+
+@Test("A class whose ONLY inheritance-clause entry is @preconcurrency P at offset 0 still sets isPreconcurrency, same reasoning")
+func singleEntryPreconcurrencyOnClassIsNotMistakenForSuperclass() {
+    let decls = declarations("""
+    protocol P {}
+    final class Widget: @preconcurrency P {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.superclassUSR == nil)
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:P" && $0.isPreconcurrency } == true)
+}
+
+@Test("A genuine superclass at offset 0 (no attribute) is still correctly treated as a superclass, not a conformance -- the override above must not fire for the unattributed case")
+func plainSuperclassAtOffsetZeroIsUnaffectedByEscapeHatchOverride() {
+    let decls = declarations("""
+    class Base {}
+    final class Derived: Base {}
+    """)
+    let derived = find(decls, name: "Derived")
+    #expect(derived?.superclassUSR?.hasSuffix("Base") == true)
+    #expect(derived?.conformances.isEmpty == true)
+}
+
 @Test("containingTypeUSR is identical for a member declared in a type's own body and one declared in a same-file extension of it -- the invariant the @preconcurrency containment-walk downgrade lookup depends on (docs/task-escape-hatch-and-preconcurrency-severity.md, Step 5 tech debt)")
 func containingTypeUSRMatchesBetweenBodyMemberAndExtensionMember() {
     let decls = declarations("""

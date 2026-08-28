@@ -10,16 +10,21 @@ checked against a real compiler run, real source (SE-0423's own text, this codeb
 extractor), or both — not asserted from reasoning alone; three rounds of review each surfaced a
 real, checked-and-fixed gap (the conformance-downgrade mechanism, the Gap C3 generalization, and
 type/extension-level `@preconcurrency` propagation), and each one's own regression guard is now a
-real, passing test, not just a note in this document. Real-corpus verification against a *second*
-corpus (`onevcat/Kingfisher`, after Project Iris's own zero-findings run) then found a genuinely
-shipped-breaking bug — 7 real-declaration-reconstruction sites in `DeclarationLinker.swift`/
-`ExternalIsolationBackfill.swift` silently dropped every new field, meaning the whole feature would
-have returned near-zero real findings on every real, linked project despite working correctly in
-every unit test (see Step 6's own account). Fixed, with regression coverage at the level that broke,
-and re-verified against Kingfisher to an exact byte-for-byte match against an independent `grep`
-baseline. 584/584 tests passing (24 new). PR2 (shape 4, `@preconcurrency import`) has two spikes
-still open and deliberately not blocking PR1: the `.path`-vs-index-store module-name comparison for
-Clang submodules, and the `@CM@`-qualifier lookup direction.
+real, passing test, not just a note in this document. Real-corpus verification, done across five
+corpora in sequence (Project Iris, then `onevcat/Kingfisher`, `auth0/Auth0.swift`,
+`realm/realm-swift`, `Tencent/wcdb`), found and fixed two further real, independent bugs beyond
+Steps 1-3's own three review-time corrections — see Step 6 for the full account of each: (1) 7
+`DeclarationInfo`/`ProtocolConformance` reconstruction sites in `DeclarationLinker.swift`/
+`ExternalIsolationBackfill.swift` silently dropped every new field on any real, linked declaration;
+(2) an inherited blind spot in the pre-existing superclass-vs-protocol heuristic misclassified
+`@unchecked Sendable`/`@preconcurrency` as a superclass reference when it was a class's *only*
+inheritance-clause entry. Both fixed, with regression coverage at the level that broke, and
+re-verified to an exact (or fully-explained) match against independent `grep` baselines on all five
+corpora. 587/587 tests passing (27 new). **Not yet real-corpus-verified**: the declaration-trigger
+severity-downgrade mechanism itself has fired zero times across all five real corpora — see Step 6.
+PR2 (shape 4, `@preconcurrency import`) has two spikes still open and deliberately not blocking
+PR1: the `.path`-vs-index-store module-name comparison for Clang submodules, and the `@CM@`-qualifier
+lookup direction.
 
 ## Step 1 — Hypothesis
 
@@ -487,6 +492,75 @@ correctly `isMutable: false` (all 6 real occurrences are `let`), 0 `.preconcurre
 declaration/conformance-level `@preconcurrency` exists on this corpus to trigger one). Not a partial
 improvement -- a byte-exact match to independently-verified ground truth.
 
+### A third real corpus (`auth0/Auth0.swift`) caught a second, independent bug
+
+Same discipline as Kingfisher -- `grep` baseline first (18 real `@unchecked Sendable`, 0
+`nonisolated(unsafe)`, 2 `@preconcurrency import`, shape 4) -- then run. First result:
+`escapeHatches: 13`, missing 5 real declarations: `ActClaim`, `BiometricSession`,
+`TransactionStore`, `SynchronizationBarrier`, `NonceStorage`. Confirmed these are **not** the
+DeclarationLinker bug reappearing -- each is a real, correctly-linked `AnalysisNode` with a real
+Swift-mangled USR at the exact right file/line. Root cause is different, and pre-existing: all 5
+share one shape -- `final class Foo: @unchecked Sendable {}`, where `@unchecked Sendable` is the
+**only** entry in the inheritance clause, at offset 0, on a `class`. `applyInheritance`'s existing
+superclass-vs-protocol heuristic (`DeclarationExtractor.swift`, predates this feature entirely,
+already documented as a known limitation citing `docs/isolation-rules.md`'s Gap B: "a superclass
+declared in a *different* file... can't be distinguished this way") treats an unrecognized
+offset-0 name on a class as a superclass candidate -- and since `Sendable` is a real SDK protocol,
+never declared locally, `fileWideNames.protocolNames` can't recognize it, so it's misclassified as
+a superclass, and no `ProtocolConformance` is ever created for it to carry `isUnchecked` on at all.
+The 13 that *did* work all have either a real superclass at offset 0 first (`QueueBarrier: Barrier,
+@unchecked Sendable`) or are `struct`s (no superclass concept at all, so the offset-0 special case
+never applies) -- the single-entry-on-a-class shape is specifically what exposed the gap. 4 of 18
+real occurrences on this corpus (22%) -- not a rare edge case.
+
+Fixed narrowly, without touching the pre-existing (accepted, documented) superclass/protocol
+heuristic itself: an inheritance-clause entry carrying `@unchecked`/`@preconcurrency` can never
+actually be a real superclass reference in the first place -- Swift's grammar doesn't permit an
+attribute on a superclass name, only on a protocol conformance -- so the attribute's mere presence
+is hard, unambiguous proof of "conformance," overriding the offset-0 superclass-candidate check
+specifically for this case, regardless of position. Added 3 regression tests directly on this shape
+in `DeclarationExtractorTests.swift`, including a control proving the override doesn't fire for a
+genuine, unattributed superclass. Re-ran Auth0 after the fix: **`escapeHatches: 18`, exact match**,
+all 5 previously-missing types now present.
+
+### A fourth and fifth real corpus (`realm/realm-swift`, `Tencent/wcdb`) — no further bugs, one new shape confirmed
+
+Run after all three fixes above, both against the actual real-world-heaviest corpora available
+(Realm: full C++ core linked in; WCDB: extensive ObjC++/C bridge) to check the fixes generalize
+under real build complexity, not just clean pure-Swift packages:
+
+- **WCDB** (`WCDBSwift` target, 671 edges): 7 `uncheckedSendable` + 158 `nonisolatedUnsafe`, **exact
+  match** to a `grep` baseline run over the identical file scope the tool actually analyzed
+  (`src/swift` + `src/bridge`, including its own `tests/` subdirectory, which the target's own
+  `Package.swift` compiles as part of the same target).
+- **RealmSwift** (966 edges): 10 `uncheckedSendable` -- `grep` found 11 raw lines, but two of them
+  (`extension KeyPath: @unchecked Sendable {}` and `extension KeyPath: @retroactive @unchecked
+  Sendable {}`, both in the same test file) are the *same* (type, protocol) conformance pair stated
+  twice; `Set`-based dedup in `TypeIndexEntry.uncheckedConformedProtocolNames` correctly collapses
+  them to one finding -- 10 distinct real types is the correct count, not a miss. 7
+  `nonisolatedUnsafe`, all real file-scope/static stored `var`s (`smallRealm`/`mediumRealm`/
+  `largeRealm`/`dynamicDefaultSeed`/`enable`/...), correctly `isMutable: true`; the raw `grep` count
+  (69) is almost entirely `nonisolated(unsafe) let` on genuinely *local* variables inside test
+  function bodies (`nonisolated(unsafe) let unsafeSelf = self`, ...) -- confirmed by reading the
+  surrounding source directly, not assumed -- correctly excluded by the same `functionBodyDepth ==
+  0` guard issue #109 already established, inherited "for free," no new code needed for this case.
+  **6 `preconcurrencyDeclaration`, exact match**, including a genuinely new declaration shape not
+  previously exercised anywhere -- `@preconcurrency @MainActor public protocol BoundCollection`,
+  the attribute on a **protocol** declaration, not a class/struct/function.
+
+**Not yet real-corpus-verified, flagged rather than glossed over**: across all four corpora, **zero
+edges were ever downgraded** (`structuralRisk` never set), including on RealmSwift, which has 6 real
+declaration-level `@preconcurrency` findings. The declaration-trigger downgrade mechanism itself --
+the part of this feature rewritten three times during review -- has so far only been exercised by
+synthetic unit tests, never by a real structurally-`.high` edge whose callee is genuinely
+`@preconcurrency`-attributed. None of the four corpora happened to have a real cross-isolation call
+reaching one of their `@preconcurrency` declarations from a `nonisolated` context. Worth deliberately
+seeking out or constructing such a case before treating the downgrade mechanism itself as
+real-corpus-proven, not just unit-tested.
+
+Full suite after all three fixes: 587/587 (584 + 3 more: the offset-0 superclass-override
+regression and its unattributed-superclass control, in `DeclarationExtractorTests.swift`).
+
 ## Step 7 — PR
 
-Next.
+Opened as [#118](https://github.com/btctcn/swift-isolation-map/pull/118). Not yet merged.

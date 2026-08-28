@@ -403,6 +403,21 @@ enum TypeIndexBuilder {
             }
             for (offset, entryPair) in entries.enumerated() {
                 let name = entryPair.name
+                // An `@unchecked`/`@preconcurrency`-attributed entry can never actually be a
+                // superclass reference -- Swift's grammar doesn't permit an attribute on a
+                // superclass name, only on a protocol conformance -- so its presence is hard,
+                // unambiguous proof this entry is a conformance regardless of position. Confirmed
+                // a real, reproduced gap without this override: a real corpus (`auth0/Auth0.swift`)
+                // has several `final class Foo: @unchecked Sendable {}` shapes -- a *single*-entry
+                // inheritance clause on a `class`, with the attributed protocol at offset 0 -- which
+                // the offset==0 heuristic below misclassifies as a superclass candidate (`Sendable`
+                // is a real SDK protocol, never declared locally, so `fileWideNames.protocolNames`
+                // can't recognize it), silently losing the conformance -- and with it, the escape
+                // hatch this whole feature exists to surface -- entirely (4 of 18 real occurrences
+                // on that corpus, 22%).
+                let isAttributedEscapeHatch = entryPair.type.as(AttributedTypeSyntax.self).map {
+                    $0.attributes.contains(named: "unchecked") || $0.attributes.contains(named: "preconcurrency")
+                } ?? false
                 // A superclass, if present, is always the first entry -- but only classes can
                 // have one, and never if this file already knows `name` is a protocol (protocol
                 // names are collected file-wide, before this pass, precisely so declaration order
@@ -410,7 +425,7 @@ enum TypeIndexBuilder {
                 // a superclass declared in a *different* file (or an external framework type)
                 // can't be distinguished this way; documented limitation, see this file's
                 // top-level doc comment and docs/isolation-rules.md's Gap B section.
-                if offset == 0, isClass, !fileWideNames.protocolNames.contains(name) {
+                if offset == 0, isClass, !fileWideNames.protocolNames.contains(name), !isAttributedEscapeHatch {
                     entry.superclassCandidateName = name
                 } else {
                     entry.conformedProtocolNames.insert(name)
