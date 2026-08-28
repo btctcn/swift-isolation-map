@@ -666,4 +666,123 @@ struct AnalysisReportBuilderTests {
         #expect(result.summary == report.summary)
         #expect(result.nodes == report.nodes)
     }
+
+    // MARK: - Escape hatches and @preconcurrency severity downgrade
+    // (docs/task-escape-hatch-and-preconcurrency-severity.md)
+
+    @Test("build(): a nonisolated(unsafe) property and an @unchecked Sendable conformance both produce EscapeHatchFinding entries")
+    func buildProducesEscapeHatchFindingsForUnsafePropertyAndUncheckedConformance() {
+        let widget = DeclarationInfo(
+            usr: "usr:widget", name: "Widget",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:Sendable", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isUnchecked: true
+            )]
+        )
+        let unsafeVar = DeclarationInfo(
+            usr: "usr:widget.counter", name: "counter", containingTypeUSR: "usr:widget",
+            isImmutableStoredProperty: false, isNonisolatedUnsafe: true
+        )
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:widget": widget, "usr:widget.counter": unsafeVar], callGraph: [], ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        #expect(report.escapeHatches.contains { $0.kind == .uncheckedSendable && $0.declarationUSR == "usr:widget" })
+        #expect(report.escapeHatches.contains { $0.kind == .nonisolatedUnsafe && $0.declarationUSR == "usr:widget.counter" && $0.isMutable == true })
+    }
+
+    @Test("build(): a nonisolated(unsafe) let property is flagged with isMutable false")
+    func buildFlagsNonisolatedUnsafeLetAsImmutable() {
+        let unsafeLet = DeclarationInfo(usr: "usr:x", name: "x", isImmutableStoredProperty: true, isNonisolatedUnsafe: true)
+        let engine = IsolationInferenceEngine(declarations: ["usr:x": unsafeLet], callGraph: [], ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+        #expect(report.escapeHatches.contains { $0.kind == .nonisolatedUnsafe && $0.isMutable == false })
+    }
+
+    @Test("build(): a @preconcurrency-attributed declaration produces a .preconcurrencyDeclaration finding; an @preconcurrency-attributed conformance produces a separate .preconcurrencyConformance finding")
+    func buildProducesPreconcurrencyFindingsForBothDeclarationAndConformance() {
+        let annotatedFunc = DeclarationInfo(usr: "usr:f", name: "annotatedFunc", hasPreconcurrencyAttribute: true)
+        let widget = DeclarationInfo(
+            usr: "usr:widget", name: "Widget",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:P", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isPreconcurrency: true
+            )]
+        )
+        let engine = IsolationInferenceEngine(declarations: ["usr:f": annotatedFunc, "usr:widget": widget], callGraph: [], ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        #expect(report.escapeHatches.contains { $0.kind == .preconcurrencyDeclaration && $0.declarationUSR == "usr:f" })
+        #expect(report.escapeHatches.contains { $0.kind == .preconcurrencyConformance && $0.declarationUSR == "usr:widget" })
+    }
+
+    @Test("build(): a structurally-high edge whose callee is @preconcurrency-attributed is downgraded to medium, with structuralRisk/severityRationale recording the original value and reason")
+    func buildDowngradesHighEdgeWhenCalleeHasPreconcurrencyAttribute() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let callee = DeclarationInfo(usr: "usr:callee", name: "callee", explicitIsolation: .globalActor(name: "MainActor"), hasPreconcurrencyAttribute: true)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == .high)
+        #expect(edge.severityRationale?.isEmpty == false)
+    }
+
+    @Test("build(): the downgrade also applies when the callee's containing type -- not the callee itself -- carries @preconcurrency (type-level propagation, confirmed by a real swiftc test)")
+    func buildDowngradesHighEdgeWhenContainingTypeHasPreconcurrencyAttribute() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let containingType = DeclarationInfo(usr: "usr:AnnotatedType", name: "AnnotatedType", hasPreconcurrencyAttribute: true)
+        let callee = DeclarationInfo(usr: "usr:callee", name: "method", explicitIsolation: .globalActor(name: "MainActor"), containingTypeUSR: "usr:AnnotatedType")
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:caller": caller, "usr:AnnotatedType": containingType, "usr:callee": callee],
+            callGraph: callGraph, ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == .high)
+    }
+
+    @Test("build(): a @preconcurrency-attributed CONFORMANCE on the callee's type never triggers the downgrade -- SE-0423 only softens the one-time witness-checker diagnostic, not arbitrary calls (regression guard for the mechanism this design doc's review caught and corrected)")
+    func buildDoesNotDowngradeWhenOnlyConformanceIsPreconcurrencyAttributed() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let containingType = DeclarationInfo(
+            usr: "usr:AnnotatedType", name: "AnnotatedType",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:P", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isPreconcurrency: true
+            )]
+        )
+        let callee = DeclarationInfo(usr: "usr:callee", name: "method", explicitIsolation: .globalActor(name: "MainActor"), containingTypeUSR: "usr:AnnotatedType")
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:caller": caller, "usr:AnnotatedType": containingType, "usr:callee": callee],
+            callGraph: callGraph, ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .high)
+        #expect(edge.structuralRisk == nil)
+        #expect(edge.severityRationale == nil)
+    }
+
+    @Test("build(): the downgrade never applies to a structurally-medium edge, even when the callee is @preconcurrency-attributed -- scoped deliberately to high -> medium only")
+    func buildDoesNotDowngradeMediumEdgeEvenWithPreconcurrencyCallee() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .unspecified)
+        let callee = DeclarationInfo(usr: "usr:callee", name: "callee", explicitIsolation: .actor(name: "A"), hasPreconcurrencyAttribute: true)
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == nil)
+        #expect(edge.severityRationale == nil)
+    }
 }
