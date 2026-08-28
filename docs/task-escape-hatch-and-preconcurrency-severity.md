@@ -2,19 +2,24 @@
 
 Tracks [issue #117](https://github.com/btctcn/swift-isolation-map/issues/117).
 
-**Status: PR1 implemented locally (shapes 1-3: `@unchecked Sendable`, `nonisolated(unsafe)`,
-`@preconcurrency` declaration-trigger with `containingTypeUSR`-level lookup, `.preconcurrencyConformance`
-informational-only, `.uncheckedSendable.isMutable` deferred as `nil`) — code, tests, and real-corpus
-verification all done (Steps 4-6); not yet committed or opened as a PR (Step 7). Every design
-decision in this document was checked against a real compiler run, real source (SE-0423's own text,
-this codebase's own extractor), or both — not asserted from reasoning alone; three rounds of review
-each surfaced a real, checked-and-fixed gap (the conformance-downgrade mechanism, the Gap C3
-generalization, and type/extension-level `@preconcurrency` propagation), and each one's own
-regression guard is now a real, passing test, not just a note in this document. 581/581 tests
-passing (21 new), real-corpus verified against Project Iris (Step 6). PR2 (shape 4,
-`@preconcurrency import`) has two spikes still open and deliberately not blocking PR1: the
-`.path`-vs-index-store module-name comparison for Clang submodules, and the `@CM@`-qualifier lookup
-direction.
+**Status: PR1 open as [#118](https://github.com/btctcn/swift-isolation-map/pull/118) (shapes 1-3:
+`@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` declaration-trigger with
+`containingTypeUSR`-level lookup, `.preconcurrencyConformance` informational-only,
+`.uncheckedSendable.isMutable` deferred as `nil`). Every design decision in this document was
+checked against a real compiler run, real source (SE-0423's own text, this codebase's own
+extractor), or both — not asserted from reasoning alone; three rounds of review each surfaced a
+real, checked-and-fixed gap (the conformance-downgrade mechanism, the Gap C3 generalization, and
+type/extension-level `@preconcurrency` propagation), and each one's own regression guard is now a
+real, passing test, not just a note in this document. Real-corpus verification against a *second*
+corpus (`onevcat/Kingfisher`, after Project Iris's own zero-findings run) then found a genuinely
+shipped-breaking bug — 7 real-declaration-reconstruction sites in `DeclarationLinker.swift`/
+`ExternalIsolationBackfill.swift` silently dropped every new field, meaning the whole feature would
+have returned near-zero real findings on every real, linked project despite working correctly in
+every unit test (see Step 6's own account). Fixed, with regression coverage at the level that broke,
+and re-verified against Kingfisher to an exact byte-for-byte match against an independent `grep`
+baseline. 584/584 tests passing (24 new). PR2 (shape 4, `@preconcurrency import`) has two spikes
+still open and deliberately not blocking PR1: the `.path`-vs-index-store module-name comparison for
+Clang submodules, and the `@CM@`-qualifier lookup direction.
 
 ## Step 1 — Hypothesis
 
@@ -384,13 +389,13 @@ never consulting `ProtocolConformance.isPreconcurrency`.
 
 ## Step 5 — Tests
 
-Done. 21 new tests: 11 in `Tests/SyntaxAnalysisTests/DeclarationExtractorTests.swift` (each new
+Done. 21 new tests initially (later +3 more in Step 6, once the second-corpus bug was found): 11 in `Tests/SyntaxAnalysisTests/DeclarationExtractorTests.swift` (each new
 extraction flag, both true and false cases, plus the extension-conformance case), 7 in
 `Tests/swift-isolation-mapTests/AnalysisReportBuilderTests.swift` (escape-hatch assembly, the
 declaration-trigger downgrade, the containing-type-trigger downgrade, the conformance-never-downgrades
 regression guard, the high-only-not-medium scoping guard), 3 in
 `Tests/swift-isolation-mapTests/AnalysisEdgeCodableTests.swift` (JSON round-trip and old-JSON-still-decodes
-for the new fields). Full suite: 581/581 passing (560 pre-existing + 21 new).
+for the new fields). Full suite: 581/581 passing (560 pre-existing + 21 new) -- see Step 6 for the further +3 tests added once the second-corpus bug below was found.
 
 **The `containingTypeUSR` invariant tech debt flagged during review is closed, not just noted**:
 `DeclarationExtractorTests.swift`'s `containingTypeUSRMatchesBetweenBodyMemberAndExtensionMember`
@@ -425,6 +430,62 @@ conclusion from a sample of one.
 
 Zero regressions: full `swift test` -- 581/581 passing (560 pre-existing + 21 new: 11 in
 `DeclarationExtractorTests`, 7 in `AnalysisReportBuilderTests`, 3 in `AnalysisEdgeCodableTests`).
+
+### A second real corpus (`onevcat/Kingfisher`) caught a real bug the first one couldn't
+
+Project Iris's zero findings were confirmed correct against a `grep` baseline, but a `grep` baseline
+can't distinguish "genuinely nothing here" from "extraction runs but the result gets lost
+downstream" when the corpus itself has nothing to lose in the first place -- exactly the gap the
+sequencing recommendation above already flagged ("worth re-checking against a second real corpus
+before drawing any general conclusion from a sample of one"). Found via `gh search code` across
+public GitHub Swift repos, then verified against `onevcat/Kingfisher` directly (a real, public,
+self-contained SPM library, ~98 source files) with a `grep` baseline first, per this project's own
+established discipline: **39** real `@unchecked Sendable` conformances, **6** real
+`nonisolated(unsafe)` properties (all `let`), 2 `@preconcurrency import`s (shape 4, correctly out of
+PR1's scope), 0 declaration/conformance-level `@preconcurrency`.
+
+First run against this corpus: **`escapeHatches: 0`** -- a real, false-negative bug, not the
+Project-Iris "genuinely nothing here" case. Root-caused directly (not guessed): `WeakBox`'s and
+`Image.swift`'s malloc-key properties were confirmed present as real `AnalysisNode`s at the exact
+right file/line, with the exact real IndexStoreDB-resolved USR (`s:10Kingfisher7WeakBoxC`) -- so
+extraction itself worked, and the flags were being lost somewhere in the declaration-linking
+pipeline between extraction and the final report. Found by grepping every `DeclarationInfo(`/
+`ProtocolConformance(` construction site outside `IsolationCore`/`DeclarationExtractor.swift`: **7
+separate sites**, across `IndexStoreIntegration/DeclarationLinker.swift` (the main `link()` USR-
+rewrite path, `merged(_:_:)`, the extension-`containingTypeUSR` resolution pass, and `relink(_:...)`
+for conformances) and `swift-isolation-map/ExternalIsolationBackfill.swift` (the multi-target-
+sibling-aliasing path, the demangled-sibling fallback, `rebuilt(_:conformances:)`, and its own
+conformance-rewrite for global-actor backfill) -- every one of them reconstructs a `DeclarationInfo`/
+`ProtocolConformance` by explicitly enumerating fields from a real, already-correct source object,
+and none of the 7 listed `hasPreconcurrencyAttribute`/`isNonisolatedUnsafe`/`isUnchecked`/
+`isPreconcurrency`, so every real declaration in the whole report silently lost these flags the
+moment it passed through any of these 7 reconstructions -- which, for any project large enough to
+need real IndexStoreDB linking at all (i.e. every real project this tool is ever run against), is
+unconditionally all of them. **This means the escape-hatch feature would have shipped
+non-functional on every real corpus** had this second corpus not been checked -- Project Iris's own
+verification, done first, could not have caught this, because Project Iris has zero real occurrences
+of any of the shapes this feature detects; there was nothing there for the bug to lose.
+
+Fixed all 7 sites (passthrough for the 3 pure USR-rewrite/rebuild reconstructions, OR-merge in
+`merged(_:_:)` matching the existing `isImmutableStoredProperty`/`isActorInitializer` precedent, plain
+passthrough in the 2 conformance-reconstruction sites) -- deliberately *not* touching the other
+~17 `DeclarationInfo(...)` construction sites in `ExternalIsolationBackfill.swift` that build a
+`DeclarationInfo` fresh from oracle-resolved isolation data alone (synthesized accessors, raw C
+struct fields, top-level imported constants, ...): those have no source declaration to lose these
+flags from in the first place -- `hasPreconcurrencyAttribute`/`isNonisolatedUnsafe` defaulting to
+`false` there is a correct, inherent scope limit (sourcekitd cursor-info resolves isolation, not
+attribute syntax), not a second instance of the same bug. Added regression coverage directly at the
+level that broke: 3 new tests in `Tests/IndexStoreIntegrationTests/DeclarationLinkerUnitTests.swift`
+(`merged(_:_:)`'s OR-semantics for both new fields, plus a real `DeclarationLinker.link()` pass
+proving both `DeclarationInfo` flags and `ProtocolConformance.isUnchecked` survive real USR
+rewriting/`.baseOf`-relinking) -- full suite now 584/584.
+
+Re-ran against Kingfisher after the fix: `escapeHatches: 45` -- **39 `uncheckedSendable` + 6
+`nonisolatedUnsafe`, an exact match to the `grep` baseline**, every `nonisolatedUnsafe` finding
+correctly `isMutable: false` (all 6 real occurrences are `let`), 0 `.preconcurrencyDeclaration`/
+`.preconcurrencyConformance` (correct -- Kingfisher has none), 0 downgraded edges (correct -- no
+declaration/conformance-level `@preconcurrency` exists on this corpus to trigger one). Not a partial
+improvement -- a byte-exact match to independently-verified ground truth.
 
 ## Step 7 — PR
 
