@@ -873,3 +873,146 @@ func localNestedFunctionInsideMethodBodyIsNotEmittedAsMember() {
     """)
     #expect(find(decls, name: "helper") == nil)
 }
+
+// MARK: - Escape hatches (docs/task-escape-hatch-and-preconcurrency-severity.md)
+
+@Test("An @unchecked Sendable conformance sets isUnchecked on that ProtocolConformance")
+func uncheckedSendableConformanceSetsIsUnchecked() {
+    let decls = declarations("struct Widget: @unchecked Sendable {}")
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" && $0.isUnchecked } == true)
+}
+
+@Test("A plain Sendable conformance (no @unchecked) leaves isUnchecked false")
+func plainSendableConformanceLeavesIsUncheckedFalse() {
+    let decls = declarations("struct Widget: Sendable {}")
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" && !$0.isUnchecked } == true)
+}
+
+@Test("An @unchecked Sendable conformance stated in a same-file extension also sets isUnchecked")
+func uncheckedSendableConformanceViaExtensionSetsIsUnchecked() {
+    let decls = declarations("""
+    struct Widget {}
+    extension Widget: @unchecked Sendable {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" && $0.isUnchecked } == true)
+}
+
+@Test("A @preconcurrency-attributed conformance sets isPreconcurrency on that ProtocolConformance")
+func preconcurrencyConformanceSetsIsPreconcurrency() {
+    let decls = declarations("""
+    protocol P {}
+    class Widget: @preconcurrency P {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:P" && $0.isPreconcurrency } == true)
+}
+
+@Test("A plain conformance (no @preconcurrency) leaves isPreconcurrency false")
+func plainConformanceLeavesIsPreconcurrencyFalse() {
+    let decls = declarations("""
+    protocol P {}
+    class Widget: P {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:P" && !$0.isPreconcurrency } == true)
+}
+
+@Test("@preconcurrency on a type declaration sets hasPreconcurrencyAttribute")
+func preconcurrencyOnTypeSetsHasPreconcurrencyAttribute() {
+    let decls = declarations("@preconcurrency @MainActor class Widget {}")
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.hasPreconcurrencyAttribute == true)
+}
+
+@Test("@preconcurrency on a function sets hasPreconcurrencyAttribute; an unattributed function leaves it false")
+func preconcurrencyOnFunctionSetsHasPreconcurrencyAttribute() {
+    let decls = declarations("""
+    @preconcurrency @MainActor func annotatedFunc() {}
+    @MainActor func plainFunc() {}
+    """)
+    #expect(find(decls, name: "annotatedFunc")?.hasPreconcurrencyAttribute == true)
+    #expect(find(decls, name: "plainFunc")?.hasPreconcurrencyAttribute == false)
+}
+
+@Test("nonisolated(unsafe) var sets isNonisolatedUnsafe true and isMutable-equivalent isImmutableStoredProperty false")
+func nonisolatedUnsafeVarIsFlagged() {
+    let decls = declarations("""
+    final class Foo {
+        nonisolated(unsafe) var mutableCounter: Int = 0
+    }
+    """)
+    let property = find(decls, name: "mutableCounter")
+    #expect(property?.isNonisolatedUnsafe == true)
+    #expect(property?.isImmutableStoredProperty == false)
+}
+
+@Test("nonisolated(unsafe) let sets isNonisolatedUnsafe true and isImmutableStoredProperty true")
+func nonisolatedUnsafeLetIsFlagged() {
+    let decls = declarations("""
+    final class Foo {
+        nonisolated(unsafe) let immutableThing: Int = 0
+    }
+    """)
+    let property = find(decls, name: "immutableThing")
+    #expect(property?.isNonisolatedUnsafe == true)
+    #expect(property?.isImmutableStoredProperty == true)
+}
+
+@Test("A plain nonisolated var (no (unsafe) detail) leaves isNonisolatedUnsafe false")
+func plainNonisolatedVarLeavesIsNonisolatedUnsafeFalse() {
+    let decls = declarations("""
+    final class Foo {
+        nonisolated var counter: Int = 0
+    }
+    """)
+    #expect(find(decls, name: "counter")?.isNonisolatedUnsafe == false)
+}
+
+@Test("A class whose ONLY inheritance-clause entry is @unchecked Sendable at offset 0 still sets isUnchecked -- the attribute itself proves it's a conformance, not a superclass (real regression: auth0/Auth0.swift, ActClaim/TransactionStore/SynchronizationBarrier/NonceStorage shape)")
+func singleEntryUncheckedSendableOnClassIsNotMistakenForSuperclass() {
+    let decls = declarations("final class ActClaim: @unchecked Sendable {}")
+    let actClaim = find(decls, name: "ActClaim")
+    #expect(actClaim?.superclassUSR == nil, "the attribute proves this can't be a real superclass reference")
+    #expect(actClaim?.conformances.contains { $0.protocolUSR == "syntactic:Sendable" && $0.isUnchecked } == true)
+}
+
+@Test("A class whose ONLY inheritance-clause entry is @preconcurrency P at offset 0 still sets isPreconcurrency, same reasoning")
+func singleEntryPreconcurrencyOnClassIsNotMistakenForSuperclass() {
+    let decls = declarations("""
+    protocol P {}
+    final class Widget: @preconcurrency P {}
+    """)
+    let widget = find(decls, name: "Widget")
+    #expect(widget?.superclassUSR == nil)
+    #expect(widget?.conformances.contains { $0.protocolUSR == "syntactic:P" && $0.isPreconcurrency } == true)
+}
+
+@Test("A genuine superclass at offset 0 (no attribute) is still correctly treated as a superclass, not a conformance -- the override above must not fire for the unattributed case")
+func plainSuperclassAtOffsetZeroIsUnaffectedByEscapeHatchOverride() {
+    let decls = declarations("""
+    class Base {}
+    final class Derived: Base {}
+    """)
+    let derived = find(decls, name: "Derived")
+    #expect(derived?.superclassUSR?.hasSuffix("Base") == true)
+    #expect(derived?.conformances.isEmpty == true)
+}
+
+@Test("containingTypeUSR is identical for a member declared in a type's own body and one declared in a same-file extension of it -- the invariant the @preconcurrency containment-walk downgrade lookup depends on (docs/task-escape-hatch-and-preconcurrency-severity.md, Step 5 tech debt)")
+func containingTypeUSRMatchesBetweenBodyMemberAndExtensionMember() {
+    let decls = declarations("""
+    @preconcurrency @MainActor class AnnotatedType {
+        func method() {}
+    }
+    extension AnnotatedType {
+        func extMethod() {}
+    }
+    """)
+    let bodyMember = find(decls, name: "method")
+    let extMember = find(decls, name: "extMethod")
+    #expect(bodyMember?.containingTypeUSR != nil)
+    #expect(bodyMember?.containingTypeUSR == extMember?.containingTypeUSR)
+}

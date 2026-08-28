@@ -41,6 +41,8 @@ enum AnalysisReportBuilder {
             )
         }
 
+        let escapeHatches = escapeHatchFindings(from: declarations)
+
         // Issue #41 (Rule C): iterates every real call-graph edge, not just `engine
         // .crossIsolationEdges()`'s own pre-filtered subset -- that filter compares *declared*
         // caller/callee isolation only (`IsolationInferenceEngine`, Priority 1, has no notion of
@@ -69,7 +71,11 @@ enum AnalysisReportBuilder {
             } ?? declaredCallerIsolation
             let calleeIsolation = engine.resolveIsolation(for: edge.calleeUSR)
             guard declaredCallerIsolation != calleeIsolation || callerIsolation != calleeIsolation else { return nil }
-            let risk = riskLevel(caller: callerIsolation, callee: calleeIsolation)
+            let structuralRiskValue = riskLevel(caller: callerIsolation, callee: calleeIsolation)
+            let severityRationale = structuralRiskValue == .high
+                ? preconcurrencyDowngradeReason(calleeUSR: edge.calleeUSR, caller: callerIsolation, callee: calleeIsolation, declarations: declarations)
+                : nil
+            let risk = severityRationale == nil ? structuralRiskValue : .medium
             // Issue #46: whether this exact call site is syntactically inside a real
             // `await <expr>` expression (`AwaitedCallSiteExtractor`, purely syntactic, no
             // project-wide classification needed unlike closures) -- informational only, never
@@ -153,7 +159,9 @@ enum AnalysisReportBuilder {
                     : explanation(caller: callerIsolation, callee: calleeIsolation, risk: risk),
                 location: AnalysisLocation(file: edge.location.file, line: edge.location.line),
                 isUnknown: isUnknown,
-                isAwaited: isAwaited
+                isAwaited: isAwaited,
+                structuralRisk: severityRationale == nil ? nil : structuralRiskValue,
+                severityRationale: severityRationale
             )
         }
 
@@ -217,8 +225,85 @@ enum AnalysisReportBuilder {
             ruleSetUsed: ruleSetUsed,
             summary: summary,
             nodes: nodes,
-            edges: edges
+            edges: edges,
+            escapeHatches: escapeHatches
         )
+    }
+
+    /// One `EscapeHatchFinding` per explicit escape hatch found on any declaration -- a single
+    /// declaration can carry more than one (e.g. a `nonisolated(unsafe) var` that's also
+    /// `@preconcurrency`), so this is a flat map, not a 1:1 mapping over `declarations`. Sorted by
+    /// location for deterministic output, matching `nodes`' own `declarations.keys.sorted()`
+    /// treatment -- `declarations.values` itself has no defined order.
+    private static func escapeHatchFindings(from declarations: [String: DeclarationInfo]) -> [EscapeHatchFinding] {
+        declarations.values.flatMap { declaration -> [EscapeHatchFinding] in
+            let location = declaration.location.map { AnalysisLocation(file: $0.file, line: $0.line) }
+            var findings: [EscapeHatchFinding] = []
+            if declaration.isNonisolatedUnsafe {
+                findings.append(EscapeHatchFinding(
+                    kind: .nonisolatedUnsafe, declarationUSR: declaration.usr, name: declaration.name,
+                    isMutable: !declaration.isImmutableStoredProperty, location: location
+                ))
+            }
+            if declaration.hasPreconcurrencyAttribute {
+                findings.append(EscapeHatchFinding(
+                    kind: .preconcurrencyDeclaration, declarationUSR: declaration.usr, name: declaration.name,
+                    isMutable: nil, location: location
+                ))
+            }
+            for conformance in declaration.conformances {
+                if conformance.isUnchecked {
+                    findings.append(EscapeHatchFinding(
+                        kind: .uncheckedSendable, declarationUSR: declaration.usr, name: declaration.name,
+                        // Deferred (design doc Step 3): whether this type actually has a mutable
+                        // stored property is an unscoped member-list/property-wrapper/inheritance
+                        // walk, not computed in v1.
+                        isMutable: nil, location: location
+                    ))
+                }
+                if conformance.isPreconcurrency {
+                    findings.append(EscapeHatchFinding(
+                        kind: .preconcurrencyConformance, declarationUSR: declaration.usr, name: declaration.name,
+                        isMutable: nil, location: location
+                    ))
+                }
+            }
+            return findings
+        }.sorted { lhs, rhs in
+            if lhs.location?.file != rhs.location?.file { return (lhs.location?.file ?? "") < (rhs.location?.file ?? "") }
+            if lhs.location?.line != rhs.location?.line { return (lhs.location?.line ?? 0) < (rhs.location?.line ?? 0) }
+            if lhs.declarationUSR != rhs.declarationUSR { return lhs.declarationUSR < rhs.declarationUSR }
+            return lhs.kind.rawValue < rhs.kind.rawValue
+        }
+    }
+
+    /// `@preconcurrency` on the callee's own declaration -- or on its *containing type*, since a
+    /// type-level attribute softens diagnostics for its own unannotated members too, including
+    /// extension members (confirmed by a real `swiftc -swift-version 6` test,
+    /// `docs/task-escape-hatch-and-preconcurrency-severity.md` Step 2) -- downgrades a
+    /// structurally-`.high` edge's reported severity to `.medium`, matching SE-0337's own
+    /// error-to-warning downgrade. Deliberately does **not** consult
+    /// `ProtocolConformance.isPreconcurrency` -- SE-0423 confirms a `@preconcurrency` conformance
+    /// only softens a one-time witness-checker diagnostic at the conformance site itself, never
+    /// diagnostics for arbitrary calls to the conforming type's methods (the design doc's own
+    /// correction, made after an earlier draft of this function got that wrong). Only ever called
+    /// for a structurally-`.high` edge -- see that call site's own comment for why `.medium` isn't
+    /// scoped the same way.
+    private static func preconcurrencyDowngradeReason(
+        calleeUSR: String, caller: IsolationKind, callee: IsolationKind, declarations: [String: DeclarationInfo]
+    ) -> String? {
+        guard let declaration = declarations[calleeUSR] else { return nil }
+        let softenedBy: String
+        if declaration.hasPreconcurrencyAttribute {
+            softenedBy = declaration.name
+        } else if let containingTypeUSR = declaration.containingTypeUSR,
+                  let containingType = declarations[containingTypeUSR],
+                  containingType.hasPreconcurrencyAttribute {
+            softenedBy = containingType.name
+        } else {
+            return nil
+        }
+        return "structurally high (\(describe(caller)) -> \(describe(callee))); downgraded to medium: \(softenedBy) is @preconcurrency-attributed"
     }
 
     /// Presentation-only filter applied after `build()`, driven by the CLI's `--severity` option --

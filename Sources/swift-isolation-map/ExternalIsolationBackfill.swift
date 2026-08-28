@@ -362,7 +362,8 @@ enum ExternalIsolationBackfill {
                     conformances: sibling.conformances, isEligibleForModuleDefaultIsolation: sibling.isEligibleForModuleDefaultIsolation,
                     enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
                     location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
-                    isActorInitializer: sibling.isActorInitializer
+                    isActorInitializer: sibling.isActorInitializer,
+                    hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe
                 )
                 continue
             }
@@ -509,7 +510,8 @@ enum ExternalIsolationBackfill {
                         conformances: sibling.conformances, isEligibleForModuleDefaultIsolation: sibling.isEligibleForModuleDefaultIsolation,
                         enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
                         location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
-                        isActorInitializer: sibling.isActorInitializer
+                        isActorInitializer: sibling.isActorInitializer,
+                        hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe
                     )
                     bestLocationByUSR.removeValue(forKey: targetUSR)
                 }
@@ -1081,7 +1083,9 @@ enum ExternalIsolationBackfill {
                     protocolUSR: conformances[index].protocolUSR,
                     protocolGlobalActorName: actorName,
                     declaredInSameFileAsPrimaryDefinition: conformances[index].declaredInSameFileAsPrimaryDefinition,
-                    declaredInSameContextAsWitness: conformances[index].declaredInSameContextAsWitness
+                    declaredInSameContextAsWitness: conformances[index].declaredInSameContextAsWitness,
+                    isUnchecked: conformances[index].isUnchecked,
+                    isPreconcurrency: conformances[index].isPreconcurrency
                 )
                 changed = true
             }
@@ -1106,7 +1110,9 @@ enum ExternalIsolationBackfill {
             isNestedType: declaration.isNestedType,
             location: declaration.location,
             isImmutableStoredProperty: declaration.isImmutableStoredProperty,
-            isActorInitializer: declaration.isActorInitializer
+            isActorInitializer: declaration.isActorInitializer,
+            hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
+            isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
         )
     }
 

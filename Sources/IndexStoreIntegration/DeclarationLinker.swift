@@ -321,7 +321,9 @@ public struct DeclarationLinker {
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
-                isActorInitializer: declaration.isActorInitializer
+                isActorInitializer: declaration.isActorInitializer,
+                hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
             )
             if let existing = byUSR[linked.usr] {
                 byUSR[linked.usr] = Self.merged(existing, linked)
@@ -475,7 +477,9 @@ public struct DeclarationLinker {
                     protocolUSR: realUSR,
                     protocolGlobalActorName: conformance.protocolGlobalActorName,
                     declaredInSameFileAsPrimaryDefinition: conformance.declaredInSameFileAsPrimaryDefinition,
-                    declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness
+                    declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness,
+                    isUnchecked: conformance.isUnchecked,
+                    isPreconcurrency: conformance.isPreconcurrency
                 )
             }
             guard superclassUSR != declaration.superclassUSR || conformances != declaration.conformances else {
@@ -495,7 +499,9 @@ public struct DeclarationLinker {
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
-                isActorInitializer: declaration.isActorInitializer
+                isActorInitializer: declaration.isActorInitializer,
+                hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
             )
         }
     }
@@ -560,7 +566,9 @@ public struct DeclarationLinker {
                 isNestedType: declaration.isNestedType,
                 location: declaration.location,
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
-                isActorInitializer: declaration.isActorInitializer
+                isActorInitializer: declaration.isActorInitializer,
+                hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
             )
         }
     }
@@ -585,7 +593,9 @@ public struct DeclarationLinker {
             protocolUSR: rewrittenReference(conformance.protocolUSR, referringFile),
             protocolGlobalActorName: globalActorName,
             declaredInSameFileAsPrimaryDefinition: conformance.declaredInSameFileAsPrimaryDefinition,
-            declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness
+            declaredInSameContextAsWitness: conformance.declaredInSameContextAsWitness,
+            isUnchecked: conformance.isUnchecked,
+            isPreconcurrency: conformance.isPreconcurrency
         )
     }
 
@@ -693,7 +703,9 @@ public struct DeclarationLinker {
             isNestedType: existing.isNestedType || incoming.isNestedType,
             location: existing.location ?? incoming.location,
             isImmutableStoredProperty: existing.isImmutableStoredProperty || incoming.isImmutableStoredProperty,
-            isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer
+            isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer,
+            hasPreconcurrencyAttribute: existing.hasPreconcurrencyAttribute || incoming.hasPreconcurrencyAttribute,
+            isNonisolatedUnsafe: existing.isNonisolatedUnsafe || incoming.isNonisolatedUnsafe
         )
     }
 }

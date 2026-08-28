@@ -234,8 +234,17 @@ struct TypeIndexEntry {
     var hasPrimaryDeclarationInFile = false
     var explicitGlobalActorAttributeName: String?
     var isExplicitlyNonisolated = false
+    var hasPreconcurrencyAttribute = false
     var superclassCandidateName: String?
     var conformedProtocolNames: Set<String> = []
+    /// Subsets of `conformedProtocolNames` stated with `@unchecked`/`@preconcurrency` on the
+    /// inheritance-clause entry itself (either the primary declaration's or a same-file
+    /// extension's -- both `applyInheritance` and the extension visitor below populate these the
+    /// same way `conformedProtocolNames` itself is populated from both sources). See
+    /// `SyntacticIdentity.normalizedInheritedName`'s own doc comment: the attribute is otherwise
+    /// silently discarded during name normalization, which is exactly the gap these two sets close.
+    var uncheckedConformedProtocolNames: Set<String> = []
+    var preconcurrencyConformedProtocolNames: Set<String> = []
     /// The subset of `conformedProtocolNames` stated directly on the *primary* declaration's own
     /// inheritance clause -- distinct from ones added by a same-file `extension`. Confirmed a
     /// real, reproduced gap: SE-0316 rule 7 (whole-type inference) and SE-0466's
@@ -375,6 +384,7 @@ enum TypeIndexBuilder {
             entry.hasPrimaryDeclarationInFile = true
             entry.explicitGlobalActorAttributeName = recognizedGlobalActorAttribute(in: attributes, known: fileWideNames.globalActorNames)
             entry.isExplicitlyNonisolated = modifiers.contains { $0.name.text == "nonisolated" }
+            entry.hasPreconcurrencyAttribute = attributes.contains(named: "preconcurrency")
             entry.isNestedType = !path.isEmpty
             entry.containingTypeQualifiedName = path.isEmpty ? nil : SyntacticIdentity.qualifiedName(path)
             entry.location = location(of: nameToken)
@@ -384,8 +394,30 @@ enum TypeIndexBuilder {
 
         private func applyInheritance(_ inheritance: InheritanceClauseSyntax?, isClass: Bool, to entry: inout TypeIndexEntry) {
             guard let inheritance else { return }
-            let entries = inheritance.inheritedTypes.compactMap { SyntacticIdentity.normalizedInheritedName($0.type) }
-            for (offset, name) in entries.enumerated() {
+            // Kept paired with the original `InheritedTypeSyntax.type` (not just the normalized
+            // name `normalizedInheritedName` alone would give) so `@unchecked`/`@preconcurrency`
+            // can be read off the same `AttributedTypeSyntax` before that function's own
+            // by-design attribute-stripping (see its doc comment) discards it.
+            let entries = inheritance.inheritedTypes.compactMap { inherited -> (name: String, type: TypeSyntax)? in
+                SyntacticIdentity.normalizedInheritedName(inherited.type).map { (name: $0, type: inherited.type) }
+            }
+            for (offset, entryPair) in entries.enumerated() {
+                let name = entryPair.name
+                // An `@unchecked`/`@preconcurrency`-attributed entry can never actually be a
+                // superclass reference -- Swift's grammar doesn't permit an attribute on a
+                // superclass name, only on a protocol conformance -- so its presence is hard,
+                // unambiguous proof this entry is a conformance regardless of position. Confirmed
+                // a real, reproduced gap without this override: a real corpus (`auth0/Auth0.swift`)
+                // has several `final class Foo: @unchecked Sendable {}` shapes -- a *single*-entry
+                // inheritance clause on a `class`, with the attributed protocol at offset 0 -- which
+                // the offset==0 heuristic below misclassifies as a superclass candidate (`Sendable`
+                // is a real SDK protocol, never declared locally, so `fileWideNames.protocolNames`
+                // can't recognize it), silently losing the conformance -- and with it, the escape
+                // hatch this whole feature exists to surface -- entirely (4 of 18 real occurrences
+                // on that corpus, 22%).
+                let isAttributedEscapeHatch = entryPair.type.as(AttributedTypeSyntax.self).map {
+                    $0.attributes.contains(named: "unchecked") || $0.attributes.contains(named: "preconcurrency")
+                } ?? false
                 // A superclass, if present, is always the first entry -- but only classes can
                 // have one, and never if this file already knows `name` is a protocol (protocol
                 // names are collected file-wide, before this pass, precisely so declaration order
@@ -393,10 +425,18 @@ enum TypeIndexBuilder {
                 // a superclass declared in a *different* file (or an external framework type)
                 // can't be distinguished this way; documented limitation, see this file's
                 // top-level doc comment and docs/isolation-rules.md's Gap B section.
-                if offset == 0, isClass, !fileWideNames.protocolNames.contains(name) {
+                if offset == 0, isClass, !fileWideNames.protocolNames.contains(name), !isAttributedEscapeHatch {
                     entry.superclassCandidateName = name
                 } else {
                     entry.conformedProtocolNames.insert(name)
+                    if let attributed = entryPair.type.as(AttributedTypeSyntax.self) {
+                        if attributed.attributes.contains(named: "unchecked") {
+                            entry.uncheckedConformedProtocolNames.insert(name)
+                        }
+                        if attributed.attributes.contains(named: "preconcurrency") {
+                            entry.preconcurrencyConformedProtocolNames.insert(name)
+                        }
+                    }
                     // `applyInheritance` is only ever called from `recordPrimaryDeclaration` (the
                     // primary-declaration path) -- never from the extension visitor below, which
                     // populates `conformedProtocolNames` directly instead. So every name reaching
@@ -460,6 +500,14 @@ enum TypeIndexBuilder {
                 for inherited in inheritance.inheritedTypes {
                     if let name = SyntacticIdentity.normalizedInheritedName(inherited.type) {
                         entry.conformedProtocolNames.insert(name)
+                        if let attributed = inherited.type.as(AttributedTypeSyntax.self) {
+                            if attributed.attributes.contains(named: "unchecked") {
+                                entry.uncheckedConformedProtocolNames.insert(name)
+                            }
+                            if attributed.attributes.contains(named: "preconcurrency") {
+                                entry.preconcurrencyConformedProtocolNames.insert(name)
+                            }
+                        }
                     }
                 }
             }
@@ -584,7 +632,9 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
                 protocolGlobalActorName: protocolGlobalActorNames[name],
                 declaredInSameFileAsPrimaryDefinition: entry.hasPrimaryDeclarationInFile
                     && entry.primaryDeclarationConformedProtocolNames.contains(name),
-                declaredInSameContextAsWitness: false
+                declaredInSameContextAsWitness: false,
+                isUnchecked: entry.uncheckedConformedProtocolNames.contains(name),
+                isPreconcurrency: entry.preconcurrencyConformedProtocolNames.contains(name)
             )
         }
 
@@ -606,7 +656,8 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
             isEligibleForModuleDefaultIsolation: isEligible,
             enclosingExtensionIsolation: nil,
             isNestedType: entry.isNestedType,
-            location: entry.location
+            location: entry.location,
+            hasPreconcurrencyAttribute: entry.hasPreconcurrencyAttribute
         ))
     }
 
@@ -687,7 +738,12 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
             isNestedType: false,
             location: memberLocation,
             isImmutableStoredProperty: isImmutableStoredProperty,
-            isActorInitializer: kind == .initializerDecl && isMemberOfActorType
+            isActorInitializer: kind == .initializerDecl && isMemberOfActorType,
+            hasPreconcurrencyAttribute: attributes.contains(named: "preconcurrency"),
+            // Only a stored property can legally carry `nonisolated(unsafe)`, but no `kind`
+            // guard is needed here -- the modifier simply never appears on any other member kind
+            // in real, compiling source, so this is `false` there by construction.
+            isNonisolatedUnsafe: modifiers.contains { $0.name.text == "nonisolated" && $0.detail?.detail.text == "unsafe" }
         ))
     }
 

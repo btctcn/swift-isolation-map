@@ -6,6 +6,11 @@ public struct AnalysisReport: Codable, Equatable, Sendable {
     public let summary: AnalysisSummary
     public let nodes: [AnalysisNode]
     public let edges: [AnalysisEdge]
+    /// `@unchecked Sendable`/`nonisolated(unsafe)`/`@preconcurrency` findings
+    /// (docs/task-escape-hatch-and-preconcurrency-severity.md) -- a per-declaration fact, not a
+    /// caller/callee pair, so kept separate from `nodes`/`edges` rather than folded into either.
+    /// Defaulted so existing JSON without this field still decodes.
+    public let escapeHatches: [EscapeHatchFinding]
 
     public init(
         schemaVersion: String,
@@ -14,7 +19,8 @@ public struct AnalysisReport: Codable, Equatable, Sendable {
         ruleSetUsed: String,
         summary: AnalysisSummary,
         nodes: [AnalysisNode],
-        edges: [AnalysisEdge]
+        edges: [AnalysisEdge],
+        escapeHatches: [EscapeHatchFinding] = []
     ) {
         self.schemaVersion = schemaVersion
         self.toolVersion = toolVersion
@@ -23,6 +29,19 @@ public struct AnalysisReport: Codable, Equatable, Sendable {
         self.summary = summary
         self.nodes = nodes
         self.edges = edges
+        self.escapeHatches = escapeHatches
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+        toolVersion = try container.decode(String.self, forKey: .toolVersion)
+        swiftVersion = try container.decode(String.self, forKey: .swiftVersion)
+        ruleSetUsed = try container.decode(String.self, forKey: .ruleSetUsed)
+        summary = try container.decode(AnalysisSummary.self, forKey: .summary)
+        nodes = try container.decode([AnalysisNode].self, forKey: .nodes)
+        edges = try container.decode([AnalysisEdge].self, forKey: .edges)
+        escapeHatches = try container.decodeIfPresent([EscapeHatchFinding].self, forKey: .escapeHatches) ?? []
     }
 }
 
@@ -107,6 +126,21 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
     /// tracking, not a false positive to suppress. Defaulted so existing JSON without this field
     /// still decodes.
     public let isAwaited: Bool
+    /// The pre-downgrade classification, present **only** when it differs from `risk` -- i.e. a
+    /// real severity downgrade happened (currently: a `.high` edge softened to `.medium` because
+    /// the callee, or its containing type, carries `@preconcurrency` -- SE-0337 genuinely changes
+    /// the compiler's own diagnostic from error to warning here, unlike `isAwaited`/`isUnknown`
+    /// above, which document real facts that never change compiler enforcement and so stay
+    /// orthogonal to `risk`). `nil` means `risk` is the structural value, unmodified.
+    /// `docs/task-escape-hatch-and-preconcurrency-severity.md` has the full design, including why
+    /// this is scoped to `.high` -> `.medium` only and why a `@preconcurrency`-attributed
+    /// *conformance* (as opposed to a declaration) never triggers this.
+    public let structuralRisk: RiskLevel?
+    /// Explains a `structuralRisk` downgrade when one happened; `nil` when `structuralRisk` is
+    /// `nil`. `explanation` above is left as a generic per-bucket sentence for the *effective*
+    /// (possibly downgraded) `risk`; this field carries the extra "why softened" reasoning that a
+    /// generic sentence can't.
+    public let severityRationale: String?
 
     public init(
         callerUSR: String,
@@ -117,7 +151,9 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         explanation: String,
         location: AnalysisLocation,
         isUnknown: Bool = false,
-        isAwaited: Bool = false
+        isAwaited: Bool = false,
+        structuralRisk: RiskLevel? = nil,
+        severityRationale: String? = nil
     ) {
         self.callerUSR = callerUSR
         self.calleeUSR = calleeUSR
@@ -128,12 +164,14 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         self.location = location
         self.isUnknown = isUnknown
         self.isAwaited = isAwaited
+        self.structuralRisk = structuralRisk
+        self.severityRationale = severityRationale
     }
 
-    // Swift's synthesized `Decodable` would otherwise *require* `isUnknown`/`isAwaited` to be
-    // present in the JSON (a non-optional stored property's key isn't implicitly treated as
-    // defaultable just because the memberwise init defaults it) -- decoded explicitly here so
-    // JSON written before these fields existed still decodes, defaulting to `false`.
+    // Swift's synthesized `Decodable` would otherwise *require* these optional/defaulted fields to
+    // be present in the JSON (a stored property's key isn't implicitly treated as defaultable just
+    // because the memberwise init defaults it) -- decoded explicitly here so JSON written before
+    // these fields existed still decodes, defaulting to `false`/`nil`.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         callerUSR = try container.decode(String.self, forKey: .callerUSR)
@@ -145,5 +183,42 @@ public struct AnalysisEdge: Codable, Equatable, Sendable {
         location = try container.decode(AnalysisLocation.self, forKey: .location)
         isUnknown = try container.decodeIfPresent(Bool.self, forKey: .isUnknown) ?? false
         isAwaited = try container.decodeIfPresent(Bool.self, forKey: .isAwaited) ?? false
+        structuralRisk = try container.decodeIfPresent(RiskLevel.self, forKey: .structuralRisk)
+        severityRationale = try container.decodeIfPresent(String.self, forKey: .severityRationale)
+    }
+}
+
+public enum EscapeHatchKind: String, Codable, Equatable, Sendable {
+    case uncheckedSendable
+    case nonisolatedUnsafe
+    case preconcurrencyDeclaration
+    case preconcurrencyConformance
+}
+
+/// A per-declaration fact about an explicit Swift concurrency-checking escape hatch --
+/// `docs/task-escape-hatch-and-preconcurrency-severity.md`. Deliberately not modeled as an edge
+/// (it isn't a caller/callee pair) and never affects isolation resolution or `AnalysisEdge.risk`
+/// on its own; `.preconcurrencyDeclaration` is the one kind that *also* feeds
+/// `AnalysisEdge.structuralRisk`'s downgrade mechanism, via a separate lookup in
+/// `AnalysisReportBuilder`, not through this struct.
+public struct EscapeHatchFinding: Codable, Equatable, Sendable {
+    public let kind: EscapeHatchKind
+    public let declarationUSR: String
+    public let name: String
+    /// `var` (`true`) vs `let` (`false`) for `.nonisolatedUnsafe`. `nil` for every other kind --
+    /// in particular, `.uncheckedSendable`'s own mutable-stored-property analysis (does this type
+    /// have a mutable stored property at all) is unscoped/deferred, not merely omitted by
+    /// oversight -- see the design doc's own Step 3 correction.
+    public let isMutable: Bool?
+    /// `nil` when the underlying declaration itself has no known location (mirrors
+    /// `DeclarationInfo.location`'s own optionality, not a decode-compatibility default).
+    public let location: AnalysisLocation?
+
+    public init(kind: EscapeHatchKind, declarationUSR: String, name: String, isMutable: Bool?, location: AnalysisLocation?) {
+        self.kind = kind
+        self.declarationUSR = declarationUSR
+        self.name = name
+        self.isMutable = isMutable
+        self.location = location
     }
 }

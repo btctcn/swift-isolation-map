@@ -59,6 +59,19 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// still (correctly, structurally) `.actor(name)` for anything that legitimately needs it
     /// (e.g. a call from *within* the same actor), only the edge-level risk report changes.
     public let isActorInitializer: Bool
+    /// `@preconcurrency` on *this* declaration/member itself. Confirmed by direct `swiftc
+    /// -swift-version 6` test (docs/task-escape-hatch-and-preconcurrency-severity.md, Step 2) that
+    /// this attribute on a type also softens the same diagnostic for that type's own unannotated
+    /// members (including ones declared in an `extension`) -- so a consumer checking "is this
+    /// callee's boundary softened by `@preconcurrency`" must check this flag on the declaration
+    /// itself **or** on `containingTypeUSR`'s own `DeclarationInfo`, never this field alone.
+    public let hasPreconcurrencyAttribute: Bool
+    /// `nonisolated(unsafe)` on this member (only meaningful for a stored property -- the only
+    /// declaration shape the attribute is valid on). Distinct from `explicitIsolation`, which
+    /// already correctly resolves this to `.nonisolated` for isolation purposes and is unaffected
+    /// by this field -- this only exists to surface the escape hatch itself as an
+    /// `EscapeHatchFinding`, never to change isolation resolution.
+    public let isNonisolatedUnsafe: Bool
 
     public init(
         usr: String,
@@ -74,7 +87,9 @@ public struct DeclarationInfo: Equatable, Sendable {
         isNestedType: Bool = false,
         location: SymbolLocation? = nil,
         isImmutableStoredProperty: Bool = false,
-        isActorInitializer: Bool = false
+        isActorInitializer: Bool = false,
+        hasPreconcurrencyAttribute: Bool = false,
+        isNonisolatedUnsafe: Bool = false
     ) {
         self.usr = usr
         self.name = name
@@ -90,6 +105,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.location = location
         self.isImmutableStoredProperty = isImmutableStoredProperty
         self.isActorInitializer = isActorInitializer
+        self.hasPreconcurrencyAttribute = hasPreconcurrencyAttribute
+        self.isNonisolatedUnsafe = isNonisolatedUnsafe
     }
 }
 
@@ -102,16 +119,33 @@ public struct ProtocolConformance: Equatable, Sendable {
     public let protocolGlobalActorName: String?
     public let declaredInSameFileAsPrimaryDefinition: Bool
     public let declaredInSameContextAsWitness: Bool
+    /// `@unchecked` on this conformance -- Swift's grammar only ever pairs this attribute with
+    /// `Sendable` (SE-0302), so this being `true` always means an `@unchecked Sendable`
+    /// conformance specifically, never a generic "unchecked" anything-else. Informational only --
+    /// consumed as an `EscapeHatchFinding`, never affects isolation resolution or edge risk.
+    public let isUnchecked: Bool
+    /// `@preconcurrency` on this conformance clause entry. **Deliberately never consulted by the
+    /// edge-severity-downgrade mechanism** -- confirmed against SE-0423's own text that this
+    /// softens only a one-time witness-checker diagnostic at the conformance declaration itself,
+    /// not diagnostics for arbitrary calls to the conforming type's methods (see
+    /// docs/task-escape-hatch-and-preconcurrency-severity.md's own correction, made after an
+    /// earlier draft of that mechanism got this wrong). Informational only, surfaced as an
+    /// `EscapeHatchFinding`.
+    public let isPreconcurrency: Bool
 
     public init(
         protocolUSR: String,
         protocolGlobalActorName: String?,
         declaredInSameFileAsPrimaryDefinition: Bool,
-        declaredInSameContextAsWitness: Bool
+        declaredInSameContextAsWitness: Bool,
+        isUnchecked: Bool = false,
+        isPreconcurrency: Bool = false
     ) {
         self.protocolUSR = protocolUSR
         self.protocolGlobalActorName = protocolGlobalActorName
         self.declaredInSameFileAsPrimaryDefinition = declaredInSameFileAsPrimaryDefinition
         self.declaredInSameContextAsWitness = declaredInSameContextAsWitness
+        self.isUnchecked = isUnchecked
+        self.isPreconcurrency = isPreconcurrency
     }
 }

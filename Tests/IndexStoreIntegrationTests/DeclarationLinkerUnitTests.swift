@@ -48,12 +48,23 @@ final class FakeIndexStoreQuerying: IndexStoreQuerying, @unchecked Sendable {
     }
 }
 
-private func makeDeclaration(usr: String, name: String, location: SymbolLocation?, containingTypeUSR: String? = nil, superclassUSR: String? = nil, conformances: [ProtocolConformance] = [], isNestedType: Bool = false) -> DeclarationInfo {
-    DeclarationInfo(usr: usr, name: name, containingTypeUSR: containingTypeUSR, superclassUSR: superclassUSR, conformances: conformances, isNestedType: isNestedType, location: location)
+private func makeDeclaration(
+    usr: String, name: String, location: SymbolLocation?, containingTypeUSR: String? = nil, superclassUSR: String? = nil,
+    conformances: [ProtocolConformance] = [], isNestedType: Bool = false,
+    hasPreconcurrencyAttribute: Bool = false, isNonisolatedUnsafe: Bool = false
+) -> DeclarationInfo {
+    DeclarationInfo(
+        usr: usr, name: name, containingTypeUSR: containingTypeUSR, superclassUSR: superclassUSR, conformances: conformances,
+        isNestedType: isNestedType, location: location,
+        hasPreconcurrencyAttribute: hasPreconcurrencyAttribute, isNonisolatedUnsafe: isNonisolatedUnsafe
+    )
 }
 
-private func placeholderConformance(_ protocolUSR: String) -> ProtocolConformance {
-    ProtocolConformance(protocolUSR: protocolUSR, protocolGlobalActorName: nil, declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true)
+private func placeholderConformance(_ protocolUSR: String, isUnchecked: Bool = false, isPreconcurrency: Bool = false) -> ProtocolConformance {
+    ProtocolConformance(
+        protocolUSR: protocolUSR, protocolGlobalActorName: nil, declaredInSameFileAsPrimaryDefinition: false, declaredInSameContextAsWitness: true,
+        isUnchecked: isUnchecked, isPreconcurrency: isPreconcurrency
+    )
 }
 
 // MARK: - Gap B Phase I2: `.baseOf`-based inheritance resolution
@@ -513,6 +524,62 @@ func mergedIsConservativeForModuleDefaultEligibility() {
     #expect(DeclarationLinker.merged(eligible, ineligible).isEligibleForModuleDefaultIsolation == false)
     #expect(DeclarationLinker.merged(ineligible, eligible).isEligibleForModuleDefaultIsolation == false)
     #expect(DeclarationLinker.merged(eligible, eligible).isEligibleForModuleDefaultIsolation == true)
+}
+
+// MARK: - Escape-hatch fields must survive linking, not just extraction
+// (docs/task-escape-hatch-and-preconcurrency-severity.md) -- a real bug found on a real corpus
+// (Kingfisher's own `WeakBox`/`Image.swift` malloc-key `let`s): `DeclarationLinker.link()` rewrites
+// a declaration's USR/references through several field-by-field reconstructions, none of which
+// listed `hasPreconcurrencyAttribute`/`isNonisolatedUnsafe` (or `ProtocolConformance.isUnchecked`/
+// `.isPreconcurrency`) -- silently dropping them back to their `false` defaults on every real
+// declaration that passes through `link()`, i.e. every declaration in the whole real report.
+
+@Test("DeclarationLinker.merged(_:_:) preserves hasPreconcurrencyAttribute/isNonisolatedUnsafe from either side (OR, not AND -- only one side's file extraction can ever see the attribute at all)")
+func mergedPreservesEscapeHatchFlags() {
+    let unsafe = DeclarationInfo(usr: "s:real", name: "counter", conformances: [], isNonisolatedUnsafe: true)
+    let plain = DeclarationInfo(usr: "s:real", name: "counter", conformances: [])
+    #expect(DeclarationLinker.merged(unsafe, plain).isNonisolatedUnsafe)
+    #expect(DeclarationLinker.merged(plain, unsafe).isNonisolatedUnsafe)
+
+    let annotated = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], hasPreconcurrencyAttribute: true)
+    let unannotated = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [])
+    #expect(DeclarationLinker.merged(annotated, unannotated).hasPreconcurrencyAttribute)
+    #expect(DeclarationLinker.merged(unannotated, annotated).hasPreconcurrencyAttribute)
+}
+
+@Test("A real link() pass preserves isNonisolatedUnsafe and hasPreconcurrencyAttribute through USR rewriting -- the exact real-corpus regression (Kingfisher's WeakBox/Image.swift malloc keys)")
+func linkPreservesEscapeHatchFlagsThroughUSRRewrite() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    fake.symbolsByFile["/f.swift"] = [IndexedSymbol(usr: "s:WeakBox", name: "WeakBox", location: location)]
+
+    let unsafeProperty = makeDeclaration(usr: "syntactic:counter#0", name: "counter", location: SymbolLocation(file: "/f.swift", line: 2, column: 1), isNonisolatedUnsafe: true)
+    let annotatedType = makeDeclaration(usr: "syntactic:WeakBox", name: "WeakBox", location: location, hasPreconcurrencyAttribute: true)
+
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [unsafeProperty, annotatedType], protocolGlobalActorNames: [:])])
+
+    let linkedProperty = try #require(linked.declarations.values.first { $0.name == "counter" })
+    #expect(linkedProperty.isNonisolatedUnsafe)
+    let linkedType = try #require(linked.declarations["s:WeakBox"])
+    #expect(linkedType.hasPreconcurrencyAttribute)
+}
+
+@Test("A real link() pass preserves ProtocolConformance.isUnchecked/isPreconcurrency through .baseOf-relation relinking -- the same real-corpus regression, conformance side (Kingfisher's WeakBox: @unchecked Sendable)")
+func linkPreservesConformanceEscapeHatchFlagsThroughRelink() throws {
+    let fake = FakeIndexStoreQuerying()
+    let location = SymbolLocation(file: "/f.swift", line: 1, column: 1)
+    fake.symbolsByFile["/f.swift"] = [IndexedSymbol(usr: "s:WeakBox", name: "WeakBox", location: location)]
+    fake.baseTypeUSRsByUSR["s:WeakBox"] = [(usr: "s:Sendable", name: "Sendable")]
+
+    let nominal = makeDeclaration(
+        usr: "syntactic:WeakBox", name: "WeakBox", location: location,
+        conformances: [placeholderConformance("syntactic:Sendable", isUnchecked: true)]
+    )
+
+    let linked = DeclarationLinker(indexStore: fake).link([ExtractionResult(declarations: [nominal], protocolGlobalActorNames: [:])])
+
+    let linkedNominal = try #require(linked.declarations["s:WeakBox"])
+    #expect(linkedNominal.conformances.first?.isUnchecked == true)
 }
 
 @Test("link(_:) merges a type's primary-declaration entry with its extension-in-a-different-file entry, regardless of processing order")
