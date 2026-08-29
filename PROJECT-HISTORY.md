@@ -530,6 +530,11 @@ Issue: none
 Question: `docs/reference-project-corpora.md` already established "Project Iris" as the name to use in prose instead of the private corpus's real path — several docs predating full adoption of that convention still said `~/ios` directly.
 Done: Replaced all such prose mentions across `PROJECT-HISTORY.md` and 6 task docs. Left untouched: the one literal, reproducible shell command using `~/ios` as a real path argument, and the two sentences in `reference-project-corpora.md` that define the convention itself by naming `~/ios` as the thing prose should avoid.
 
+## PR #130 — Add a full project glossary (docs/glossary.md) (2026-08-30)
+Issue: none
+Question: Could every acronym, tool name, Swift-language term, and project-specific term used across `README.md`/`docs/*.md` and the Swift source's own code comments be collected into one explained, alphabetized reference?
+Done: Added `docs/glossary.md`, 92 entries, sourced via 8 parallel extraction passes over docs and code comments, then manually reconciled and critically reviewed against the real source — 2 origin misclassifications ("escape hatch", "fail-soft," both established outside terms, not project-native) were caught and corrected, and a few specific technical claims were spot-checked directly against the cited file:line before being trusted. External links verified via live web search rather than guessed; terms this project coined (e.g. "the oracle") marked as such instead of linked. Linked from the root README under a new "Glossary" section.
+
 ---
 
 ## Could not establish precisely
