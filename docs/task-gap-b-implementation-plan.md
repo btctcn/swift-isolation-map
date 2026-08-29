@@ -1,6 +1,8 @@
 # Gap B implementation plan — DeclarationLinker real-scale linking fixes
 
-**Status: plan for review, not yet implemented.**
+**Status: implemented and closed.** (This header originally read "plan for review, not yet
+implemented" -- see `docs/task-gap-b-declaration-linker-real-scale.md`'s own "Gap B closed" section
+for the closing record. Left unedited below as the original plan.)
 
 ## Context
 

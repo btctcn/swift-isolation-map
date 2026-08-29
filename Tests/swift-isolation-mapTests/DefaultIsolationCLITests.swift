@@ -28,7 +28,7 @@ struct DefaultIsolationCLITests {
         // Same precaution as CapstoneCLITests: always exercise a real, fresh rebuild rather than
         // silently reusing state left over from a previous run.
         let fileManager = FileManager.default
-        for relativePath in [".build", ".swift-isolation-map-manifest.json", ".swift-isolation-map-index-db"] {
+        for relativePath in [".build", ".swift-isolation-map-manifest.json"] {
             try? fileManager.removeItem(atPath: fixtureRoot.appendingPathComponent(relativePath).path)
         }
 

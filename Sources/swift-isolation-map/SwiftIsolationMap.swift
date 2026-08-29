@@ -144,10 +144,10 @@ struct SwiftIsolationMap: ParsableCommand {
     // silently diverge (different code state, different real modules) if pointed at different
     // places. Kept, still off by default, purely as a defensive escape hatch for a degenerate case
     // this design doesn't fully rule out (e.g. Xcode's own "Custom Derived Data Location"
-    // preference happening to be pointed at the identical private path) -- EXPERIMENTAL, may change
-    // or be removed entirely without notice as the private-DerivedData default matures.
-    @Flag(help: "EXPERIMENTAL, may be removed without notice: re-enable index-store module-name/is_system_unit scoping (allowedModuleNames) of the raw index-store scan. Off by default -- this tool's own private, per-(project, scheme, destination) index store never accumulates unrelated targets' units in the first place.")
-    var experimentalIndexStoreModuleFilter: Bool = false
+    // preference happening to be pointed at the identical private path). Not experimental -- this
+    // is a deliberate, permanent fallback, not something still being evaluated.
+    @Flag(help: "Re-enable index-store module-name/is_system_unit scoping (allowedModuleNames) of the raw index-store scan. Off by default -- this tool's own private, per-(project, scheme, destination) index store never accumulates unrelated targets' units in the first place. A defensive fallback for a narrow, unlikely scenario -- see this flag's own doc comment.")
+    var indexStoreModuleFilter: Bool = false
 
 
     // Off by default deliberately -- unlike `xcodeIndexingBuildSettings`'s other overrides (which
@@ -258,8 +258,9 @@ struct SwiftIsolationMap: ParsableCommand {
         let effectiveVersion = SwiftVersionDetection.effectiveVersion(languageMode: languageMode, compilerVersion: compilerVersion)
         logVerbose("Language mode: \(languageMode); compiler: \(compilerVersion); effective: \(effectiveVersion)")
 
-        // EXPERIMENTAL private DerivedData (docs/task-private-derived-data-hypothesis.md): computed
-        // unconditionally for Xcode containers -- every real `xcodebuild` invocation this run makes
+        // Private DerivedData (docs/task-private-derived-data-hypothesis.md, the sole, default
+        // behavior for Xcode projects): computed unconditionally for Xcode containers -- every real
+        // `xcodebuild` invocation this run makes
         // (both the compiler-argument-resolution build `LiveXcodeCompilerArgumentsProvider` needs
         // for `SyntaxAnalysis`/live-fallback/the external-isolation oracle, and the index-store-
         // populating build below if one turns out to be needed) always targets this same private,
@@ -368,16 +369,16 @@ struct SwiftIsolationMap: ParsableCommand {
         // real, indexed records behind, even though the analyzed scheme's own `.xcscheme` declares
         // an empty `<Testables>` list and never compiles that target itself.
         //
-        // EXPERIMENTAL, off by default (`--experimental-index-store-module-filter`,
-        // docs/task-private-derived-data-hypothesis.md): the private, composite-keyed DerivedData
-        // computed above already has zero cross-scheme pollution *by construction* -- nothing but
-        // this exact (project, scheme, destination) run's own build ever writes into it -- so a
-        // real-corpus spike (Project Iris) confirmed this filtering is no longer needed there
-        // (unfiltered vs. filtered results landed within edge-level noise of each other, both
-        // matching the historical known-good baseline). Kept available, opt-in, only as a
-        // defensive fallback -- see this flag's own declaration for the (narrow, unlikely)
-        // remaining scenario it still guards against.
-        let allowedModuleNames = experimentalIndexStoreModuleFilter ? compilerArguments.realModuleNames() : nil
+        // Off by default (`--index-store-module-filter`, docs/task-private-derived-data-
+        // hypothesis.md): the private, composite-keyed DerivedData computed above already has
+        // zero cross-scheme pollution *by construction* -- nothing but this exact (project,
+        // scheme, destination) run's own build ever writes into it -- so a real-corpus spike
+        // (Project Iris) confirmed this filtering is no longer needed there (unfiltered vs.
+        // filtered results landed within edge-level noise of each other, both matching the
+        // historical known-good baseline). Kept available, opt-in, only as a defensive fallback --
+        // see this flag's own declaration for the (narrow, unlikely) remaining scenario it still
+        // guards against.
+        let allowedModuleNames = indexStoreModuleFilter ? compilerArguments.realModuleNames() : nil
         if let allowedModuleNames {
             logVerbose("Scoping index store to \(allowedModuleNames.count) real module(s) from this run's own build: \(allowedModuleNames.sorted().joined(separator: ", "))")
         }
@@ -576,18 +577,12 @@ struct SwiftIsolationMap: ParsableCommand {
             // targets), the two paths' honest-vs-flagged divergence dropped from 834 to 14 edges
             // (98.3%), and the residual 14 are a separately-confirmed, non-bug shape (Step 26). Also
             // ~35% faster. `derivedDataPath` is unconditionally non-nil for Xcode containers
-            // (computed just above this call, see `privateDerivedDataPath`'s own assignment), so this
-            // `if let` only ever falls through to `LiveXcodeCompilerArgumentsProvider` (kept in the
-            // tree as a legacy/fallback path, no longer reachable from any CLI flag) in a state this
-            // project's own invariants already say can't happen -- kept as a graceful fallback rather
-            // than a force-unwrap regardless.
-            if let derivedDataPath {
-                return SwiftBuildCompilerArgumentsProvider(container: container, scheme: scheme, derivedDataPath: derivedDataPath)
-            }
-            return LiveXcodeCompilerArgumentsProvider(
-                container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
-                skipMacroValidation: skipMacroValidation, derivedDataPath: derivedDataPath
-            )
+            // (computed just above this call, see `privateDerivedDataPath`'s own assignment) --
+            // the old `xcodebuild -verbose`-based provider this superseded (`LiveXcodeCompilerArgumentsProvider`,
+            // kept for a while afterward as an unreachable-from-any-CLI-flag fallback for a
+            // `derivedDataPath == nil` state this project's own invariants already said couldn't
+            // happen) has since been removed from the tree entirely, not just made unreachable.
+            return SwiftBuildCompilerArgumentsProvider(container: container, scheme: scheme, derivedDataPath: derivedDataPath!)
         }
     }
 
@@ -803,7 +798,7 @@ struct SwiftIsolationMap: ParsableCommand {
             ) {
                 arguments += ["-destination", destination]
             }
-            // EXPERIMENTAL private DerivedData (docs/task-private-derived-data-hypothesis.md) --
+            // Private DerivedData (docs/task-private-derived-data-hypothesis.md) --
             // always non-`nil` here in practice (every `.xcodeproj`/`.xcworkspace` caller of this
             // function passes the unconditionally-computed private path); the `if let` stays a
             // plain optional unwrap rather than a forced one only for this function's own

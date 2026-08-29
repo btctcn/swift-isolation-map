@@ -1,6 +1,8 @@
 # Suppression comments — design (v0.2)
 
-Tracked for `v0.2` (see root README Roadmap). Design only in this pass — not implemented yet.
+**Decision: will not be implemented.** Design only, kept here as a record of the option that was
+considered and rejected — not because the design is wrong, but because the project decided against
+building it. Removed from the README Roadmap accordingly.
 
 ## Motivation
 

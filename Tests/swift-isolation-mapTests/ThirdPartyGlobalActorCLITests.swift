@@ -68,7 +68,7 @@ struct ThirdPartyGlobalActorCLITests {
             Issue.record("No built swift-isolation-map binary found -- run `swift build` first.")
             throw CocoaError(.fileNoSuchFile)
         }
-        for relativePath in [".build", ".swift-isolation-map-manifest.json", ".swift-isolation-map-index-db", ".swift-isolation-map-index-store"] {
+        for relativePath in [".build", ".swift-isolation-map-manifest.json", ".swift-isolation-map-index-store"] {
             try? FileManager.default.removeItem(atPath: consumerRoot.appendingPathComponent(relativePath).path)
         }
         let result = try processRunner.run(

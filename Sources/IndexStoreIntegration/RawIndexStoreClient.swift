@@ -2,7 +2,7 @@ import Foundation
 import CIndexStoreRaw
 import IsolationCore
 
-/// Same local-stderr-helper pattern as `ProjectResolution/XcodeBuildLogCompilerArgumentsProvider.swift`
+/// Same local-stderr-helper pattern used elsewhere in this project (subprocess stderr capture)
 /// -- a library target has no access to the executable's own `eprint`, and `internal` symbols don't
 /// cross module boundaries even between targets that depend on each other.
 func writeStderr(_ message: String, terminator: String = "\n") {

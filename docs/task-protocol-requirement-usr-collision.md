@@ -118,4 +118,4 @@ bug.
 
 ## Step 7 — PR
 
-Next.
+Merged as [#54](https://github.com/btctcn/swift-isolation-map/pull/54).

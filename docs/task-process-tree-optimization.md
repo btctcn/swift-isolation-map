@@ -209,4 +209,4 @@ Done — this document. `docs/README.md`'s index and the process-tree memory not
 
 ## Step 7 — PR
 
-Next.
+Merged as [#34](https://github.com/btctcn/swift-isolation-map/pull/34).

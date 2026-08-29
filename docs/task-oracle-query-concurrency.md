@@ -1,6 +1,10 @@
 # Research task: speed up the external-isolation oracle without changing any result
 
-**Status: research task, not yet designed or implemented. Hard constraint from the user, load-
+**Status: research completed; decision reached (see the document's own end for the final outcome --
+concurrent issuance rejected, a debug flag reverted, one real unrelated bug found and fixed; this
+research's own "hypothesis 0" is the file-sorted query-ordering optimization the root README's
+Roadmap lists as shipped in v0.1).** (This header originally read "research task, not yet designed
+or implemented.") Hard constraint from the user, load-
 bearing for the whole task: no reduction in analysis quality/accuracy is acceptable — a speedup
 that resolves fewer USRs, changes any `.resolved`/`.unknown` outcome, or silently skips work is not
 a valid solution, however fast.** Written immediately after Gap B closed and a real,

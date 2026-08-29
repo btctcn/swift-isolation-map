@@ -277,6 +277,16 @@ in the controlled A/B) is a secondary, measured benefit, not the primary justifi
   `IndexStoreDB`'s LMDB-accelerator/async-initialization layer, not in the underlying on-disk index
   store's own content.
 
-**Still open:**
-- The remaining `.swift-isolation-map-index-db` cleanup: any documentation/README mention of the
-  LMDB accelerator database this project no longer creates should be updated to match.
+**Still open, re-checked directly (2026-08-29):** `grep -rn "swift-isolation-map-index-db"` (not
+just `-l` -- the first pass here wrongly stopped at "no file mentions it," which was never actually
+run against `Tests/`) found 4 real hits: `CapstoneCLITests.swift`, `DefaultIsolationCLITests.swift`,
+`CompiledDependencyCLITests.swift`, `ThirdPartyGlobalActorCLITests.swift` each had a
+`try? FileManager.default.removeItem(...)` pre-test cleanup step still naming
+`.swift-isolation-map-index-db` alongside the real, still-current `.build`/
+`.swift-isolation-map-manifest.json` (and, in one file, `.swift-isolation-map-index-store`) entries.
+Harmless in practice (`try?` against a path that's never created is simply a no-op), but a real,
+stale artifact name left behind after the LMDB accelerator was retired -- removed from all 4 test
+files. `docs/architecture.md` also mentions `databasePath`/LMDB (lines ~125-135) but that's inside
+its own explicitly-marked "original, pre-implementation specification" body, already flagged as
+superseded by that document's own top-of-file "What's changed since this was written" §7 -- not
+stale, correctly self-annotated already, left as-is.

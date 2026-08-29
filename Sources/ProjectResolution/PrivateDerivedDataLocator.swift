@@ -1,13 +1,14 @@
 import CryptoKit
 import Foundation
 
-/// EXPERIMENTAL (docs/task-private-derived-data-hypothesis.md) -- computes a private, composite-
-/// keyed `-derivedDataPath` for Xcode `xcodebuild` invocations, exclusively owned by
-/// swift-isolation-map and never shared with Xcode GUI, CI, or any other tool. Real-corpus spike
-/// (Project Iris) confirmed a store built this way has *zero* cross-scheme pollution by
-/// construction -- no `allowedModuleNames`/`is_system_unit` filtering needed at all, unlike the
-/// shared `~/Library/Developer/Xcode/DerivedData` every other consumer on the machine also writes
-/// into. This may be changed or removed without notice; not a stable, documented API surface yet.
+/// Computes a private, composite-keyed `-derivedDataPath` for Xcode `xcodebuild` invocations,
+/// exclusively owned by swift-isolation-map and never shared with Xcode GUI, CI, or any other tool
+/// (docs/task-private-derived-data-hypothesis.md). Real-corpus spike (Project Iris) confirmed a
+/// store built this way has *zero* cross-scheme pollution by construction -- no
+/// `allowedModuleNames`/`is_system_unit` filtering needed at all, unlike the shared
+/// `~/Library/Developer/Xcode/DerivedData` every other consumer on the machine also writes into.
+/// This is the sole, default behavior for Xcode projects -- not experimental, not gated behind any
+/// flag.
 public enum PrivateDerivedData {
     /// macOS `Caches` semantics -- safe to delete anytime, the OS/user may reclaim it under disk
     /// pressure, and it's deliberately *not* `~/Library/Developer/Xcode/DerivedData` so a

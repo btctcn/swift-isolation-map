@@ -94,12 +94,15 @@ ARGUMENTS:
 OPTIONS:
   --auto-build                If the index store is missing or stale, build the project
                               without an interactive prompt.
-  --experimental-index-store-module-filter
-                              EXPERIMENTAL, may be removed without notice: re-enable index-store
-                              module-name/is_system_unit scoping of the raw index-store scan. Off
-                              by default -- this tool's own private, per-(project, scheme,
-                              destination) index store (see "Where the index store lives" below)
-                              never accumulates unrelated targets' units in the first place.
+  --index-store-module-filter
+                              Re-enable index-store module-name/is_system_unit scoping of the raw
+                              index-store scan. Off by default -- this tool's own private, per-
+                              (project, scheme, destination) index store (see "Where the index
+                              store lives" below) never accumulates unrelated targets' units in
+                              the first place. A defensive fallback for the one remaining
+                              scenario that isn't fully ruled out (e.g. Xcode's own "Custom
+                              Derived Data Location" preference happening to point at this same
+                              private path).
   --force-reindex             Forces a rebuild, ignoring any existing (even fresh) index store.
   --oracle-workers <N>        Parallelize the external-oracle live-query phase across N worker
                               processes (default: 1, sequential). Real speedup on a large project:
@@ -415,8 +418,8 @@ boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
-- **v0.2 — shipped.** A direct `swift-build`/`SWBBuildService` API path promoted to the default compiler-argument resolution for Xcode projects — faster and more correct than the `xcodebuild -verbose` path it replaces, byte-for-byte edge-parity verified against two real 2000+-file corpora (the honest path stays in the tree as an unreachable-from-the-CLI fallback). Closure-level isolation attribution completed end to end: a real `@globalActor` declared in a compiled dependency is now recognized, and the full de-isolating mirror direction (`Task.detached`, non-main `DispatchQueue`s, `@concurrent`) is implemented and real-corpus-verified. A real declaration-extraction bug fixed — local `let`/`var`/nested `func`s inside a function or closure body were being misattributed as phantom members of the enclosing type (22% of all declarations on one real ~2200-file corpus). Dozens of further real declaration/USR-matching correctness fixes across Objective-C/Swift interop edge cases (bridged extern constants, protocol witnesses, subscripts, multi-target declaration aliasing, and more), plus index-store scoping and DerivedData isolation hardening for shared/multi-run environments. A `--sort=file|severity` flag was added afterward (0.2.1) to order the output's edges by location or by risk instead of leaving them in whatever order the analysis happened to produce them.
-- **v0.3 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin), per-call-site suppression comments (design: `docs/task-suppression-comments.md`).
+- **v0.2 — shipped.** A direct `swift-build`/`SWBBuildService` API path promoted to the default compiler-argument resolution for Xcode projects — faster and more correct than the `xcodebuild -verbose` path it replaces, byte-for-byte edge-parity verified against two real 2000+-file corpora (the `xcodebuild -verbose` path was kept for a while afterward as an unreachable-from-the-CLI fallback, then removed from the tree entirely once confirmed genuinely dead). Closure-level isolation attribution completed end to end: a real `@globalActor` declared in a compiled dependency is now recognized, and the full de-isolating mirror direction (`Task.detached`, non-main `DispatchQueue`s, `@concurrent`) is implemented and real-corpus-verified. A real declaration-extraction bug fixed — local `let`/`var`/nested `func`s inside a function or closure body were being misattributed as phantom members of the enclosing type (22% of all declarations on one real ~2200-file corpus). Dozens of further real declaration/USR-matching correctness fixes across Objective-C/Swift interop edge cases (bridged extern constants, protocol witnesses, subscripts, multi-target declaration aliasing, and more), plus index-store scoping and DerivedData isolation hardening for shared/multi-run environments. A `--sort=file|severity` flag was added afterward (0.2.1) to order the output's edges by location or by risk instead of leaving them in whatever order the analysis happened to produce them.
+- **v0.3 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin). (Per-call-site suppression comments were designed — `docs/task-suppression-comments.md` — and then decided against; not planned.)
 - **v0.4 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
 
 ## Contributing

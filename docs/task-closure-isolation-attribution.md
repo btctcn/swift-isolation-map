@@ -210,7 +210,8 @@ oracle, report) with `--oracle-workers 8`, before and after this change:
 
 ## Step 7 -- PR
 
-Next.
+Merged as [#112](https://github.com/btctcn/swift-isolation-map/pull/112) (see "Rule C (issue #41)"
+below -- that section's own work is what this PR shipped).
 
 ## Rule C (issue #41)
 

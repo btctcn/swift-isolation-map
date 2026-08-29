@@ -825,4 +825,4 @@ already proved the mechanism itself end to end on a real pipeline).
 
 ## Step 7 — PR
 
-Not yet opened.
+Merged as [#119](https://github.com/btctcn/swift-isolation-map/pull/119).

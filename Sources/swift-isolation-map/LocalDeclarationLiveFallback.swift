@@ -107,7 +107,7 @@ enum LocalDeclarationLiveFallback {
         // this call makes that safety a real, local guarantee of this function itself, not
         // something depending on a caller's own unrelated ordering. Harmless when the cache is
         // already warm (an instant cache hit) or when this provider has no real first-time cost at
-        // all (`LiveXcodeCompilerArgumentsProvider`/`StaticCompilerArgumentsProviding`).
+        // all (`SwiftBuildCompilerArgumentsProvider`/`StaticCompilerArgumentsProviding`).
         _ = try? compilerArguments.compilerArguments(forFile: unresolved[0].location.file)
 
         let chunks = OracleWorker.balancedChunks(
