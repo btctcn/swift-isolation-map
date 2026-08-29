@@ -66,27 +66,27 @@ Done: Wired version detection, a risk heuristic, mermaid/DOT/JSON report writers
 ## PR #11 — Fix xcodebuild --auto-build: -indexStoreEnable isn't a real flag (2026-07-25)
 Issue: none
 Question: Running `--auto-build` against a real project (SQLumen) with no existing index store exposed that `xcodebuild -indexStoreEnable YES` isn't a valid flag on the current toolchain.
-Done: Switched to the real `COMPILER_INDEX_STORE_ENABLE` build setting, verified against both SQLumen (no prior store) and `~/ios` (existing CocoaPods DerivedData store).
+Done: Switched to the real `COMPILER_INDEX_STORE_ENABLE` build setting, verified against both SQLumen (no prior store) and Project Iris (existing CocoaPods DerivedData store).
 
 ## PR #12 — Priority 3: compiled-dependency isolation — correctness, performance, real-scale linking fixes (2026-07-27)
 Issue: none
-Question: Priority 3 needed to resolve isolation for external/SDK superclasses and protocol conformances, and make the whole pipeline usable at real project scale (`~/ios`, 2209 files).
+Question: Priority 3 needed to resolve isolation for external/SDK superclasses and protocol conformances, and make the whole pipeline usable at real project scale (Project Iris, 2209 files).
 Done: Implemented a bulk-cache-first, sourcekitd-backed external-isolation oracle plus several real-scale `DeclarationLinker` fixes (accessor/property USR granularity, whitespace-path escaping, inheritance-clause and `.baseOf`-relation resolution), bringing a full run from an estimated 35-40 hours to 29m41s and surfacing 129 confirmed high-risk boundaries.
 
 ## PR #13 — Fix extensions of external @MainActor types falsely reporting isolation risk (2026-07-27)
 Issue: none
 Question: Members declared in an extension of an external type (e.g. `extension UIViewController`) had no way to learn that type's real isolation, causing both false-positive and false-negative risk reports.
-Done: Added a two-hop IndexStoreDB relation chain (`.childOf` then `.extendedBy`) feeding the existing external-isolation backfill machinery; on `~/ios`, confirmed high-risk boundaries went from 129 to 253 (22 resolved false positives, 156 newly surfaced real risks).
+Done: Added a two-hop IndexStoreDB relation chain (`.childOf` then `.extendedBy`) feeding the existing external-isolation backfill machinery; on Project Iris, confirmed high-risk boundaries went from 129 to 253 (22 resolved false positives, 156 newly surfaced real risks).
 
 ## PR #14 — Fix cross-file type-entry collision silently destroying declaration facts (2026-07-28)
 Issue: none
-Question: A real `~/ios` finding (`AppDelegate` losing its inherited MainActor isolation) traced to `DeclarationLinker` overwriting one file's declaration facts with another's whenever a type's primary declaration and an extension's conformance lived in separate files.
-Done: Replaced the plain overwrite with an explicit merge-on-collision (`merged(_:_:)`), fixing 13 real collision-victim types on `~/ios` and moving confirmed high-risk boundaries from 253 to 289.
+Question: A real Project Iris finding (`AppDelegate` losing its inherited MainActor isolation) traced to `DeclarationLinker` overwriting one file's declaration facts with another's whenever a type's primary declaration and an extension's conformance lived in separate files.
+Done: Replaced the plain overwrite with an explicit merge-on-collision (`merged(_:_:)`), fixing 13 real collision-victim types on Project Iris and moving confirmed high-risk boundaries from 253 to 289.
 
 ## PR #15 — Ship hypothesis 0: file-sorted oracle query ordering (~33% faster) (2026-07-29)
 Issue: none
 Question: The external-isolation oracle's per-query ordering was unordered-dictionary-iteration order, preventing sourcekitd's AST cache from being reused across related queries — could sorting by (file, line, column) make it faster?
-Done: Shipped file-sorted query ordering, fixing three real bugs surfaced by the correctness gate along the way (a conformance-representative heuristic, a spurious `@StateObject` global-actor parse, edge-level query-order nondeterminism); wall-clock on `~/ios` dropped from 29:41 to 20:00 with zero unexplained node differences.
+Done: Shipped file-sorted query ordering, fixing three real bugs surfaced by the correctness gate along the way (a conformance-representative heuristic, a spurious `@StateObject` global-actor parse, edge-level query-order nondeterminism); wall-clock on Project Iris dropped from 29:41 to 20:00 with zero unexplained node differences.
 
 ## PR #16 — Close hypothesis 1 (concurrent oracle query issuance); fix xcodebuild exit-code bug (2026-07-29)
 Issue: none

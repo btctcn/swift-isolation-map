@@ -2,7 +2,7 @@
 
 ## 1. Context
 
-While auditing residual `isUnknown` edges on a real, ~2200-file corpus (`~/ios/lsboutique.xcworkspace`,
+While auditing residual `isUnknown` edges on a real, ~2200-file corpus (Project Iris,
 scheme `ls.net.ru`) after PR #86, a fresh `--force-reindex` run showed a much higher `isUnknown` rate
 than expected (73%, 3972/5595 edges), with the run's own log containing real `xcodebuild` compile
 errors:
@@ -296,7 +296,7 @@ behavior even where platform can't be determined), the real `Kingfisher` three-i
 a *global* accept-list, not just one file's own declarations, from being polluted by dead code). Full
 suite: 375/375 passing (was 368 before this session).
 
-**Real corpus, before/after** (`~/ios/lsboutique.xcworkspace`, unchanged corpus, §2 still
+**Real corpus, before/after** (Project Iris, unchanged corpus, §2 still
 un-fixed at measurement time -- see the caveat below):
 
 | | before (§3's own baseline) | after (this fix only) |

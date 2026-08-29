@@ -232,7 +232,7 @@ Rather than stop at the single-query probe (Step 5b), wired the exact broken mec
 real pipeline as a throwaway spike (`ShowBuildSettingsForIndexCompilerArgumentsProvider`, gated by
 an undocumented `SWIFT_ISOLATION_MAP_SPIKE_SBSFI` env var in `makeCompilerArgumentsProvider` --
 never a real CLI flag, removed again immediately after this comparison) and ran the full tool
-twice against the same warm private DerivedData, same corpus (`~/ios`, 2226 files), same
+twice against the same warm private DerivedData, same corpus (Project Iris, 2226 files), same
 `--oracle-workers 8`:
 
 | metric | Run A (honest rebuild) | Run B (`-showBuildSettingsForIndex` spike) | Δ |
