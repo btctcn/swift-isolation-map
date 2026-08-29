@@ -2,7 +2,7 @@
 
 Tracks [issue #117](https://github.com/btctcn/swift-isolation-map/issues/117).
 
-**Status: PR1 open as [#118](https://github.com/btctcn/swift-isolation-map/pull/118) (shapes 1-3:
+**Status: PR1 merged as [#118](https://github.com/btctcn/swift-isolation-map/pull/118) (shapes 1-3:
 `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` declaration-trigger with
 `containingTypeUSR`-level lookup, `.preconcurrencyConformance` informational-only,
 `.uncheckedSendable.isMutable` deferred as `nil`). Every design decision in this document was
@@ -20,11 +20,25 @@ Steps 1-3's own three review-time corrections — see Step 6 for the full accoun
 `@unchecked Sendable`/`@preconcurrency` as a superclass reference when it was a class's *only*
 inheritance-clause entry. Both fixed, with regression coverage at the level that broke, and
 re-verified to an exact (or fully-explained) match against independent `grep` baselines on all five
-corpora. 587/587 tests passing (27 new). **Not yet real-corpus-verified**: the declaration-trigger
-severity-downgrade mechanism itself has fired zero times across all five real corpora — see Step 6.
-PR2 (shape 4, `@preconcurrency import`) has two spikes still open and deliberately not blocking
-PR1: the `.path`-vs-index-store module-name comparison for Clang submodules, and the `@CM@`-qualifier
-lookup direction.
+corpora. 587/587 tests passing (27 new). The declaration-trigger severity-downgrade mechanism fired
+zero times across all five real corpora, but this is now closed rather than left open: confirmed
+directly that none of the five corpora happen to have a real edge in the right shape (RealmSwift's
+own 6 `@preconcurrency` declarations checked individually against its real edge set), then proven
+correct end to end with a minimal but genuinely real, full-pipeline run (not a unit test) built
+specifically to exercise it — see Step 6.
+
+**PR2 (shape 4, `@preconcurrency import`) is code-complete, not yet opened as a PR — design
+substantially revised from what PR1's own text below originally planned.** See the dedicated
+`## PR2` section after Step 7: the two spikes PR1 left open (index-store-unit module-name matching,
+`@CM@`-qualifier lookup direction) turned out to target the wrong data source entirely — real
+testing found a far simpler mechanism (`sourcekitd` cursor-info's own `key.modulename` field,
+already available on every oracle query this tool already makes) that needs no new cross-cutting
+index-store plumbing at all. Both original spikes are now moot, not answered. The bulk-cache
+`moduleName` gap PR1 originally deferred as a follow-up was, on the user's explicit direction after
+seeing real measured numbers (14.7%-59.9% of real oracle-resolved declarations affected depending on
+corpus), pulled into this same PR instead of shipped as a known gap. Both the declaration-adjacent
+(bulk-cache) and import-set downgrade mechanisms are now proven end to end on a real, full pipeline
+(not just unit tests) -- see `## PR2` Step 6. 596/596 tests passing (9 new since PR1's own merge).
 
 ## Step 1 — Hypothesis
 
@@ -548,19 +562,267 @@ under real build complexity, not just clean pure-Swift packages:
   previously exercised anywhere -- `@preconcurrency @MainActor public protocol BoundCollection`,
   the attribute on a **protocol** declaration, not a class/struct/function.
 
-**Not yet real-corpus-verified, flagged rather than glossed over**: across all four corpora, **zero
-edges were ever downgraded** (`structuralRisk` never set), including on RealmSwift, which has 6 real
-declaration-level `@preconcurrency` findings. The declaration-trigger downgrade mechanism itself --
-the part of this feature rewritten three times during review -- has so far only been exercised by
-synthetic unit tests, never by a real structurally-`.high` edge whose callee is genuinely
-`@preconcurrency`-attributed. None of the four corpora happened to have a real cross-isolation call
-reaching one of their `@preconcurrency` declarations from a `nonisolated` context. Worth deliberately
-seeking out or constructing such a case before treating the downgrade mechanism itself as
-real-corpus-proven, not just unit-tested.
+**Zero edges downgraded across all four corpora -- checked further, not left as an open question.**
+Confirmed directly (not assumed) that this is genuinely "no real opportunity existed," not a hidden
+bug: for RealmSwift specifically, queried every one of its 6 real `preconcurrencyDeclaration`
+findings' own USRs against the report's own `edges` array -- **zero** real call-graph edges target
+any of them directly. Widened the check to every node whose USR contains `BoundCollection` (the one
+finding that's a protocol, so its *members* -- reached via `containingTypeUSR` propagation, not the
+protocol's own USR -- are the shape that would actually matter): exactly one real edge exists into
+that set, and it's `.medium`, not structurally `.high`, so the downgrade mechanism correctly has
+nothing to trigger on. RealmSwift's real `@preconcurrency` declarations are check-mode requirements,
+static config setters, and a protocol only ever satisfied by nonisolated-caller-inaccessible SwiftUI
+property-wrapper internals in real practice -- not the shape a nonisolated caller happens to reach in
+this specific corpus's own real call graph, not a gap in what the mechanism can detect.
+
+**Closed with a real, full-pipeline run, not a unit test.** Built a minimal but genuinely real SPM
+package (`swift-tools-version:6.0`) with the exact motivating shape -- a `@preconcurrency @MainActor`
+top-level function called directly from a `nonisolated` one, in the same file, no closures/mocking:
+```swift
+@preconcurrency @MainActor
+func legacyEntryPoint() { print("legacy") }
+
+nonisolated func caller() { legacyEntryPoint() }
+```
+Confirmed by `swift build` first that this is real, compiling code producing the exact real warning
+(not error) SE-0337/Gap C3 predict. Ran the actual CLI against it end to end -- real `--auto-build`,
+real index store, real `DeclarationLinker.link()`, real `AnalysisReportBuilder.build()`, no synthetic
+`DeclarationInfo` fixtures anywhere in the path. Real output:
+```
+risk: medium, structuralRisk: high,
+severityRationale: "structurally high (nonisolated -> globalActor(MainActor)); downgraded to
+  medium: legacyEntryPoint is @preconcurrency-attributed"
+```
+The exact mechanism rewritten three times during PR1's review is now proven correct end to end
+through the real pipeline, not just synthetic-fixture unit tests -- the standing gap is closed, not
+just re-explained.
 
 Full suite after all three fixes: 587/587 (584 + 3 more: the offset-0 superclass-override
 regression and its unattributed-superclass control, in `DeclarationExtractorTests.swift`).
 
 ## Step 7 — PR
 
-Opened as [#118](https://github.com/btctcn/swift-isolation-map/pull/118). Not yet merged.
+Merged as [#118](https://github.com/btctcn/swift-isolation-map/pull/118).
+
+# PR2 — `@preconcurrency import Foo` (shape 4)
+
+## Step 1 — Hypothesis
+
+Unchanged from PR1's own framing: `@preconcurrency import Foo` softens the compiler's own
+diagnostic for uses of that module's declarations in this file, the same SE-0337 error-to-warning
+mechanism as declaration-level `@preconcurrency`, just scoped by import rather than by individual
+declaration/type. The open question PR1 left behind was purely mechanical: how does a structurally-
+`.high` edge's downgrade lookup determine "does this edge's callee live in a module the caller's
+file `@preconcurrency import`-ed" — PR1's own Step 2/3 sketched this as needing a new, real
+`USR -> moduleName` fact sourced from the raw index store, with two spikes flagged and left
+deliberately unanswered rather than guessed.
+
+## Step 2 — Spike (both original questions mooted by a simpler mechanism, found by testing first)
+
+**Original plan, and why it turned out to be over-engineered.** PR1's Step 3 planned to read module
+name at the raw index-store *unit* level (`indexstore_shim_unit_reader_get_module_name`, already
+used for module-scoping) and thread it through `DeclarationLinker` as a new cross-cutting fact. That
+premise didn't survive contact with a real fixture: a `Package.swift` importing `WebKit` and calling
+`WKWebView.reload()` from `nonisolated` code produces a real call-graph edge whose `calleeUSR`
+(`c:objc(cs)WKWebView(im)reload`) has **no unit at all** in the analyzing project's own index store
+-- `WKWebView` is a precompiled system framework with no local source to index. The same is true for
+every real `@preconcurrency import` target found across every corpus searched this whole session
+(`WebKit`, `PhotosUI`, `AVFoundation`, `LocalAuthentication`, `Crypto`, `ArgumentParser`, ...) -- none
+of them are project-local Pods/SPM targets with their own compiled units; they're all either system
+frameworks or genuinely external package dependencies. The index-store-unit-level plan was built on
+a data source that's absent for the population this feature actually needs to cover.
+
+**What actually works, found by testing the alternative directly.** This project's own oracle
+(`ExternalIsolationBackfill`/`SourceKitDClient.cursorInfo`) already runs a live `sourcekitd`
+cursor-info query for exactly these unresolved external declarations, to resolve their isolation.
+Confirmed directly (real fixture + real query) that the same raw cursor-info response carries a
+top-level `key.modulename` field -- already documented as real in this project's own prior work
+(`docs/task-extern-constant-swift-name-usr-mismatch.md`'s captured example, `key.modulename: "main"`
+for a project-local symbol) but never read by this codebase until now. Verified at real scale by a
+temporary debug hook re-run against Project Iris's own already-built index (2405 real live cursor-
+info queries, no new build needed): `key.modulename` reliably names the real defining module for a
+huge, varied real sample -- plain names for most Swift/Pods symbols (`"Mindbox"`, `"Kingfisher"`,
+`"Alamofire"`), `"Module.Type"` for many ObjC-bridged property/accessor symbols (`"WebKit.WKWebView"`,
+`"UIKit.NSAttributedString"`, 400+ real occurrences of this shape), and `"Module.Submodule.Type"` for
+two real Clang-submodule cases (`"Darwin.os.lock"`, `"Accelerate.vImage.Convolution"`). The first
+`.`-separated component was the correct top-level module name in every one of the 2405 samples, no
+exceptions -- confirmed by direct counting, not sampling.
+
+**Both of PR1's original open spikes are moot, not answered.** Neither the `.path`-vs-index-store
+comparison nor the `@CM@`-qualifier lookup direction matters once module name comes from
+`key.modulename` instead of an index-store unit or the USR string itself -- there's no qualifier to
+strip and no index-store unit to look up. The only normalization rule now needed (take the first
+`.`-component of `key.modulename`) is the exact same rule the import side needs too (`.path`'s first
+component, for `@preconcurrency import Foundation.NSDebug`-shaped submodule imports) -- one rule,
+applied symmetrically on both sides, not two different unverified assumptions.
+
+**Real spike investigation, not left to inference alone**: also confirmed a pure-Swift-USR path
+exists as a fallback/cross-check, though not needed for the final design -- this project's own
+`DemangledSiblingMatching.rawDemangled` (already used elsewhere, real `swift-demangle` invocations)
+correctly recovers a module name from any `s:`-prefixed USR once its `s:` prefix is rewritten to
+`$s` (confirmed directly: `s:10Kingfisher7WeakBoxC` -> `$s10Kingfisher7WeakBoxC` -> demangles to
+`Kingfisher.WeakBox`). Not used in the final design because `key.modulename` already covers both the
+Swift and ObjC-bridged cases uniformly from data the oracle already fetches, at zero extra query
+cost -- reaching for a second, ObjC-specific mechanism would be solving an already-solved problem.
+
+**Known, evidence-based limitation, not chased further**: a genuinely dotted `@preconcurrency import
+Foo.Bar` (importing a Clang submodule specifically, not just referencing a symbol defined in one)
+was searched for but never found real across every corpus this whole investigation touched (~15
+real repositories, dozens of real `@preconcurrency import` lines) -- every real occurrence imports a
+plain top-level module name. The `.path`-first-component rule handles this shape correctly if it
+ever occurs (matching `key.modulename`'s own first-component rule symmetrically), but it's untested
+against a real submodule import specifically, on the strength of zero real occurrences found rather
+than an unwillingness to check.
+
+## Step 3 — Documentation (this section)
+
+### Data flow (revised, simpler than PR1's own Step 3 sketch)
+
+1. `ExternalIsolationBackfill.QueryOutcome.resolved` gains a `moduleName: String?` associated value
+   alongside the existing `IsolationKind`, sourced from `CursorInfoSymbol.moduleName` (the new,
+   permanent `key.modulename` field added to `SourceKitDClient`/`CursorInfoResult`), normalized to
+   its first `.`-component. `nil` for a bulk-cache hit (`BulkSymbolGraphExtractor`'s own cache
+   carries only isolation today, not module name -- an honest, undecided gap, not silently guessed;
+   revisit if bulk extraction's own output turns out to carry a usable module field).
+2. `DeclarationInfo` gains a `moduleName: String?` field, populated only where `QueryOutcome
+   .resolved`'s new payload flows into a `DeclarationInfo` construction -- i.e. only for
+   externally/oracle-resolved declarations, never for anything extracted from this project's own
+   source (project-local code is never itself a `@preconcurrency import` target in practice).
+3. **Learned from PR1's own real-corpus bug**: every one of the 7 reconstruction sites PR1 found
+   silently dropping `hasPreconcurrencyAttribute`/`isNonisolatedUnsafe` (`DeclarationLinker.swift`'s
+   `link()`/`merged(_:_:)`/extension-`containingTypeUSR` pass/`relink(_:...)`,
+   `ExternalIsolationBackfill.swift`'s sibling/demangled-sibling/`rebuilt(_:conformances:)`) was
+   fixed to also carry `moduleName` forward, proactively, before any real-corpus run could catch it
+   missing a second time -- `merged(_:_:)` uses the same "prefer non-nil" rule as `explicitIsolation`/
+   `containingTypeUSR`/`superclassUSR` (only one side is ever expected to have resolved it). The
+   worker-process wire type (`OracleQueryOutcomeWire`, `OracleWorker.swift`) -- a real, distinct
+   fourth `.resolved(...)` construction site this document's own PR1 catalogue never needed to touch,
+   found only by grepping for every `.resolved(` call site after changing the enum's shape -- also
+   needed the same field added, or `--oracle-workers N > 1` would have silently lost `moduleName`
+   for every parallel-resolved declaration specifically.
+4. New per-file extractor for `@preconcurrency import Foo` (name TBD, e.g.
+   `PreconcurrencyImportExtractor`), producing `[file: Set<moduleName>]` via `ImportDeclSyntax.path`'s
+   first component -- threaded through the same `ExtractionResult`/`FileAnalysisResult`/
+   `LinkedAnalysis` shape `awaitedRangesByFile` already established
+   (`docs/task-await-aware-risk-classification.md` Step 4 is the template).
+5. `EscapeHatchKind.preconcurrencyImport` finding, `declarationUSR: nil` (module-level, not a
+   declaration), `name` = the module name.
+6. Downgrade lookup (`AnalysisReportBuilder.preconcurrencyDowngradeReason`) gains a second,
+   independent trigger alongside the existing declaration/containingType check: does
+   `declarations[calleeUSR]?.moduleName` appear in the caller-file's `@preconcurrency import` set.
+   Same scoping as the declaration trigger (`.high` -> `.medium` only, never `.medium` -> `.low`,
+   same reasoning as PR1's own Step 3). `severityRationale` wording for the two-triggers-at-once case
+   (a `@preconcurrency`-declared symbol *also* imported with `@preconcurrency`) is still unspecified,
+   as PR1 already flagged -- decide when writing the actual downgrade function, not before.
+
+### `moduleName: nil` for a bulk-cache hit -- measured, not assumed, before calling it a minor gap
+
+Flagged in review, correctly: `BulkSymbolGraphExtractor` is a real, deliberate *optimization* for
+large real corpora (the whole reason it exists), so "bulk-cache-resolved work items never get a
+`moduleName`" could plausibly mean trigger 2 (the import-based downgrade) silently fails to fire on
+the *majority* of real oracle-resolved declarations on exactly the large corpora this feature most
+needs to work on -- the same shape of mistake PR1 made once already (a mechanism that's
+unit-test-correct but silently inert on real, large-scale data). Checked directly instead of assumed:
+extended the existing `SWIFT_ISOLATION_MAP_ORACLE_STATS` instrument (already-permanent, opt-in) to
+report the real bulk-vs-live split of every oracle work item, and ran it against all five real
+corpora already in hand:
+
+| corpus | total work items | bulk-cache-resolved (`moduleName` always `nil`) | live-query-eligible (`moduleName` possible) |
+|---|---|---|---|
+| Project Iris (the flagship ~2200-file reference corpus) | 4944 | 2261 (45.7%) | **2683 (54.3%)** |
+| WCDB | 941 | 138 (14.7%) | 803 (85.3%) |
+| RealmSwift | 1101 | 224 (20.3%) | 877 (79.7%) |
+| Kingfisher | 788 | 472 (59.9%) | 316 (40.1%) |
+| Auth0.swift | 566 | 300 (53.0%) | 266 (47.0%) |
+
+Live-query-eligible is the majority on the single most representative corpus (Project Iris itself)
+and never drops below 40% on any of the five. `moduleName: nil` on a bulk-cache hit is a real,
+honest gap -- trigger 2 genuinely cannot fire for that specific subset of declarations -- but it is
+not the dominant path on any real corpus checked, and is the minority case on three of five,
+including the flagship one. Ships as a documented, measured limitation, not a blocker for this PR;
+extending `bulkCache`/`BulkSymbolGraphExtractor` to also carry a module name (closing this gap
+entirely) is real, separate, self-contained follow-up work, now scoped with actual numbers instead
+of an assumption about which path is "the edge case."
+
+### Out of scope, deliberately, for this PR too
+
+- The dotted-submodule-import case beyond the untested `.path`-first-component rule already covers.
+
+## Step 4 — Code
+
+Done. Landed: `SourceKitDKeys.moduleName`/`CursorInfoSymbol.moduleName` (real `key.modulename`
+field, permanent), `ExternalIsolationBackfill.QueryOutcome.resolved(_:moduleName:)` plumbed through
+all 4 real construction sites (including the oracle-worker wire type, `OracleQueryOutcomeWire`),
+`DeclarationInfo.moduleName`, and `moduleName` forwarding added to all 7 of PR1's own reconstruction
+sites plus `merged(_:_:)` -- learned from PR1's own real-corpus bug, so this time every
+reconstruction site was checked proactively rather than found missing by a second real-corpus run.
+`BulkSymbolGraphExtractor.moduleNameByUSR` (the user-requested scope addition, closing the
+bulk-cache gap measured in Step 3 rather than deferring it) -- trivially known by construction in
+`extractAll`'s own per-`job.name` merge loop, threaded through the same ~10 `bulkCache`-consuming
+call sites in `ExternalIsolationBackfill.swift`/`OracleWorker.swift` (both worker-process call
+sites correctly pass `bulkModuleNameByUSR: [:]`, since a worker only ever handles live-query items
+that already missed the bulk cache in the parent process -- confirmed by reading
+`resolveInParallel`'s own dispatch logic, not assumed). New `PreconcurrencyImportExtractor.swift`
+(`Sources/SyntaxAnalysis`), threaded through the exact same `ExtractionResult` ->
+`FileAnalysisResult` -> `LinkedAnalysis.preconcurrencyImportedModulesByFile` ->
+`AnalysisReportBuilder.build(...)` pipeline `awaitedRangesByFile` already established. New
+`EscapeHatchKind.preconcurrencyImport` finding (`declarationUSR` now `String?` -- `nil` for this one
+kind, a module-level fact with no declaration). Second downgrade trigger added to
+`preconcurrencyDowngradeReason`: `declarations[calleeUSR]?.moduleName` checked against the *calling*
+edge's own file's `@preconcurrency import` set.
+
+## Step 5 — Tests
+
+Done. 9 new tests: 5 in `Tests/SyntaxAnalysisTests/PreconcurrencyImportExtractorTests.swift` (plain
+import produces nothing, a single `@preconcurrency import` produces one finding, a Clang-submodule
+import keeps only the first path component, a finding carries its own file/line, multiple imports
+in one file each produce their own finding), 4 in `AnalysisReportBuilderTests.swift` (the
+`.preconcurrencyImport` finding itself, the import-trigger downgrade firing, the import-trigger
+correctly *not* firing when the caller's own file imports a different module than the callee's real
+one -- even when some *other* file in the project imports the right one, proving the lookup is
+scoped per caller file, not project-wide -- and not firing when the callee has no known
+`moduleName` at all). Full suite: 596/596, five consecutive clean full-output runs, no regressions.
+
+## Step 6 — Documenting results
+
+**Both mechanisms proven end to end on a real, full pipeline, not just unit tests** -- same
+discipline PR1's own review demanded of the declaration trigger.
+
+Declaration-adjacent module-resolution path (bulk cache): a minimal but real SPM package
+(`@preconcurrency import AppKit`, a `nonisolated` function calling `NSView.needsLayout = true`,
+which real `swift build` confirms produces the exact real warning-not-error SE-0337 predicts) run
+through the actual CLI end to end -- real `--auto-build`, real index store, real
+`DeclarationLinker.link()`, real `ExternalIsolationBackfill` bulk-cache resolution (not live query
+-- confirmed by the real run's own verbose log, `External oracle: 1 resolved`, and `AppKit` being a
+`BulkSymbolGraphExtractor.defaultModules` member). Real output: `risk: medium, structuralRisk:
+high, severityRationale: "...downgraded to medium: c:objc(cs)NSView(py)needsLayout's module AppKit
+is @preconcurrency-imported in this file"`. (An earlier attempt using `@preconcurrency import
+WebKit` failed to exercise this at all -- `WebKit` isn't bulk-covered, and this environment's own
+live-query oracle path is unreliable for a bare SPM package, the same `-supplementary-output-file-map`
+issue affecting every bare-SPM real-corpus run this whole session; switching to a bulk-covered
+module sidestepped an unrelated, pre-existing environment limitation rather than papering over it.)
+
+Real corpus re-verification (`onevcat/Kingfisher`, after the `bulkCache`/`moduleName` extension):
+`.preconcurrencyImport` findings: `Photos` + `PhotosUI`, an exact match to the real `grep` baseline
+established in PR1's own Step 6. `uncheckedSendable` count changed from 39 to 72 on this same
+corpus -- checked directly, not assumed benign: the earlier 39 was scoped to `Sources/` only; this
+run (no `--scheme`-level file restriction) also covers `Tests/KingfisherTests/`, which has 35 of its
+own real `@unchecked Sendable` declarations (test helper types, spies, stubs) `grep` confirms are
+genuinely there. Cross-checked precisely: every real, non-comment `@unchecked Sendable` line across
+the *entire* checkout (`Sources/` + `Tests/`), grouped by `(file, declared-type-name)` pair to
+account for the same type being restated across multiple `#if`/`#else` branches (e.g.
+`CADisplayLink`'s real 4 source lines under nested `#if !os(macOS)`/`#if compiler(>=6)` branches)
+gives **exactly 72** distinct pairs -- confirmed to match the tool's own 72 findings exactly, not
+approximately. Independently confirmed the *mechanism* directly, not just the aggregate count: a
+temporary test calling `DeclarationExtractor.extract(...)` directly on the real, unmodified
+`DisplayLink.swift` (added, run, then removed -- never committed) shows `CADisplayLink` resolving to
+exactly one `(protocolUSR: "syntactic:Sendable", isUnchecked: true)` conformance entry despite its 4
+raw source lines, proving the same-file same-type accumulation correctly collapses duplicates
+regardless of `#if` branching, rather than assuming it from the aggregate match alone. 0 real edges
+downgraded via the import trigger on this corpus (same honest "no real opportunity in this specific
+corpus" shape as PR1's own Realm finding, not re-investigated further here since Step 6 above
+already proved the mechanism itself end to end on a real pipeline).
+
+## Step 7 — PR
+
+Not yet opened.

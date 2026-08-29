@@ -21,17 +21,26 @@ public struct LinkedAnalysis: Equatable, Sendable {
     /// real global actor name from an arbitrary property wrapper/result builder that merely
     /// resolves to *some* real type via USR -- see `GlobalActorNameValidation`'s own doc comment.
     public let globalActorNames: Set<String>
+    /// Every `@preconcurrency import Foo`'s top-level module name, keyed by the *importing* file
+    /// path -- the same key `CallGraphEdge.location.file` uses, so `AnalysisReportBuilder`'s
+    /// severity-downgrade lookup can look up "did this edge's own caller file `@preconcurrency
+    /// import` the callee's module" directly (docs/task-escape-hatch-and-preconcurrency-severity.md,
+    /// PR2, shape 4). Reduced to a `Set` per file (not a list of ranges like `awaitedRangesByFile`)
+    /// -- unlike an `await` expression's own range, only "is this module name present at all in
+    /// this file's own import list" ever matters, never a source position.
+    public let preconcurrencyImportedModulesByFile: [String: Set<String>]
 
     public init(
         declarations: [String: DeclarationInfo], callGraph: [CallGraphEdge],
         closuresByFile: [String: [ClassifiedClosure]] = [:], awaitedRangesByFile: [String: [AwaitedRange]] = [:],
-        globalActorNames: Set<String> = []
+        globalActorNames: Set<String> = [], preconcurrencyImportedModulesByFile: [String: Set<String>] = [:]
     ) {
         self.declarations = declarations
         self.callGraph = callGraph
         self.closuresByFile = closuresByFile
         self.awaitedRangesByFile = awaitedRangesByFile
         self.globalActorNames = globalActorNames
+        self.preconcurrencyImportedModulesByFile = preconcurrencyImportedModulesByFile
     }
 }
 
@@ -216,6 +225,13 @@ public struct DeclarationLinker {
             }
         }
 
+        var preconcurrencyImportedModulesByFile: [String: Set<String>] = [:]
+        for result in extractionResults {
+            for module in result.preconcurrencyImportedModules {
+                preconcurrencyImportedModulesByFile[module.file, default: []].insert(module.moduleName)
+            }
+        }
+
         let (builtUSRRewriteMap, ownUSRByLocation, filesWithIndexedSymbols) = buildUSRRewriteMap(for: allDeclarations)
         var usrRewriteMap = builtUSRRewriteMap
         for (placeholder, realUSR) in usrRewriteMapOverrides {
@@ -323,7 +339,8 @@ public struct DeclarationLinker {
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
-                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
+                moduleName: declaration.moduleName
             )
             if let existing = byUSR[linked.usr] {
                 byUSR[linked.usr] = Self.merged(existing, linked)
@@ -385,7 +402,8 @@ public struct DeclarationLinker {
 
         return LinkedAnalysis(
             declarations: byUSR, callGraph: callGraph, closuresByFile: closuresByFile,
-            awaitedRangesByFile: awaitedRangesByFile, globalActorNames: mergedGlobalActorNames
+            awaitedRangesByFile: awaitedRangesByFile, globalActorNames: mergedGlobalActorNames,
+            preconcurrencyImportedModulesByFile: preconcurrencyImportedModulesByFile
         )
     }
 
@@ -501,7 +519,8 @@ public struct DeclarationLinker {
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
-                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
+                moduleName: declaration.moduleName
             )
         }
     }
@@ -568,7 +587,8 @@ public struct DeclarationLinker {
                 isImmutableStoredProperty: declaration.isImmutableStoredProperty,
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
-                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
+                isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
+                moduleName: declaration.moduleName
             )
         }
     }
@@ -705,7 +725,8 @@ public struct DeclarationLinker {
             isImmutableStoredProperty: existing.isImmutableStoredProperty || incoming.isImmutableStoredProperty,
             isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer,
             hasPreconcurrencyAttribute: existing.hasPreconcurrencyAttribute || incoming.hasPreconcurrencyAttribute,
-            isNonisolatedUnsafe: existing.isNonisolatedUnsafe || incoming.isNonisolatedUnsafe
+            isNonisolatedUnsafe: existing.isNonisolatedUnsafe || incoming.isNonisolatedUnsafe,
+            moduleName: existing.moduleName ?? incoming.moduleName
         )
     }
 }

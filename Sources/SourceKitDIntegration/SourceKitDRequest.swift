@@ -88,6 +88,16 @@ final class SourceKitDKeys {
     /// in-flight at once). Kept here only because the spike still needs it.
     var cancelOnSubsequentRequest: SourceKitDUID { uid("key.cancel_on_subsequent_request") }
     var usr: SourceKitDUID { uid("key.usr") }
+    /// The defining module of the hovered symbol -- confirmed real via a live cursor-info response
+    /// (docs/task-extern-constant-swift-name-usr-mismatch.md's own captured example,
+    /// `key.modulename: "main"` for a project-local symbol) and via
+    /// docs/task-escape-hatch-and-preconcurrency-severity.md PR2's own real-corpus spike against
+    /// Project Iris (2405 real live queries): a plain module name for most Swift/Pods symbols
+    /// (`"Mindbox"`, `"Kingfisher"`), but `"Module.Type"` for many ObjC-bridged property/accessor
+    /// symbols (`"WebKit.WKWebView"`), and even `"Module.Submodule.Type"` for a real Clang-submodule
+    /// case (`"Darwin.os.lock"`) -- `CursorInfoSymbol.moduleName`'s own doc comment covers the
+    /// resulting "always take the first dot-component" normalization rule.
+    var moduleName: SourceKitDUID { uid("key.modulename") }
     var secondarySymbols: SourceKitDUID { uid("key.secondary_symbols") }
     var fullyAnnotatedDecl: SourceKitDUID { uid("key.fully_annotated_decl") }
     var symbolGraph: SourceKitDUID { uid("key.symbol_graph") }

@@ -19,10 +19,17 @@ public struct CursorInfoSymbol: Equatable, Sendable {
     /// `key.containertypeusr` -- the Swift-mangled USR of the type this declaration is a member of.
     /// See `name`'s own doc comment for why this project needs it now.
     public let containerTypeUSR: String?
+    /// `key.modulename` -- the hovered symbol's own defining module, **raw and un-normalized**
+    /// (callers needing a clean top-level module name must take the first `.`-separated component
+    /// themselves; see `SourceKitDKeys.moduleName`'s own doc comment for why: this is sometimes
+    /// `"Module.Type"` or `"Module.Submodule.Type"`, not always a bare module name). Needed by
+    /// `ExternalIsolationBackfill`'s `@preconcurrency import` downgrade trigger
+    /// (docs/task-escape-hatch-and-preconcurrency-severity.md, PR2).
+    public let moduleName: String?
 
     public init(
         usr: String, fullyAnnotatedDeclXML: String?, symbolGraphJSON: String?,
-        name: String? = nil, declLang: String? = nil, containerTypeUSR: String? = nil
+        name: String? = nil, declLang: String? = nil, containerTypeUSR: String? = nil, moduleName: String? = nil
     ) {
         self.usr = usr
         self.fullyAnnotatedDeclXML = fullyAnnotatedDeclXML
@@ -30,6 +37,7 @@ public struct CursorInfoSymbol: Equatable, Sendable {
         self.name = name
         self.declLang = declLang
         self.containerTypeUSR = containerTypeUSR
+        self.moduleName = moduleName
     }
 }
 

@@ -193,6 +193,7 @@ public enum EscapeHatchKind: String, Codable, Equatable, Sendable {
     case nonisolatedUnsafe
     case preconcurrencyDeclaration
     case preconcurrencyConformance
+    case preconcurrencyImport
 }
 
 /// A per-declaration fact about an explicit Swift concurrency-checking escape hatch --
@@ -203,7 +204,9 @@ public enum EscapeHatchKind: String, Codable, Equatable, Sendable {
 /// `AnalysisReportBuilder`, not through this struct.
 public struct EscapeHatchFinding: Codable, Equatable, Sendable {
     public let kind: EscapeHatchKind
-    public let declarationUSR: String
+    /// `nil` for `.preconcurrencyImport` -- a module-level fact, not a declaration; `name` carries
+    /// the module name instead. Present for every other kind.
+    public let declarationUSR: String?
     public let name: String
     /// `var` (`true`) vs `let` (`false`) for `.nonisolatedUnsafe`. `nil` for every other kind --
     /// in particular, `.uncheckedSendable`'s own mutable-stored-property analysis (does this type
@@ -214,7 +217,7 @@ public struct EscapeHatchFinding: Codable, Equatable, Sendable {
     /// `DeclarationInfo.location`'s own optionality, not a decode-compatibility default).
     public let location: AnalysisLocation?
 
-    public init(kind: EscapeHatchKind, declarationUSR: String, name: String, isMutable: Bool?, location: AnalysisLocation?) {
+    public init(kind: EscapeHatchKind, declarationUSR: String?, name: String, isMutable: Bool?, location: AnalysisLocation?) {
         self.kind = kind
         self.declarationUSR = declarationUSR
         self.name = name
