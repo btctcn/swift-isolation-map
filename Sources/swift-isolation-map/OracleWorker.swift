@@ -37,16 +37,21 @@ struct OracleWorkerInput: Codable {
 /// making the internal enum itself `Codable` so the two can evolve independently.
 struct OracleQueryOutcomeWire: Codable {
     let isolationKind: IsolationKind?
+    let moduleName: String?
 
     init(_ outcome: ExternalIsolationBackfill.QueryOutcome) {
         switch outcome {
-        case .resolved(let kind): self.isolationKind = kind
-        case .unknown: self.isolationKind = nil
+        case .resolved(let kind, let moduleName):
+            self.isolationKind = kind
+            self.moduleName = moduleName
+        case .unknown:
+            self.isolationKind = nil
+            self.moduleName = nil
         }
     }
 
     var outcome: ExternalIsolationBackfill.QueryOutcome {
-        isolationKind.map { .resolved($0) } ?? .unknown
+        isolationKind.map { .resolved($0, moduleName: moduleName) } ?? .unknown
     }
 }
 
@@ -84,7 +89,7 @@ enum OracleWorker {
             let outcome = await ExternalIsolationBackfill.query(
                 targetUSR: item.targetUSR, file: item.file, line: item.line, utf8Column: item.column,
                 compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:],
-                knownGlobalActorNames: input.knownGlobalActorNames
+                bulkModuleNameByUSR: [:], knownGlobalActorNames: input.knownGlobalActorNames
             )
             outcomesByTargetUSR[item.targetUSR] = OracleQueryOutcomeWire(outcome)
         }
@@ -279,7 +284,7 @@ enum OracleWorker {
             results[item.targetUSR] = await ExternalIsolationBackfill.query(
                 targetUSR: item.targetUSR, file: item.file, line: item.line, utf8Column: item.column,
                 compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: [:],
-                knownGlobalActorNames: knownGlobalActorNames
+                bulkModuleNameByUSR: [:], knownGlobalActorNames: knownGlobalActorNames
             )
         }
         return results

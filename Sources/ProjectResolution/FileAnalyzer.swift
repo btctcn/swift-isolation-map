@@ -25,6 +25,10 @@ public struct FileAnalysisResult: Equatable, Sendable {
     /// This file's `await <expr>` ranges, threaded through for `AnalysisReportBuilder`'s
     /// await-aware risk classification (docs/task-await-aware-risk-classification.md, issue #46).
     public let awaitedRanges: [AwaitedRange]
+    /// This file's `@preconcurrency import`-ed top-level module names, threaded through the same
+    /// way -- see `SyntaxAnalysis.ExtractionResult`'s own field of the same name
+    /// (docs/task-escape-hatch-and-preconcurrency-severity.md, PR2, shape 4).
+    public let preconcurrencyImportedModules: [PreconcurrencyImportedModule]
     public let contentHash: String
 }
 
@@ -57,6 +61,7 @@ public struct FileAnalyzer {
             globalActorNames: extraction.globalActorNames,
             closureLiteralRecords: extraction.closureLiteralRecords,
             awaitedRanges: extraction.awaitedRanges,
+            preconcurrencyImportedModules: extraction.preconcurrencyImportedModules,
             contentHash: contentHash(of: data)
         )
     }

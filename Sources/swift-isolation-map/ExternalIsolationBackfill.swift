@@ -130,6 +130,7 @@ enum ExternalIsolationBackfill {
         )
         let bulkCache = bulkResolution.isolationByUSR
         let bulkProtocolUSRs = bulkResolution.protocolUSRs
+        let bulkModuleNameByUSR = bulkResolution.moduleNameByUSR
         // Issue #40: unioned locally (not just relying on `linked.globalActorNames` already being
         // expanded) so this function's own live-oracle `GlobalActorNameValidation` calls below are
         // correct even for a caller that didn't thread `discoveredGlobalActorNames` through
@@ -145,12 +146,14 @@ enum ExternalIsolationBackfill {
         // ---- Phase 1: collect (single-threaded; every dedup guarantee below is computed before
         // any live query runs, never adjusted mid-flight the way the old interleaved loops did) ----
 
-        let edgeWorkItems = collectEdgeLevelWorkItems(linked: linked, backfilled: &backfilled, bulkCache: bulkCache, processRunning: processRunning)
+        let edgeWorkItems = collectEdgeLevelWorkItems(
+            linked: linked, backfilled: &backfilled, bulkCache: bulkCache, bulkModuleNameByUSR: bulkModuleNameByUSR, processRunning: processRunning
+        )
 
         var pairOutcomes: [ConformancePairKey: ConformancePairOutcome] = [:]
         var pairIndicesByDeclaration: [String: [(index: Int, key: ConformancePairKey)]] = [:]
         let (declarationPlans, placeholderNeeds) = collectDeclarationLevelWorkItems(
-            linked: linked, bulkCache: bulkCache, bulkProtocolUSRs: bulkProtocolUSRs,
+            linked: linked, bulkCache: bulkCache, bulkModuleNameByUSR: bulkModuleNameByUSR, bulkProtocolUSRs: bulkProtocolUSRs,
             backfilled: &backfilled, pairOutcomes: &pairOutcomes, pairIndicesByDeclaration: &pairIndicesByDeclaration
         )
 
@@ -194,6 +197,18 @@ enum ExternalIsolationBackfill {
         if ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_ORACLE_STATS"] != nil {
             let liveFiles = Set(merged.filter { bulkCache[$0.targetUSR] == nil }.map { $0.location.file })
             eprint("distinct live-query file groups: \(liveFiles.count)")
+            // docs/task-escape-hatch-and-preconcurrency-severity.md PR2 Step 2: originally added to
+            // measure how much of a real corpus would get `moduleName: nil` from a bulk-cache hit
+            // (`BulkSymbolGraphExtractor` only carried isolation, not module name, at the time) --
+            // real measurement across 5 corpora found live-query-eligible items were the majority on
+            // the flagship reference corpus (Project Iris, 54%) and never below 40%, so `bulkCache`
+            // was extended with `bulkModuleNameByUSR` (trivially known by construction -- one
+            // `symbolgraph-extract` call only ever covers the module it was asked to extract) rather
+            // than shipping the gap. Kept as a permanent split-ratio instrument regardless -- still a
+            // real, useful signal for how much of a given real corpus needs the slower live-query
+            // path at all.
+            let bulkResolvedCount = merged.filter { bulkCache[$0.targetUSR] != nil }.count
+            eprint("merged work items: \(merged.count) total, \(bulkResolvedCount) bulk-cache-resolved, \(merged.count - bulkResolvedCount) live-query-eligible")
         }
 
         // Diagnostic-only, opt-in: dump the fully-planned, deterministically-sorted merged work
@@ -222,7 +237,7 @@ enum ExternalIsolationBackfill {
             var liveItems: [MergedWorkItem] = []
             for item in merged {
                 if let cached = bulkCache[item.targetUSR] {
-                    outcomes[item.targetUSR] = .resolved(cached)
+                    outcomes[item.targetUSR] = .resolved(cached, moduleName: bulkModuleNameByUSR[item.targetUSR])
                 } else {
                     liveItems.append(item)
                 }
@@ -243,7 +258,7 @@ enum ExternalIsolationBackfill {
                 outcomes[item.targetUSR] = await query(
                     targetUSR: item.targetUSR, file: item.location.file, line: item.location.line, utf8Column: item.location.column,
                     compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
-                    knownGlobalActorNames: expandedGlobalActorNames
+                    bulkModuleNameByUSR: bulkModuleNameByUSR, knownGlobalActorNames: expandedGlobalActorNames
                 )
             }
         }
@@ -270,7 +285,8 @@ enum ExternalIsolationBackfill {
 
         await resolveSyntacticPlaceholderNeeds(
             placeholderNeeds, linked: linked, compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem,
-            bulkCache: bulkCache, knownGlobalActorNames: expandedGlobalActorNames, backfilled: &backfilled, unknown: &unknown
+            bulkCache: bulkCache, bulkModuleNameByUSR: bulkModuleNameByUSR, knownGlobalActorNames: expandedGlobalActorNames,
+            backfilled: &backfilled, unknown: &unknown
         )
 
         if let placeholderPhaseStart {
@@ -331,6 +347,7 @@ enum ExternalIsolationBackfill {
         linked: LinkedAnalysis,
         backfilled: inout [String: DeclarationInfo],
         bulkCache: [String: IsolationKind],
+        bulkModuleNameByUSR: [String: String],
         processRunning: ProcessRunning
     ) -> [EdgeWorkItem] {
         // Built once, project-wide -- see `MultiTargetDeclarationAliasing`'s own doc comment for
@@ -363,7 +380,8 @@ enum ExternalIsolationBackfill {
                     enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
                     location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
                     isActorInitializer: sibling.isActorInitializer,
-                    hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe
+                    hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe,
+                    moduleName: sibling.moduleName
                 )
                 continue
             }
@@ -432,7 +450,8 @@ enum ExternalIsolationBackfill {
             if let declarationUSR = SubscriptAccessorDeclarationMatching.subscriptDeclarationUSR(forAccessorUSR: targetUSR),
                let cachedIsolation = bulkCache[declarationUSR] {
                 backfilled[targetUSR] = DeclarationInfo(
-                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[declarationUSR]
                 )
                 continue
             }
@@ -443,7 +462,8 @@ enum ExternalIsolationBackfill {
             if let declarationUSR = SwiftStaticMemberAccessorDeclarationMatching.declarationUSR(forStaticAccessorUSR: targetUSR),
                let cachedIsolation = bulkCache[declarationUSR] {
                 backfilled[targetUSR] = DeclarationInfo(
-                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[declarationUSR]
                 )
                 continue
             }
@@ -454,7 +474,8 @@ enum ExternalIsolationBackfill {
             if let declarationUSR = ObjCInstancePropertyAccessorMatching.declarationUSR(forInstancePropertyAccessorUSR: targetUSR),
                let cachedIsolation = bulkCache[declarationUSR] {
                 backfilled[targetUSR] = DeclarationInfo(
-                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[declarationUSR]
                 )
                 continue
             }
@@ -511,7 +532,8 @@ enum ExternalIsolationBackfill {
                         enclosingExtensionIsolation: sibling.enclosingExtensionIsolation, isNestedType: sibling.isNestedType,
                         location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
                         isActorInitializer: sibling.isActorInitializer,
-                        hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe
+                        hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe,
+                        moduleName: sibling.moduleName
                     )
                     bestLocationByUSR.removeValue(forKey: targetUSR)
                 }
@@ -552,9 +574,10 @@ enum ExternalIsolationBackfill {
     ) {
         for item in items {
             switch outcomes[item.targetUSR] {
-            case .resolved(let isolation):
+            case .resolved(let isolation, let moduleName):
                 backfilled[item.targetUSR] = DeclarationInfo(
-                    usr: item.targetUSR, name: item.targetUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                    usr: item.targetUSR, name: item.targetUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: moduleName
                 )
             case .unknown, .none:
                 unknown.insert(item.targetUSR)
@@ -680,6 +703,7 @@ enum ExternalIsolationBackfill {
     private static func collectDeclarationLevelWorkItems(
         linked: LinkedAnalysis,
         bulkCache: [String: IsolationKind],
+        bulkModuleNameByUSR: [String: String],
         bulkProtocolUSRs: Set<String>,
         backfilled: inout [String: DeclarationInfo],
         pairOutcomes: inout [ConformancePairKey: ConformancePairOutcome],
@@ -769,13 +793,15 @@ enum ExternalIsolationBackfill {
             let nominal = nominalUSR(for: declaration)
             if let superclassUSR = unresolvedSuperclassUSR, let cachedIsolation = bulkCache[superclassUSR] {
                 backfilled[superclassUSR] = DeclarationInfo(
-                    usr: superclassUSR, name: superclassUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                    usr: superclassUSR, name: superclassUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[superclassUSR]
                 )
                 unresolvedSuperclassUSR = nil
             }
             if let containingTypeUSR = unresolvedContainingTypeUSR, let cachedIsolation = bulkCache[containingTypeUSR] {
                 backfilled[containingTypeUSR] = DeclarationInfo(
-                    usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false
+                    usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[containingTypeUSR]
                 )
                 unresolvedContainingTypeUSR = nil
             }
@@ -979,6 +1005,7 @@ enum ExternalIsolationBackfill {
         sourceKitD: SourceKitDQuerying,
         fileSystem: FileSystemQuerying,
         bulkCache: [String: IsolationKind],
+        bulkModuleNameByUSR: [String: String],
         knownGlobalActorNames: Set<String>,
         backfilled: inout [String: DeclarationInfo],
         unknown: inout Set<String>
@@ -991,18 +1018,20 @@ enum ExternalIsolationBackfill {
             let outcome = await query(
                 targetUSR: need.declarationUSR, file: need.location.file, line: need.location.line, utf8Column: need.location.column,
                 compilerArguments: compilerArguments, sourceKitD: sourceKitD, fileSystem: fileSystem, bulkCache: bulkCache,
-                knownGlobalActorNames: knownGlobalActorNames
+                bulkModuleNameByUSR: bulkModuleNameByUSR, knownGlobalActorNames: knownGlobalActorNames
             )
             switch outcome {
-            case .resolved(let isolation):
+            case .resolved(let isolation, let moduleName):
                 if let superclassUSR = stillUnresolvedSuperclassUSR {
                     backfilled[superclassUSR] = DeclarationInfo(
-                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false,
+                        moduleName: moduleName
                     )
                 }
                 if let containingTypeUSR = stillUnresolvedContainingTypeUSR {
                     backfilled[containingTypeUSR] = DeclarationInfo(
-                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false,
+                        moduleName: moduleName
                     )
                 }
             case .unknown:
@@ -1028,15 +1057,17 @@ enum ExternalIsolationBackfill {
     ) {
         for plan in plans {
             switch outcomes[plan.declarationUSR] {
-            case .resolved(let isolation):
+            case .resolved(let isolation, let moduleName):
                 if let superclassUSR = plan.superclassUSR {
                     backfilled[superclassUSR] = DeclarationInfo(
-                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                        usr: superclassUSR, name: superclassUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false,
+                        moduleName: moduleName
                     )
                 }
                 if let containingTypeUSR = plan.containingTypeUSR {
                     backfilled[containingTypeUSR] = DeclarationInfo(
-                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false
+                        usr: containingTypeUSR, name: containingTypeUSR, explicitIsolation: isolation, isEligibleForModuleDefaultIsolation: false,
+                        moduleName: moduleName
                     )
                 }
                 if !plan.pairKeys.isEmpty {
@@ -1112,15 +1143,27 @@ enum ExternalIsolationBackfill {
             isImmutableStoredProperty: declaration.isImmutableStoredProperty,
             isActorInitializer: declaration.isActorInitializer,
             hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
-            isNonisolatedUnsafe: declaration.isNonisolatedUnsafe
+            isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
+            moduleName: declaration.moduleName
         )
     }
 
     // MARK: - Shared oracle query
 
     enum QueryOutcome {
-        case resolved(IsolationKind)
+        case resolved(IsolationKind, moduleName: String?)
         case unknown
+    }
+
+    /// `sourcekitd`'s `key.modulename` is not always a bare module name -- confirmed on a real
+    /// ~2200-file corpus (docs/task-escape-hatch-and-preconcurrency-severity.md PR2 Step 2, 2405
+    /// real live queries against Project Iris): a plain name for most Swift/Pods symbols
+    /// (`"Mindbox"`), but `"Module.Type"` for many ObjC-bridged property/accessor symbols
+    /// (`"WebKit.WKWebView"`), and `"Module.Submodule.Type"` for a real Clang-submodule case
+    /// (`"Darwin.os.lock"`) -- the first `.`-separated component was the real top-level module name
+    /// in every one of those 2405 real samples, no exceptions found.
+    private static func topLevelModuleName(from rawModuleName: String) -> String {
+        String(rawModuleName.split(separator: ".", maxSplits: 1).first ?? Substring(rawModuleName))
     }
 
     /// One `sourcekitd` cursor-info round trip: resolve compiler arguments + byte offset, send the
@@ -1137,6 +1180,7 @@ enum ExternalIsolationBackfill {
         sourceKitD: SourceKitDQuerying,
         fileSystem: FileSystemQuerying,
         bulkCache: [String: IsolationKind],
+        bulkModuleNameByUSR: [String: String],
         knownGlobalActorNames: Set<String>
     ) async -> QueryOutcome {
         // The primary win for the edge-level trigger: a direct call into a bulk-covered SDK
@@ -1144,7 +1188,7 @@ enum ExternalIsolationBackfill {
         // `sourcekitd` round trip at all. A no-op lookup for the declaration-level trigger's own
         // `targetUSR` (always a project-local declaration, never itself in an SDK module's cache).
         if let cached = bulkCache[targetUSR] {
-            return .resolved(cached)
+            return .resolved(cached, moduleName: bulkModuleNameByUSR[targetUSR])
         }
         do {
             let rawArguments = try compilerArguments.compilerArguments(forFile: file)
@@ -1166,13 +1210,14 @@ enum ExternalIsolationBackfill {
                 ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+            let moduleName = symbol.moduleName.map(topLevelModuleName(from:))
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
-                return .resolved(isolation)
+                return .resolved(isolation, moduleName: moduleName)
             }
             if let xml = symbol.fullyAnnotatedDeclXML,
                let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml, knownGlobalActorNames: knownGlobalActorNames) {
-                return .resolved(isolation)
+                return .resolved(isolation, moduleName: moduleName)
             }
             return .unknown
         } catch {

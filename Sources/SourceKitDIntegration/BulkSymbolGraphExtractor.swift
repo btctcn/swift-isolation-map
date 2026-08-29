@@ -48,11 +48,28 @@ public struct BulkSymbolGraphResolution: Sendable {
     /// enters the accept-list `ClosureIsolationExtractor.classify`/`GlobalActorNameValidation`
     /// both already trust, rather than needing a second, separate validation mechanism.
     public let discoveredGlobalActorNames: Set<String>
+    /// The module every `isolationByUSR` entry came from, keyed identically -- trivially known by
+    /// construction (`extractAll`'s own per-`job.name` merge loop, never parsed out of a response;
+    /// one whole-module `symbolgraph-extract` invocation only ever produces symbols belonging to
+    /// the module it was asked to extract). Needed by the `@preconcurrency import` severity-
+    /// downgrade trigger (docs/task-escape-hatch-and-preconcurrency-severity.md, PR2) -- without
+    /// this, that trigger could never fire for any bulk-cache-resolved declaration, which real-corpus
+    /// measurement showed is the *majority* case on some real corpora (e.g. Kingfisher, Auth0.swift),
+    /// not a rare edge case. A separate field from `isolationByUSR` (not folded into a combined
+    /// value type there) deliberately -- `isolationByUSR` is an already-established, heavily-tested
+    /// public contract (`BulkSymbolGraphExtractorTests`'s direct `== .globalActor(...)` assertions);
+    /// changing its value type would break that contract for a fact only a minority of its own
+    /// consumers need.
+    public let moduleNameByUSR: [String: String]
 
-    public init(isolationByUSR: [String: IsolationKind], protocolUSRs: Set<String>, discoveredGlobalActorNames: Set<String> = []) {
+    public init(
+        isolationByUSR: [String: IsolationKind], protocolUSRs: Set<String>, discoveredGlobalActorNames: Set<String> = [],
+        moduleNameByUSR: [String: String] = [:]
+    ) {
         self.isolationByUSR = isolationByUSR
         self.protocolUSRs = protocolUSRs
         self.discoveredGlobalActorNames = discoveredGlobalActorNames
+        self.moduleNameByUSR = moduleNameByUSR
     }
 }
 
@@ -128,16 +145,22 @@ public enum BulkSymbolGraphExtractor {
         }
 
         var merged: [String: IsolationKind] = [:]
+        var mergedModuleNames: [String: String] = [:]
         var mergedProtocolUSRs: Set<String> = []
         var mergedGlobalActorNames: Set<String> = []
-        for result in resultBuffer.results {
+        for (index, result) in resultBuffer.results.enumerated() {
+            let moduleName = jobs[index].name
             for (usr, isolation) in result.isolationByUSR {
                 merged[usr] = isolation
+                mergedModuleNames[usr] = moduleName
             }
             mergedProtocolUSRs.formUnion(result.protocolUSRs)
             mergedGlobalActorNames.formUnion(result.discoveredGlobalActorNames)
         }
-        return BulkSymbolGraphResolution(isolationByUSR: merged, protocolUSRs: mergedProtocolUSRs, discoveredGlobalActorNames: mergedGlobalActorNames)
+        return BulkSymbolGraphResolution(
+            isolationByUSR: merged, protocolUSRs: mergedProtocolUSRs, discoveredGlobalActorNames: mergedGlobalActorNames,
+            moduleNameByUSR: mergedModuleNames
+        )
     }
 
     static func extract(

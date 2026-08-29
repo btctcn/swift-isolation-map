@@ -72,6 +72,15 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// by this field -- this only exists to surface the escape hatch itself as an
     /// `EscapeHatchFinding`, never to change isolation resolution.
     public let isNonisolatedUnsafe: Bool
+    /// This declaration's own top-level defining module (e.g. `"WebKit"`, `"Kingfisher"`) --
+    /// already normalized to a bare top-level name (never `"Module.Type"`/`"Module.Submodule.Type"`,
+    /// the raw shapes `sourcekitd`'s `key.modulename` can return; see `CursorInfoSymbol.moduleName`'s
+    /// own doc comment). Populated only for externally-resolved declarations (a live/bulk oracle
+    /// query), `nil` for anything extracted from this project's own source -- the `@preconcurrency
+    /// import` downgrade trigger (docs/task-escape-hatch-and-preconcurrency-severity.md, PR2) only
+    /// ever needs this for a callee outside the analyzed project, which is the only place a real
+    /// `@preconcurrency import Foo` could plausibly apply to in the first place.
+    public let moduleName: String?
 
     public init(
         usr: String,
@@ -89,13 +98,15 @@ public struct DeclarationInfo: Equatable, Sendable {
         isImmutableStoredProperty: Bool = false,
         isActorInitializer: Bool = false,
         hasPreconcurrencyAttribute: Bool = false,
-        isNonisolatedUnsafe: Bool = false
+        isNonisolatedUnsafe: Bool = false,
+        moduleName: String? = nil
     ) {
         self.usr = usr
         self.name = name
         self.explicitIsolation = explicitIsolation
         self.isActorType = isActorType
         self.containingTypeUSR = containingTypeUSR
+        self.moduleName = moduleName
         self.isStaticMember = isStaticMember
         self.superclassUSR = superclassUSR
         self.conformances = conformances

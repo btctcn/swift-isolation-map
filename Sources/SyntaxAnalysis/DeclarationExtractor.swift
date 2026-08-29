@@ -54,13 +54,18 @@ public struct ExtractionResult: Equatable, Sendable {
     /// `docs/task-await-aware-risk-classification.md`) -- needs no cross-file classification, so
     /// this is the final fact, unlike `closureLiteralRecords`.
     public let awaitedRanges: [AwaitedRange]
+    /// This file's `@preconcurrency import`-ed top-level module names, self-describing their own
+    /// file the same way `awaitedRanges` does (issue tracked in
+    /// docs/task-escape-hatch-and-preconcurrency-severity.md, PR2, shape 4) -- needs no cross-file
+    /// classification, so this is the final fact already.
+    public let preconcurrencyImportedModules: [PreconcurrencyImportedModule]
 
     public init(
         declarations: [DeclarationInfo], protocolGlobalActorNames: [String: String],
         protocolRequirementGlobalActorNames: [String: [String: String]] = [:],
         protocolInheritedProtocolNames: [String: Set<String>] = [:],
         globalActorNames: Set<String> = [], closureLiteralRecords: [ClosureLiteralRecord] = [],
-        awaitedRanges: [AwaitedRange] = []
+        awaitedRanges: [AwaitedRange] = [], preconcurrencyImportedModules: [PreconcurrencyImportedModule] = []
     ) {
         self.declarations = declarations
         self.protocolGlobalActorNames = protocolGlobalActorNames
@@ -69,6 +74,7 @@ public struct ExtractionResult: Equatable, Sendable {
         self.globalActorNames = globalActorNames
         self.closureLiteralRecords = closureLiteralRecords
         self.awaitedRanges = awaitedRanges
+        self.preconcurrencyImportedModules = preconcurrencyImportedModules
     }
 }
 
@@ -99,12 +105,13 @@ public enum DeclarationExtractor {
         visitor.walk(tree)
         let closureLiteralRecords = ClosureIsolationExtractor.extract(from: tree, fileName: fileName, converter: converter, configuration: configuration)
         let awaitedRanges = AwaitedCallSiteExtractor.extract(from: tree, fileName: fileName, converter: converter, configuration: configuration)
+        let preconcurrencyImportedModules = PreconcurrencyImportExtractor.extract(from: tree, fileName: fileName, converter: converter, configuration: configuration)
         return ExtractionResult(
             declarations: visitor.declarations, protocolGlobalActorNames: protocolGlobalActorNames,
             protocolRequirementGlobalActorNames: protocolRequirementGlobalActorNames,
             protocolInheritedProtocolNames: protocolInheritedProtocolNames,
             globalActorNames: fileWideNames.globalActorNames, closureLiteralRecords: closureLiteralRecords,
-            awaitedRanges: awaitedRanges
+            awaitedRanges: awaitedRanges, preconcurrencyImportedModules: preconcurrencyImportedModules
         )
     }
 }

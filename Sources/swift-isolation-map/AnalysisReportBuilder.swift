@@ -24,7 +24,8 @@ enum AnalysisReportBuilder {
         toolVersion: String,
         unknownUSRs: Set<String> = [],
         closuresByFile: [String: [ClassifiedClosure]] = [:],
-        awaitedRangesByFile: [String: [AwaitedRange]] = [:]
+        awaitedRangesByFile: [String: [AwaitedRange]] = [:],
+        preconcurrencyImportedModulesByFile: [String: Set<String>] = [:]
     ) -> AnalysisReport {
         let declarations = engine.declarations
         // A declaration with no location (never matched to a real IndexStoreDB symbol -- see
@@ -41,7 +42,7 @@ enum AnalysisReportBuilder {
             )
         }
 
-        let escapeHatches = escapeHatchFindings(from: declarations)
+        let escapeHatches = escapeHatchFindings(from: declarations, preconcurrencyImportedModulesByFile: preconcurrencyImportedModulesByFile)
 
         // Issue #41 (Rule C): iterates every real call-graph edge, not just `engine
         // .crossIsolationEdges()`'s own pre-filtered subset -- that filter compares *declared*
@@ -73,7 +74,10 @@ enum AnalysisReportBuilder {
             guard declaredCallerIsolation != calleeIsolation || callerIsolation != calleeIsolation else { return nil }
             let structuralRiskValue = riskLevel(caller: callerIsolation, callee: calleeIsolation)
             let severityRationale = structuralRiskValue == .high
-                ? preconcurrencyDowngradeReason(calleeUSR: edge.calleeUSR, caller: callerIsolation, callee: calleeIsolation, declarations: declarations)
+                ? preconcurrencyDowngradeReason(
+                    calleeUSR: edge.calleeUSR, callerFile: edge.location.file, caller: callerIsolation, callee: calleeIsolation,
+                    declarations: declarations, preconcurrencyImportedModulesByFile: preconcurrencyImportedModulesByFile
+                )
                 : nil
             let risk = severityRationale == nil ? structuralRiskValue : .medium
             // Issue #46: whether this exact call site is syntactically inside a real
@@ -235,8 +239,10 @@ enum AnalysisReportBuilder {
     /// `@preconcurrency`), so this is a flat map, not a 1:1 mapping over `declarations`. Sorted by
     /// location for deterministic output, matching `nodes`' own `declarations.keys.sorted()`
     /// treatment -- `declarations.values` itself has no defined order.
-    private static func escapeHatchFindings(from declarations: [String: DeclarationInfo]) -> [EscapeHatchFinding] {
-        declarations.values.flatMap { declaration -> [EscapeHatchFinding] in
+    private static func escapeHatchFindings(
+        from declarations: [String: DeclarationInfo], preconcurrencyImportedModulesByFile: [String: Set<String>]
+    ) -> [EscapeHatchFinding] {
+        let declarationFindings = declarations.values.flatMap { declaration -> [EscapeHatchFinding] in
             let location = declaration.location.map { AnalysisLocation(file: $0.file, line: $0.line) }
             var findings: [EscapeHatchFinding] = []
             if declaration.isNonisolatedUnsafe {
@@ -269,10 +275,31 @@ enum AnalysisReportBuilder {
                 }
             }
             return findings
-        }.sorted { lhs, rhs in
+        }
+
+        // A module-level fact, not a declaration -- no `DeclarationInfo` to iterate over, just the
+        // per-file `@preconcurrency import` sets `DeclarationLinker.link()` already merged.
+        // `declarationUSR: nil` (see `EscapeHatchFinding`'s own doc comment); `name` carries the
+        // module name instead.
+        // `line: 0` deliberately -- `LinkedAnalysis.preconcurrencyImportedModulesByFile` merges
+        // every file's own imports into a `Set<String>` (the downgrade lookup below only ever
+        // needs "is this module name present in this file's own import set at all," never a source
+        // position), so an individual import statement's own line is already gone by this point.
+        // Same convention this codebase already uses for "no exact location" elsewhere
+        // (`AnalysisNode`'s own `file: "", line: 0` for an unlocatable declaration).
+        let importFindings = preconcurrencyImportedModulesByFile.flatMap { file, moduleNames in
+            moduleNames.map { moduleName in
+                EscapeHatchFinding(
+                    kind: .preconcurrencyImport, declarationUSR: nil, name: moduleName,
+                    isMutable: nil, location: AnalysisLocation(file: file, line: 0)
+                )
+            }
+        }
+
+        return (declarationFindings + importFindings).sorted { lhs, rhs in
             if lhs.location?.file != rhs.location?.file { return (lhs.location?.file ?? "") < (rhs.location?.file ?? "") }
             if lhs.location?.line != rhs.location?.line { return (lhs.location?.line ?? 0) < (rhs.location?.line ?? 0) }
-            if lhs.declarationUSR != rhs.declarationUSR { return lhs.declarationUSR < rhs.declarationUSR }
+            if lhs.declarationUSR != rhs.declarationUSR { return (lhs.declarationUSR ?? "") < (rhs.declarationUSR ?? "") }
             return lhs.kind.rawValue < rhs.kind.rawValue
         }
     }
@@ -290,20 +317,29 @@ enum AnalysisReportBuilder {
     /// for a structurally-`.high` edge -- see that call site's own comment for why `.medium` isn't
     /// scoped the same way.
     private static func preconcurrencyDowngradeReason(
-        calleeUSR: String, caller: IsolationKind, callee: IsolationKind, declarations: [String: DeclarationInfo]
+        calleeUSR: String, callerFile: String, caller: IsolationKind, callee: IsolationKind,
+        declarations: [String: DeclarationInfo], preconcurrencyImportedModulesByFile: [String: Set<String>]
     ) -> String? {
         guard let declaration = declarations[calleeUSR] else { return nil }
-        let softenedBy: String
+        let reason: String
         if declaration.hasPreconcurrencyAttribute {
-            softenedBy = declaration.name
+            reason = "\(declaration.name) is @preconcurrency-attributed"
         } else if let containingTypeUSR = declaration.containingTypeUSR,
                   let containingType = declarations[containingTypeUSR],
                   containingType.hasPreconcurrencyAttribute {
-            softenedBy = containingType.name
+            reason = "\(containingType.name) is @preconcurrency-attributed"
+        } else if let moduleName = declaration.moduleName,
+                  preconcurrencyImportedModulesByFile[callerFile]?.contains(moduleName) == true {
+            // Second, independent trigger (PR2, shape 4): the callee's own defining module (only
+            // ever known for an externally/oracle-resolved declaration -- see
+            // `DeclarationInfo.moduleName`'s own doc comment) is one the *caller's file* itself
+            // `@preconcurrency import`-ed. Same SE-0337 mechanism as the declaration trigger above,
+            // just scoped by import instead of by individual declaration/type.
+            reason = "\(declaration.name)'s module \(moduleName) is @preconcurrency-imported in this file"
         } else {
             return nil
         }
-        return "structurally high (\(describe(caller)) -> \(describe(callee))); downgraded to medium: \(softenedBy) is @preconcurrency-attributed"
+        return "structurally high (\(describe(caller)) -> \(describe(callee))); downgraded to medium: \(reason)"
     }
 
     /// Presentation-only filter applied after `build()`, driven by the CLI's `--severity` option --

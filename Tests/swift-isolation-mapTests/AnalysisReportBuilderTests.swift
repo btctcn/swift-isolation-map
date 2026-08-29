@@ -785,4 +785,75 @@ struct AnalysisReportBuilderTests {
         #expect(edge.structuralRisk == nil)
         #expect(edge.severityRationale == nil)
     }
+
+    // MARK: - PR2: `@preconcurrency import` (shape 4) -- second downgrade trigger, `.preconcurrencyImport` finding
+    // (docs/task-escape-hatch-and-preconcurrency-severity.md)
+
+    @Test("build(): a preconcurrencyImportedModulesByFile entry produces a .preconcurrencyImport EscapeHatchFinding with declarationUSR nil and the module name as its own name")
+    func buildProducesPreconcurrencyImportFinding() {
+        let engine = IsolationInferenceEngine(declarations: [:], callGraph: [], ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            preconcurrencyImportedModulesByFile: ["T.swift": ["WebKit"]]
+        )
+        let finding = try? #require(report.escapeHatches.first)
+        #expect(finding?.kind == .preconcurrencyImport)
+        #expect(finding?.declarationUSR == nil)
+        #expect(finding?.name == "WebKit")
+    }
+
+    @Test("build(): a structurally-high edge whose callee's own module is @preconcurrency-imported in the caller's file is downgraded to medium, even though neither the callee nor its containing type carries @preconcurrency itself")
+    func buildDowngradesHighEdgeViaPreconcurrencyImportTrigger() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let callee = DeclarationInfo(
+            usr: "usr:callee", name: "reload", explicitIsolation: .globalActor(name: "MainActor"), moduleName: "WebKit"
+        )
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "Caller.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            preconcurrencyImportedModulesByFile: ["Caller.swift": ["WebKit"]]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == .high)
+        #expect(edge.severityRationale?.contains("WebKit") == true)
+    }
+
+    @Test("build(): the import trigger does not fire when the caller's file imports a DIFFERENT module than the callee's own, even if some other file in the project imports the right one -- the import set is scoped per caller file, not project-wide")
+    func buildDoesNotDowngradeWhenCallerFileImportsAnUnrelatedModule() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let callee = DeclarationInfo(
+            usr: "usr:callee", name: "reload", explicitIsolation: .globalActor(name: "MainActor"), moduleName: "WebKit"
+        )
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "Caller.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            // Caller's own file imports something, but not WebKit -- and a different file
+            // importing WebKit @preconcurrency must not leak into this caller's own downgrade.
+            preconcurrencyImportedModulesByFile: ["Caller.swift": ["Foundation"], "Other.swift": ["WebKit"]]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .high)
+        #expect(edge.structuralRisk == nil)
+    }
+
+    @Test("build(): the import trigger does not fire for a callee with no known moduleName (a project-local declaration, never oracle-resolved)")
+    func buildDoesNotDowngradeWhenCalleeHasNoModuleName() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let callee = DeclarationInfo(usr: "usr:callee", name: "callee", explicitIsolation: .globalActor(name: "MainActor"))
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "Caller.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            preconcurrencyImportedModulesByFile: ["Caller.swift": ["WebKit"]]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .high)
+        #expect(edge.structuralRisk == nil)
+    }
 }

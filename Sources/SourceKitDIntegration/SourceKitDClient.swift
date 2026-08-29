@@ -191,9 +191,10 @@ public actor SourceKitDClient: SourceKitDQuerying {
             ? raw.uidGetStringPtr(raw.variantUidGetValue(declLangVariant))
             : nil
         let containerTypeUSR = raw.variantDictionaryGetString(variant, keys.containerTypeUSR)
+        let moduleName = raw.variantDictionaryGetString(variant, keys.moduleName)
         return CursorInfoSymbol(
             usr: usr, fullyAnnotatedDeclXML: annotatedDecl, symbolGraphJSON: symbolGraph,
-            name: name, declLang: declLang, containerTypeUSR: containerTypeUSR
+            name: name, declLang: declLang, containerTypeUSR: containerTypeUSR, moduleName: moduleName
         )
     }
 }

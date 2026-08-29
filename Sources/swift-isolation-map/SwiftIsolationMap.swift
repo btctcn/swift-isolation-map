@@ -310,7 +310,7 @@ struct SwiftIsolationMap: ParsableCommand {
                 protocolRequirementGlobalActorNames: result.protocolRequirementGlobalActorNames,
                 protocolInheritedProtocolNames: result.protocolInheritedProtocolNames,
                 globalActorNames: result.globalActorNames, closureLiteralRecords: result.closureLiteralRecords,
-                awaitedRanges: result.awaitedRanges
+                awaitedRanges: result.awaitedRanges, preconcurrencyImportedModules: result.preconcurrencyImportedModules
             ))
         }
 
@@ -472,7 +472,8 @@ struct SwiftIsolationMap: ParsableCommand {
             toolVersion: Self.toolVersion,
             unknownUSRs: externalResolution.unknownUSRs,
             closuresByFile: linked.closuresByFile,
-            awaitedRangesByFile: linked.awaitedRangesByFile
+            awaitedRangesByFile: linked.awaitedRangesByFile,
+            preconcurrencyImportedModulesByFile: linked.preconcurrencyImportedModulesByFile
         )
 
         warnIfUncertaintyRateIsAnomalouslyHigh(report)
