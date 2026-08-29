@@ -415,6 +415,13 @@ exists to report correctly, confirmed the hard way against a real project's own 
 the record of what was checked, not assumed — see `docs/isolation-rules.md`, "Rule set version
 boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-0481.
 
+## Glossary
+
+See [`docs/glossary.md`](docs/glossary.md) for every acronym, tool name, and project-specific term
+used across this README and `docs/` explained in one place, alphabetically — external, pre-existing
+terms link to a real external reference; terms this project coined (like "the oracle") are marked
+as such instead.
+
 ## Roadmap
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
