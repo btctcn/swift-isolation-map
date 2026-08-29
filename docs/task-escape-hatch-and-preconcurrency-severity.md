@@ -425,7 +425,7 @@ that split extension handling into its own path would now fail a test instead of
 
 ## Step 6 — Documenting results
 
-Real-corpus run against Project Iris (`~/ios`, `lsboutique.xcworkspace`/`ls.net.ru`, ~2200 real
+Real-corpus run against Project Iris (`lsboutique.xcworkspace`/`ls.net.ru`, ~2200 real
 files, 41739 nodes / 1537 edges / 28351 types analyzed, `highRiskBoundaries: 1462`):
 
 | | value |
@@ -434,7 +434,7 @@ files, 41739 nodes / 1537 edges / 28351 types analyzed, `highRiskBoundaries: 146
 | `AnalysisEdge`s with `structuralRisk` set (a real downgrade fired) | 0 |
 
 Zero findings, and confirmed this is correct rather than a silent extraction failure: a direct
-`grep -rn` across the entire real `~/ios` tree (app code + all Pods) found `nonisolated(unsafe)`
+`grep -rn` across the entire real Project Iris tree (app code + all Pods) found `nonisolated(unsafe)`
 0 times, `@unchecked Sendable` 0 times, and `@preconcurrency` exactly once --
 `ProductReturnDownloadRequestViewController.swift:10`, `@preconcurrency import WebKit`. That one
 real occurrence is shape (4) (`@preconcurrency import`), the one shape PR1 deliberately does not

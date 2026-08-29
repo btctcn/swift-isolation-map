@@ -12,7 +12,7 @@ measured and confirmed working.
 ## 1. The problem, precisely
 
 After PR #82/#83/#84 all shipped and measured, a fresh, real, line-by-line audit of the residual
-`isUnknown` edges on `~/ios/lsboutique` (a real ~2200-file Xcode workspace) found a second,
+`isUnknown` edges on Project Iris (a real ~2200-file Xcode workspace) found a second,
 independent, large cluster: **1007 real edges** (out of ~5060 residual `isUnknown` edges post-#84)
 whose `calleeUSR` is a `static var` on `NSAttributedString.Key`:
 

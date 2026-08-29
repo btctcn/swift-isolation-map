@@ -169,5 +169,5 @@ poisoning `isUnknown` for members of most/all of the 22 affected types project-w
 - §2 (synthesized `rawValue`/`allCases` accessors) -- **FIXED AND VERIFIED**, 7 new tests.
 - §3 (empty-body protocol with no extension) -- **FIXED AND VERIFIED**, 1 new test.
 - §4 (stray duplicate files) -- **FOUND AND VERIFIED**, resolved by corpus cleanup (22 files removed
-  from `~/ios`), not a code change; documented above as a known `DeclarationLinker` merge risk for any
+  from Project Iris), not a code change; documented above as a known `DeclarationLinker` merge risk for any
   future corpus exhibiting the same pattern.

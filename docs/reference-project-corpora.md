@@ -10,8 +10,9 @@ this document only covers the two projects' own shape.
 ## "Project Iris" — the private real-world corpus
 
 A real, production e-commerce iOS app, used as the primary large-scale validation corpus
-throughout this project (referred to elsewhere in these docs as `~/ios`, without further
-identifying detail — it's a private codebase, not this project's own).
+throughout this project (its real on-disk path is abbreviated `~/ios` in reproducible shell-command
+examples elsewhere in these docs; referred to by name, "Project Iris," in prose — it's a private
+codebase, not this project's own).
 
 - **~1450 own (app-source) Swift files**, ~2200 total including all vendored dependency source.
 - **CocoaPods-based**, ~40 pods (third-party SDKs and UI components; a handful appear by name in

@@ -1542,7 +1542,7 @@ though which one is "confidently resolved" would remain arbitrary by constructio
 With Step 25's fix shipped (PR #107) and Step 26 closing out the one remaining residual as
 understood/non-bug, this feature no longer needed to be opt-in. Before removing the flag, a second,
 independent real-corpus verification -- against a genuinely different project from WordPress-iOS,
-not a repeat of the same environment -- was run against Project Iris (`~/ios`, `ls.net.ru` scheme,
+not a repeat of the same environment -- was run against Project Iris (`ls.net.ru` scheme,
 ~2227 files):
 
 ```
