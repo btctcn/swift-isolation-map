@@ -296,3 +296,8 @@ unrelated to anything tried so far. This is a narrower, lower-urgency question t
 Iris) -- it only matters if `swift-build`'s own `prepareForIndexing` API (Step 9) turns out not to
 be a viable replacement, since that path sidesteps the buggy CLI translation entirely rather than
 depending on understanding it.
+
+**Update: moot.** `docs/task-swift-build-prepare-for-indexing-spike.md` confirms `swift-build`'s
+own `prepareForIndexing` API did become viable and is the shipped default compiler-argument path
+for Xcode projects (since PR #108) -- this document's own remaining open question never needed to
+be answered.

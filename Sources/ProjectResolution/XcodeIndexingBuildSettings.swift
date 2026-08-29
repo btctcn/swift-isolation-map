@@ -1,9 +1,7 @@
 import Foundation
 
 /// The bare `KEY=VALUE` build-setting overrides every real `xcodebuild ... build` invocation this
-/// project makes needs, shared by both call sites that shell out to `xcodebuild`
-/// (`SwiftIsolationMap.build` and `LiveXcodeCompilerArgumentsProvider.runVerboseBuild`) so the two
-/// can never drift apart.
+/// project makes needs (`SwiftIsolationMap.build`).
 ///
 /// - `COMPILER_INDEX_STORE_ENABLE=YES`: turns on indexing-while-building (confirmed empirically --
 ///   there is no `-indexStoreEnable` flag; `xcodebuild -indexStoreEnable YES` fails with "invalid

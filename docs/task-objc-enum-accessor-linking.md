@@ -93,3 +93,8 @@ into `ExternalIsolationBackfill`'s own pre-filter/fallback chains), resolving th
 `DeclarationLinker`'s own core, shared linking logic, touching every syntactic-placeholder call site,
 not a narrow addition. Flagged as a distinct category of change, to be scoped and investigated
 separately.
+
+**Update: fixed.** Tracked as [issue #95](https://github.com/btctcn/swift-isolation-map/issues/95),
+resolved by [PR #97](https://github.com/btctcn/swift-isolation-map/pull/97) -- see
+`docs/task-syntactic-placeholder-name-collision.md` for the full fix record
+(`ownUSRByLocation`, keyed by declaration location instead of the shared bare name).

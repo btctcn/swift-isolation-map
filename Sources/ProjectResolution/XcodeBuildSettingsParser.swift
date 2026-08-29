@@ -3,7 +3,7 @@ import Foundation
 /// Pure parsing of real `xcodebuild -showBuildSettings ...` output -- a fast, **read-only** call
 /// that triggers no build at all (confirmed empirically against a real, large project: completes
 /// in seconds regardless of whether the project is up to date), unlike `-verbose build`
-/// (`XcodeBuildLogCompilerArgumentsProvider`'s slow path, only needed for the live per-file
+/// (the retired `xcodebuild -verbose` slow path, only needed for the live per-file
 /// cursor-info fallback). Used to derive the SDK path, target triple, and framework search paths
 /// for bulk `symbolgraph-extract` calls without ever running a real build.
 enum XcodeBuildSettingsParser {

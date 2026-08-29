@@ -44,7 +44,7 @@ struct CapstoneCLITests {
         // than silently reusing state left over from a previous run (or from manually compiling
         // this fixture while developing it).
         let fileManager = FileManager.default
-        for relativePath in [".build", ".swift-isolation-map-manifest.json", ".swift-isolation-map-index-db"] {
+        for relativePath in [".build", ".swift-isolation-map-manifest.json"] {
             try? fileManager.removeItem(atPath: fixtureRoot.appendingPathComponent(relativePath).path)
         }
 

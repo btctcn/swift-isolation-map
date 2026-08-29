@@ -139,3 +139,22 @@ couple of properties): already documented, already-accepted issue #55 shape
 tests in `ExternalIsolationBackfillTests.swift`, full suite (500/500) passing, real-corpus
 before/after above. Four additional clusters investigated with real evidence and explicitly left
 unresolved, reasoning documented above rather than guessed at.
+
+**Reconfirmed against a fresh real Project Iris run, 2026-08-29** (after PR #101-119, none of which
+touched these matchers):
+- Mindbox `AsyncOperation.setExecuting:`/`setFinished:` -- **not reproducible today.** Zero edges
+  referencing `AsyncOperation` appear anywhere in a fresh full run's output, even though the class
+  itself is still present in the corpus (`Pods/Mindbox/Mindbox/GuaranteedDeliveryManager/
+  GuaranteedDeliveryManager.swift:156`, now additionally annotated `@unchecked Sendable`, which it
+  wasn't at the time of the original finding). Most likely the Mindbox pod version installed in the
+  corpus has since changed the exact call shape that produced the original 2 edges -- not something
+  this project fixed. Not re-opened as an issue since there's nothing current to point at.
+- `NSMutableDictionary["key" as NSCopying]` -- **still open**, reconfirmed byte-for-byte
+  (`UIControl+Signals.swift:110,114`). Filed as
+  [issue #126](https://github.com/btctcn/swift-isolation-map/issues/126).
+- `MKCoordinateRegion.center`'s setter -- **still open**, reconfirmed
+  (`MapViewController.swift:165`). Filed as
+  [issue #127](https://github.com/btctcn/swift-isolation-map/issues/127).
+- 8 `_Release`-module-qualified USRs (issue #55 shape) -- **still present as a category** (18 such
+  edges in the fresh run, not 8 -- expected drift, this is a corpus-size-dependent count, not a
+  fixed constant). No new issue; already covered by issue #55's own accepted-limitation scope.

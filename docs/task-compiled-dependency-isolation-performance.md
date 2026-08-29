@@ -1,8 +1,11 @@
 # Task: make compiled-dependency isolation resolution fast enough for real projects
 
-**Status: not started. This is a task specification for a dedicated future session, not a
-record of completed work** (unlike every other file in `docs/`, which documents what was already
-built and verified). Written immediately after Phases A-F of
+**Status: shipped, then superseded.** (This header originally read "not started" -- a task
+specification written before the work began. Implemented and tested (202/202,
+`swift test -c release`), real-world-validated against `Project Iris` -- then superseded by
+`docs/task-compiled-dependency-isolation-usr-granularity.md`'s own deeper root-cause finding, the
+same forward-pointer its sibling doc already carries. Left unedited below as the original problem
+statement.) Written immediately after Phases A-F of
 `docs/task-compiled-dependency-isolation.md` (the original 100%-correctness task) were fully
 implemented, tested (187/187, `swift test -c release`), and then real-world-validated against
 `Project Iris` — where the *correctness* is not in question (the oracle resolves what it queries

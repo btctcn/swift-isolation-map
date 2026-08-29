@@ -1,10 +1,15 @@
 import Foundation
 import SwiftBuild
 
+func writeStderr(_ message: String, terminator: String = "\n") {
+    FileHandle.standardError.write(Data((message + terminator).utf8))
+}
+
 /// The main `CompilerArgumentsProviding` conformer for Xcode projects (promoted from EXPERIMENTAL
 /// once docs/task-swift-build-prepare-for-indexing-spike.md's Steps 13-26 real-corpus-verified it
-/// end to end on WordPress-iOS) -- `LiveXcodeCompilerArgumentsProvider` remains in the tree as a
-/// legacy/fallback conformer, no longer reachable from any CLI flag.
+/// end to end on WordPress-iOS). The `xcodebuild -verbose`-based conformer it superseded
+/// (`LiveXcodeCompilerArgumentsProvider`) was kept for a while afterward as an unreachable-from-
+/// any-CLI-flag fallback, then removed from the tree entirely.
 ///
 /// Real per-file `swiftc` compiler arguments obtained by talking to `SWBBuildService` directly via
 /// the open-source `SwiftBuild` Swift API (`swiftlang/swift-build`), bypassing `xcodebuild`'s CLI
@@ -77,15 +82,13 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         } catch {
             cachedError = error
             // Every caller of `compilerArguments(forFile:)`/`realModuleNames()` swallows failures
-            // per-file via `try?` (the same soft-failure contract `LiveXcodeCompilerArgumentsProvider`
-            // callers already rely on) -- confirmed the hard way (a real Swiftfin run, scheme/target
+            // per-file via `try?` -- confirmed the hard way (a real Swiftfin run, scheme/target
             // name mismatch, see the guard removed above) that a total provider failure was
             // otherwise completely silent: every file simply came back `argumentsNotFound`, with
             // zero indication *why*, degrading straight to `Target platform: unknown` and 0 live-
             // fallback resolutions with no diagnostic anywhere. Surfaced once here, unconditionally
-            // (not gated behind `--verbose`), mirroring `LiveXcodeCompilerArgumentsProvider`'s own
-            // "too few compiler invocations" precedent for the same reason: a plain hang/degraded-
-            // silently moment is exactly what erodes trust once results come back thin.
+            // (not gated behind `--verbose`): a plain hang/degraded-silently moment is exactly what
+            // erodes trust once results come back thin.
             writeStderr("SwiftBuild direct: compiler-argument resolution failed entirely: \(error)")
             throw error
         }
@@ -376,7 +379,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
     /// Pure: builds the arena's own paths as subpaths of `derivedDataPath` -- deliberately takes
     /// that path as a parameter rather than computing it, so this can never independently diverge
     /// from `PrivateDerivedDataLocator`'s own computation, the exact same value already threaded to
-    /// `LiveXcodeCompilerArgumentsProvider`/`SwiftIsolationMap.build`. Mirrors the real on-disk
+    /// `SwiftIsolationMap.build`. Mirrors the real on-disk
     /// layout a `-derivedDataPath`-driven `xcodebuild` build already produces
     /// (`Build/Products`/`Build/Intermediates.noindex`/`Index.noindex/DataStore`).
     static func arenaInfo(derivedDataPath: URL) -> SWBArenaInfo {

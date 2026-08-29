@@ -106,4 +106,4 @@ hidden risk," which moved numbers the other way for a different reason).
 
 ## Step 7 — PR
 
-Next.
+Merged as [#61](https://github.com/btctcn/swift-isolation-map/pull/61).

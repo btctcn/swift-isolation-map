@@ -66,7 +66,7 @@ Done — this document. `docs/README.md`'s index points here.
 
 ## Step 7 — PR
 
-Next.
+Merged as [#37](https://github.com/btctcn/swift-isolation-map/pull/37).
 
 ## Noted, not part of this task
 

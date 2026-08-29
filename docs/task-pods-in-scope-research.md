@@ -1,8 +1,12 @@
 # Research task: should `Pods`/`Carthage` sources stay in scope?
 
-**Status: research task, not a decision. Deferred out of Gap B by explicit user instruction
-("Пока оставь как есть. Оформи на это задачу на исследование") — recorded here as its own,
-separate, small note per that instruction, not blocking Gap B and not a Gap B fix.**
+**Status: research task, originally not a decision (deferred out of Gap B by explicit user
+instruction: "Пока оставь как есть. Оформи на это задачу на исследование" — recorded here as its
+own, separate, small note per that instruction, not blocking Gap B and not a Gap B fix).**
+
+**Decision (2026-08-29): will not be implemented.** No `--skip-pods`/`--include-pods` flag or
+similar scoping change will be built; `Pods`/`Carthage` sources stay in scope exactly as they are
+today. This note is kept as the record of the research, not as an open item.
 
 ## Background
 

@@ -1,8 +1,11 @@
 # Task: resolve real isolation for symbols from compiled dependencies
 
-**Status: not started. This is a task specification for a dedicated future session, not a
-record of completed work** (unlike every other file in `docs/`, which documents what was
-already built and verified). Written after a real-world validation run against two independent
+**Status: shipped.** (This header originally read "not started" -- a task specification written
+before the work began. Phases A-F below were fully implemented, tested (187/187,
+`swift test -c release`), and real-world-validated against `Project Iris`; see
+`docs/task-compiled-dependency-isolation-usr-granularity.md` and
+`docs/task-compiled-dependency-isolation-performance.md` for what followed. Left unedited below as
+the original problem statement.) Written after a real-world validation run against two independent
 production codebases (`Project Iris`, `~/SQLumen`) surfaced this as a fundamental, not cosmetic, gap.
 The user's own framing, verbatim, because it's the clearest statement of the problem: *"Это же
 относится к любому базовому классу, который приходит из скомпилированного фреймворка. Есть

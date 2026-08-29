@@ -50,8 +50,8 @@ struct BulkExtractionEnvironmentProvidingTests {
         #expect(environment.target == "arm64-apple-ios15.6")
         #expect(environment.discoveredModules.contains(DiscoveredModule(name: "Kingfisher", extractionFlags: ["-F", "/DerivedData/Debug-iphoneos"])))
         // 1 `-showdestinations` probe (unstubbed here, so it fails and is swallowed -- no
-        // destination override applies, matching `LiveXcodeCompilerArgumentsProvider`'s own tests'
-        // established shape for the exact same fail-soft probe) + 1 `-showBuildSettings` call.
+        // destination override applies, the same fail-soft probe shape used elsewhere in this
+        // project's own tests) + 1 `-showBuildSettings` call.
         #expect(runner.invocations.count == 2)
     }
 

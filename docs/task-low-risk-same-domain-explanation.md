@@ -102,4 +102,4 @@ text-only fix.
 
 ## Step 7 — PR
 
-Next.
+Merged as [#59](https://github.com/btctcn/swift-isolation-map/pull/59).

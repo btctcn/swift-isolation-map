@@ -35,8 +35,7 @@ public protocol BulkExtractionEnvironmentProviding: Sendable {
 
 /// Real, fast, read-only `xcodebuild -showBuildSettings` -- confirmed empirically to complete in
 /// seconds against a real, large project (`Project Iris`) regardless of build freshness, unlike
-/// `-verbose build`. Single-invocation-then-cache shape, mirroring
-/// `LiveXcodeCompilerArgumentsProvider`'s existing pattern.
+/// `-verbose build`. Single-invocation-then-cache shape.
 public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnvironmentProviding, @unchecked Sendable {
     private let container: ProjectContainer
     private let scheme: String
@@ -44,7 +43,7 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
     private let fileSystem: FileSystemQuerying
     /// Threaded through, never recomputed -- the same private-DerivedData invariant every other
     /// real `xcodebuild` invocation in this project already honors (`PrivateDerivedDataLocator`'s
-    /// own computation, shared with `LiveXcodeCompilerArgumentsProvider`/`SwiftIsolationMap.build`).
+    /// own computation, shared with `SwiftIsolationMap.build`).
     /// Confirmed missing here the hard way: without it, this provider's own `-showBuildSettings`
     /// call silently used Xcode's *shared* DerivedData location instead
     /// (`~/Library/Developer/Xcode/DerivedData/<Project>-<hash>`), recreating that shared folder on
@@ -84,9 +83,9 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
             preconditionFailure("LiveXcodeBulkExtractionEnvironmentProvider is only valid for .xcodeproj/.xcworkspace containers")
         }
         // Same real failure `resolveDeterministicSimulatorDestination`'s own doc comment already
-        // documents for `LiveXcodeCompilerArgumentsProvider` (a physical device paired to the
-        // machine in the past, not currently connected, sorting ahead of every Simulator
-        // destination in `-showdestinations`): without an explicit `-destination`, this provider's
+        // documents (a physical device paired to the machine in the past, not currently connected,
+        // sorting ahead of every Simulator destination in `-showdestinations`): without an
+        // explicit `-destination`, this provider's
         // own `-showBuildSettings` call resolved `PLATFORM_NAME=iphoneos` (confirmed directly
         // against a real corpus this session) even though every real build on this machine only
         // ever produces `Debug-iphonesimulator` -- every `FRAMEWORK_SEARCH_PATHS` entry this

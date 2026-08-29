@@ -163,4 +163,4 @@ every mechanism Swift offers."
 
 ## Step 7 — PR
 
-Next.
+Merged as [#60](https://github.com/btctcn/swift-isolation-map/pull/60).

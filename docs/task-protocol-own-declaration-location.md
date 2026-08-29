@@ -123,7 +123,18 @@ after (both after #51/#52/#53's fixes already shipped, so directly comparable):
 
 Not every one of the 57 candidates resolved (335 still missing, not 361-57=304) -- consistent with
 the note above that some bare-protocol-name cases likely need the live fallback on top of this fix,
-or have a distinct root cause not yet individually checked. The `highRiskBoundaries` jump (+234) is
+or have a distinct root cause not yet individually checked.
+
+**Re-checked 2026-08-29**: no later document in `docs/` mentions this specific 31-declaration
+residual (335 vs. the 304 expected) by name or number, and no later PR's own before/after table
+references it. Reproducing today's exact figure would require redoing the original methodology in
+full (demangle every currently-missing app-module USR, categorize by shape, cross-check each
+bare-protocol-name candidate against real source) -- not done as part of this pass, since the
+corpus and the tool have both changed substantially since 2026-08-07 (dozens of unrelated
+declaration/USR-matching fixes have landed since) and a cheap proxy check isn't available in the
+standard JSON output. Left as a genuinely unquantified, low-priority residual -- not reopened as an
+issue, since there's no confirmed-current number to point at, only an honest "not reverified."
+The `highRiskBoundaries` jump (+234) is
 disproportionately large relative to the 26 additional resolved declarations, and that's expected,
 not a red flag: a protocol's own identity feeds every conformance/isolation-propagation check for
 every type that conforms to it (and every witness that satisfies one of its requirements), so
@@ -134,4 +145,4 @@ previously-hidden real risk surfacing, not manufactured noise.
 
 ## Step 7 — PR
 
-Next.
+Merged as [#58](https://github.com/btctcn/swift-isolation-map/pull/58).

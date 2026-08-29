@@ -114,7 +114,7 @@ struct CompiledDependencyCLITests {
             Issue.record("No built swift-isolation-map binary found -- run `swift build` first.")
             throw CocoaError(.fileNoSuchFile)
         }
-        for relativePath in [".build", ".swift-isolation-map-manifest.json", ".swift-isolation-map-index-db"] {
+        for relativePath in [".build", ".swift-isolation-map-manifest.json"] {
             try? FileManager.default.removeItem(atPath: consumerRoot.appendingPathComponent(relativePath).path)
         }
         let result = try processRunner.run(

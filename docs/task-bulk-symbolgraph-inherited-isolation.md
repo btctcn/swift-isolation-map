@@ -108,4 +108,4 @@ what the tool was (and wasn't) reporting.
 
 ## Step 7 -- PR
 
-Next.
+Merged as [#45](https://github.com/btctcn/swift-isolation-map/pull/45).

@@ -60,9 +60,16 @@ for candidate in indexStore.baseTypeUSRs(forUSR: nominalUSR) {
 never appears as a "high-risk boundary" caller at all (it's misclassified as safely `nonisolated`),
 so real risk was being hidden, not falsely flagged. The scope of how many other Project Iris
 declarations were affected by this exact duplicate-occurrence shape wasn't separately measured; a
-re-run after this fix lands would be the way to quantify it.
+re-run after this fix lands would be the way to quantify it. **Still not quantified as of
+2026-08-29** -- no later document appears to have run that measurement.
 
-## Finding 2 (known limitation, not fixed): closure-level re-isolation isn't tracked
+## Finding 2 (known limitation at the time -- since fixed by issue #33/PR #43): closure-level re-isolation isn't tracked
+
+**Update (2026-08-29): this limitation was fixed two days after this document was written.**
+`docs/task-closure-isolation-attribution.md`'s Rule A (issue #33, merged as
+[#43](https://github.com/btctcn/swift-isolation-map/pull/43), 2026-08-05) recognizes exactly this
+shape -- a call physically inside `Task { @MainActor in ... }` is now attributed to the closure's
+own isolation, not the enclosing method's. Left below unedited as the original finding.
 
 **Symptom**: `Cart.updateCartCounter()` (project-local, genuinely `nonisolated`) was flagged as a
 high-risk caller into `CartFinalizeView.show()` (`@MainActor`). Reading the real source showed the
