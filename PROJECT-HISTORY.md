@@ -520,6 +520,16 @@ Issue: none (continues the work #117/PR #118 started; #117 itself was already cl
 Question: PR #118's own design doc identified a fourth escape-hatch shape (`@preconcurrency import Foo`) and a second severity-downgrade trigger as follow-up work, blocked on two open spikes about how to resolve a callee's own defining module name.
 Done: Both spikes turned out to target the wrong data source (system frameworks/external packages have no unit in a private index store at all) — module name is read instead from `sourcekitd`'s own `key.modulename` cursor-info field. Added a new `PreconcurrencyImportExtractor`, a `.preconcurrencyImport` finding, and the second downgrade trigger; also closed a bulk-cache `moduleName` gap PR #118 measured but deferred, after real measurement showed bulk-cache resolution is the majority path on some real corpora. Both mechanisms verified end to end on a real, full CLI pipeline (not just unit tests), and re-verified against `onevcat/Kingfisher`.
 
+## PR #128 — Fix stale doc statuses, retire experimental index-store-module-filter label, remove unreachable xcodebuild-verbose fallback (2026-08-29)
+Issue: none
+Question: A full gap inventory (docs, code comments, GitHub issues) found ~18 task-docs whose "Step 7 -- PR" or top-of-file status still read "Next."/"not started" long after the underlying work had merged, two designed-but-rejected features never marked as decided against, a stale EXPERIMENTAL flag label, and a fully unreachable legacy code path never removed.
+Done: Corrected every stale doc status with the real PR/issue number; marked suppression comments and Pods/Carthage-in-scope research as "will not implement" and removed both from the README Roadmap; filed issues #120-127 for limitations previously tracked only in code comments/task docs (including two matcher gaps reconfirmed live against a fresh Project Iris run, and two others found no longer reproducible or unquantifiable without redoing an old investigation from scratch); renamed `--experimental-index-store-module-filter` to `--index-store-module-filter` and dropped its EXPERIMENTAL framing (a deliberate, permanent defensive fallback, not something still being evaluated); removed `LiveXcodeCompilerArgumentsProvider`/`XcodeBuildLogCompilerArgumentsProvider` (~900 lines including its dedicated test file) entirely, since it was unreachable from any CLI flag.
+
+## PR #129 — Replace remaining ~/ios path mentions with the Project Iris name in prose (2026-08-30)
+Issue: none
+Question: `docs/reference-project-corpora.md` already established "Project Iris" as the name to use in prose instead of the private corpus's real path — several docs predating full adoption of that convention still said `~/ios` directly.
+Done: Replaced all such prose mentions across `PROJECT-HISTORY.md` and 6 task docs. Left untouched: the one literal, reproducible shell command using `~/ios` as a real path argument, and the two sentences in `reference-project-corpora.md` that define the convention itself by naming `~/ios` as the thing prose should avoid.
+
 ---
 
 ## Could not establish precisely
