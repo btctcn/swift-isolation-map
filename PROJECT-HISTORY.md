@@ -7,9 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-100 PRs exist in total (PR numbers up to #118, with gaps where a number belongs to an issue
-instead — see the repo's issue tracker). 18 issues exist in total, all currently closed. 23 PRs
-explicitly reference one of these issue numbers in their own title or body.
+107 PRs exist in total as of PR #133 (PR numbers up to #133, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 26 issues exist in total, 8 open (#120-127,
+tracked limitations/features filed 2026-08-29, not yet acted on) as of this writing. At least 23
+PRs explicitly reference one of the (then-18) closed issue numbers in their own title or body as of
+the original pass through this log -- not recomputed against the 8 newer open issues.
 
 ---
 
@@ -534,6 +536,21 @@ Done: Replaced all such prose mentions across `PROJECT-HISTORY.md` and 6 task do
 Issue: none
 Question: Could every acronym, tool name, Swift-language term, and project-specific term used across `README.md`/`docs/*.md` and the Swift source's own code comments be collected into one explained, alphabetized reference?
 Done: Added `docs/glossary.md`, 92 entries, sourced via 8 parallel extraction passes over docs and code comments, then manually reconciled and critically reviewed against the real source — 2 origin misclassifications ("escape hatch", "fail-soft," both established outside terms, not project-native) were caught and corrected, and a few specific technical claims were spot-checked directly against the cited file:line before being trusted. External links verified via live web search rather than guessed; terms this project coined (e.g. "the oracle") marked as such instead of linked. Linked from the root README under a new "Glossary" section.
+
+## PR #131 — Add PROJECT-HISTORY.md entries for PR #128 and #129 (2026-08-30)
+Issue: none
+Question: Both PR #128 and PR #129 had merged without a PROJECT-HISTORY.md entry being added at the time.
+Done: Added both entries retroactively, in the established per-PR format.
+
+## PR #132 — Add PROJECT-HISTORY.md entry for PR #130 (2026-08-30)
+Issue: none
+Question: PR #130 had merged without a PROJECT-HISTORY.md entry being added at the time.
+Done: Added the entry retroactively, in the established per-PR format.
+
+## PR #133 — Fix -enable-anonymous-context-mangled-names stderr noise at the root cause (2026-08-30)
+Issue: #120
+Question: Issue #120 tracked a known, harmless `sourcekitd` stderr diagnostic caused by `-enable-anonymous-context-mangled-names` being auto-re-injected by `sourcekitd`'s own driver-emulation logic and then rejected by the current toolchain — previously left unfixed because the only known mitigation (fd-2 interception) was judged too fragile.
+Done: Root-caused precisely against real `swiftlang/swift` source (`lib/Driver/ToolChains.cpp`/`Options.td`): the injection triggers only on bare `-g` with no `-O`/with `-Onone`, exactly what a real Debug build passes. `CompilerArgumentsSanitizing.sanitized(_:)` now strips that one token before querying `sourcekitd`, since a semantic-only `cursorinfo` query never needed debug info. A real fd-2 interception attempt was tried first, immediately crashed with `SIGPIPE` under parallel test execution, and was deliberately not kept — real evidence over a theoretical concern. Controlled real-corpus verification (same index store, same corpus state, via `git stash`): 52 diagnostic occurrences → 0, plus a genuine correctness bonus of 10 previously completely-missing report edges now correctly surfacing as unresolved rather than being silently dropped, traced to `AnalysisReportBuilder`'s own edge-crossing gate.
 
 ---
 
