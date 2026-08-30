@@ -53,3 +53,23 @@ func passesThroughSafeArguments() {
     let arguments = ["-sdk", "/SDK", "-target", "arm64-apple-macosx13.0", "-I", "/deps", "-swift-version", "6", "/proj/A.swift"]
     #expect(CompilerArgumentsSanitizing.sanitized(arguments) == arguments)
 }
+
+/// Root cause of the `-enable-anonymous-context-mangled-names` stderr noise (issue #120): a real
+/// Debug-configuration build's own compiler arguments are exactly bare `-g` plus `-Onone` (no
+/// `-O`) -- confirmed against this project's own real captured fixture build logs
+/// (`Tests/Fixtures/*/.build/debug.yaml`) -- which is precisely `lib/Driver/ToolChains.cpp`'s own
+/// real trigger condition for auto-injecting the flag the current toolchain then rejects.
+@Test("Drops bare -g (the real trigger for sourcekitd's own buggy -enable-anonymous-context-mangled-names reinjection)")
+func dropsDebugInfoFlagThatTriggersSourcekitdsBuggyReinjection() {
+    let sanitized = CompilerArgumentsSanitizing.sanitized([
+        "-module-name", "Demo", "-Onone", "-g", "-sdk", "/SDK", "/proj/A.swift"
+    ])
+    #expect(!sanitized.contains("-g"))
+    #expect(sanitized == ["-module-name", "Demo", "-Onone", "-sdk", "/SDK", "/proj/A.swift"])
+}
+
+@Test("Does not drop -gnone/-gline-tables-only/-gdwarf-types -- each is its own, separate option ID that never triggers the reinjection, confirmed against real swift Options.td")
+func keepsOtherDebugInfoVariantsThatDoNotTriggerReinjection() {
+    let arguments = ["-gnone", "-gline-tables-only", "-gdwarf-types", "-sdk", "/SDK"]
+    #expect(CompilerArgumentsSanitizing.sanitized(arguments) == arguments)
+}

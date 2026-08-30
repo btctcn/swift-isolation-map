@@ -1,7 +1,10 @@
 # Investigation: `-enable-anonymous-context-mangled-names` stderr noise
 
-**Status: root-caused, not fixed, not filed upstream.** Real, reproducible, harmless to actual
-results. Deliberately left unsuppressed -- see "Why not suppressed" below.
+**Status: fixed at the root cause (2026-08-30, see "Fixed" section at the end) -- not by
+suppressing the symptom, but by removing the one argument (`-g`) that makes `sourcekitd`'s own
+driver-emulation logic auto-inject the flag it then rejects.** Everything through "Revisited" below
+is the real, chronological record of how that was found -- including a real, working fd-2
+interception attempt that was tried, empirically proven fragile, and deliberately not kept.
 
 ## Symptom
 
@@ -90,3 +93,103 @@ shape does not reproduce it deterministically.
   a safe, non-racy interception method is found, or if the noise volume becomes large enough to
   matter in practice (currently ~0.1% of real oracle queries on the largest real corpus this project
   has).
+
+## Revisited (2026-08-30): a real attempt at fd-2 interception, and why it's still not viable
+
+Re-examined the "not suppressed" reasoning above against real source, not just restated it.
+**Refinement, confirmed by reading every real call site**: every path that reaches `sourcekitd` in
+this project (`ExternalIsolationBackfill.query`, `LocalDeclarationLiveFallback.resolveOne`) is
+driven by a plain sequential `for item in ... { await ... }` loop -- at most one `cursorinfo` round
+trip is ever in flight in a given *process* at a time. `--oracle-workers N`'s own parallelism is
+strictly inter-process (`withTaskGroup` spawns one real subprocess per chunk; each worker's own
+`sourcekitd` runs in its own process with its own independent file descriptor table) -- a `dup2` in
+one worker process cannot affect a sibling's fd 2 at all, since fd tables aren't shared across
+processes here. So the specific "multiple *processes* sharing one process-wide fd 2" framing above
+was imprecise: processes don't share an fd table; the only real hazard is *intra*-process
+concurrency, which the sequential-dispatch invariant above rules out for every current call site.
+
+Built a real, working implementation anyway (a `dup2`-based capture-and-filter wrapper around
+`SourceKitDClient.blockingSendRequestSync`, with unit tests covering the exact call shape:
+`sourcekitd`'s own real write pattern, a raw libc `write(2, ...)` from a detached background
+thread). **Immediate, concrete negative result**: running the new tests via a plain `swift test`
+(parallel by default locally, unlike this project's own `--no-parallel` CI) crashed the entire test
+process with `SIGPIPE` (signal 13) -- two `@Test` functions, each independently redirecting the
+same real, process-wide `STDERR_FILENO` at the same moment (Swift Testing's own default parallel
+execution), collided. This is real, reproduced evidence for exactly the class of risk the original
+"not suppressed" decision was written to avoid *before* it had a concrete failure to point to --
+not a theoretical worry, a real crash on the first real attempt.
+
+**Decision, reaffirmed with stronger evidence**: still not suppressed. Even though this project's
+own current production call sites are provably sequential, a `dup2`-based interception around a
+process-wide resource is exactly the kind of fix that silently breaks the moment anyone (this
+project or a future contributor) adds any real concurrency near it -- a fragile invariant to build a
+permanent guardrail on top of, for a purely cosmetic, already-proven-harmless annoyance. The
+attempted implementation and its tests were not kept in the tree.
+
+## Fixed (2026-08-30): remove the trigger condition itself, not the symptom
+
+Interception was the wrong shape of fix entirely -- it treats the diagnostic as unavoidable and
+tries to catch it after the fact. Going back to the root-cause paragraph above ("What it is not")
+with fresh eyes: the injection is conditional, not unconditional. Read the real trigger directly
+from `swiftlang/swift`'s current source:
+
+`lib/Driver/ToolChains.cpp`:
+```cpp
+if (inputArgs.hasArg(options::OPT_g)) {
+  auto OptArg = inputArgs.getLastArgNoClaim(options::OPT_O_Group);
+  if (!OptArg || OptArg->getOption().matches(options::OPT_Onone))
+    arguments.push_back("-enable-anonymous-context-mangled-names");
+```
+
+`include/swift/Option/Options.td` confirms `OPT_g` matches *only* the bare `-g` flag -- `-gnone`/
+`-gline-tables-only`/`-gdwarf-types` are each their own, separate option ID (sharing `g_Group` for
+help-text grouping only, not aliased to `-g`). A real Debug-configuration build (Xcode's own
+default, and SwiftPM's) is exactly bare `-g` plus `-Onone`/no `-O` at all -- confirmed against this
+project's own real captured fixture build logs (`Tests/Fixtures/*/.build/debug.yaml`), matching the
+trigger condition precisely.
+
+**The fix**: `CompilerArgumentsSanitizing.sanitized(_:)` now also drops the literal `-g` token (and
+only that literal token -- `-gnone`/`-gline-tables-only`/`-gdwarf-types` are left untouched, since
+none of them match `OPT_g`) before building `key.compilerargs`. `cursorinfo`'s own semantic query
+(type/USR/isolation-attribute lookup against an already-type-checked AST) has no use for debug
+info at all -- debug info is generated during SILGen/IRGen, strictly after the semantic analysis
+`cursorinfo` reads from, so removing `-g` cannot change what a query is able to resolve.
+
+**Real, controlled verification against Project Iris** -- same on-disk index store, same corpus
+state, two back-to-back CLI invocations differing only in this one code change (confirmed via
+`git stash`, not by comparing runs taken at different times):
+
+| | before (`-g` present) | after (`-g` stripped) |
+|---|---|---|
+| `-enable-anonymous-context-mangled-names` diagnostic occurrences | 52 | **0** |
+| Unique call-graph edges in report | 1505 | **1515 (+10)** |
+| `unspecifiedIsolation` | 233 | **234 (+1)** |
+| `highRiskBoundaries` | 1462 | 1462 (unchanged) |
+
+**A real bonus found, not just noise removed**: the 10 new edges are not noise-related duplicates --
+they're genuinely new report entries, all sharing one previously-entirely-absent calleeUSR
+(`os.OSLogInterpolation.appendInterpolation(_:align:privacy:)`, matching this doc's own "What
+triggers it" list above), now correctly surfaced as `isUnknown: true` (`calleeIsolation:
+"unspecified"`) rather than being missing from the report altogether. Traced to
+`AnalysisReportBuilder.swift`'s own edge-crossing gate (`guard declaredCallerIsolation !=
+calleeIsolation || callerIsolation != calleeIsolation else { return nil }`): an edge is excluded
+from the report entirely -- not just left unflagged -- whenever caller and callee isolation happen
+to be equal, including the degenerate case where *both* sides are `.unspecified` because neither
+ever resolved. The callee's own isolation stays `.unspecified` in both the before and after run
+(confirmed directly in the JSON output; `os` is not one of `BulkSymbolGraphExtractor.defaultModules`,
+so it was never going to resolve via the bulk cache either way) -- so for these 10 edges to newly
+pass the crossing gate, the *caller*'s own isolation (`ConsoleErrorReporter`'s methods, a
+project-local declaration) must have resolved successfully only in the "after" run. This points at
+the same root cause reaching further than the one exact hover position originally measured: building
+a file's AST for *any* live query targeting a declaration in that file appears able to fail once
+that file also contains one of the three known trigger call shapes, not only when the query
+literally hovers the trigger position itself -- consistent with the original investigation's own
+unexplained "something about scale/accumulated state" note above. **Not independently re-confirmed
+with dedicated instrumentation on the caller's own resolution path** (would require a further,
+separate live-fallback-specific repro to prove beyond the edge-count evidence above) -- reported as
+a well-evidenced but not fully step-by-step-traced mechanism, not asserted as fully proven.
+
+**Verification**: `swift test` 581/581 passing (2 new unit tests added:
+`dropsDebugInfoFlagThatTriggersSourcekitdsBuggyReinjection`,
+`keepsOtherDebugInfoVariantsThatDoNotTriggerReinjection`,
+`Tests/SourceKitDIntegrationTests/CompilerArgumentsSanitizingTests.swift`).
