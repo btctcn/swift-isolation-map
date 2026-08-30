@@ -304,7 +304,14 @@ struct SwiftIsolationMap: ParsableCommand {
         var extractionResults: [ExtractionResult] = []
         eprint("Parsing \(sourceFiles.count) Swift source file(s)...")
         for file in sourceFiles {
-            let result = try analyzer.analyze(fileAt: file, platform: targetPlatform)
+            // Issue #121: this file's own real, active `#if <name>` custom-condition set, parsed
+            // from its own real compiler arguments -- `nil` (permissive, matching `.unknown`
+            // platform's own fail-safe direction) when this file's arguments can't be resolved at
+            // all (excluded from the analyzed target, a different scheme, etc.), never an empty set
+            // masquerading as "confirmed nothing is set."
+            let activeCustomConditions = (try? compilerArguments.compilerArguments(forFile: file.path))
+                .map { ActiveCustomConditionParsing.parse(fromCompilerArguments: $0) }
+            let result = try analyzer.analyze(fileAt: file, platform: targetPlatform, activeCustomConditions: activeCustomConditions)
             currentHashes[file.path] = result.contentHash
             extractionResults.append(ExtractionResult(
                 declarations: result.declarations, protocolGlobalActorNames: result.protocolGlobalActorNames,
