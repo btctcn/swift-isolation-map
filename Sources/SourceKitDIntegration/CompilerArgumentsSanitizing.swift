@@ -66,6 +66,34 @@ public enum CompilerArgumentsSanitizing {
         "-working-directory": true
     ]
 
+    /// Root cause of the `<unknown>:0: error: unknown argument: '-enable-anonymous-context-mangled-
+    /// names'` stderr noise (docs/task-anonymous-context-mangled-names-noise.md, issue #120) --
+    /// confirmed directly against real `swiftlang/swift` source, not the frontend-rejection
+    /// reasoning `frontendOnlyFlags` above documents (bare `-g` is itself a perfectly valid driver
+    /// argument; sourcekitd never rejects *it*). `lib/Driver/ToolChains.cpp`'s real condition:
+    ///
+    /// ```cpp
+    /// if (inputArgs.hasArg(options::OPT_g)) {
+    ///   auto OptArg = inputArgs.getLastArgNoClaim(options::OPT_O_Group);
+    ///   if (!OptArg || OptArg->getOption().matches(options::OPT_Onone))
+    ///     arguments.push_back("-enable-anonymous-context-mangled-names");
+    /// ```
+    ///
+    /// -- confirmed against `include/swift/Option/Options.td` that `OPT_g` matches *only* the bare
+    /// `-g` flag, never `-gnone`/`-gline-tables-only`/`-gdwarf-types` (each its own, separate option
+    /// ID, despite sharing `g_Group` for help-text organization only) -- so removing exactly the
+    /// literal `-g` token, and nothing else in that family, is both necessary and sufficient to stop
+    /// sourcekitd's own driver-emulation logic from ever reaching this branch. A real Debug-
+    /// configuration build (Xcode's own default, and SwiftPM's) is exactly `-g` plus `-Onone`/no
+    /// `-O` at all -- confirmed against this project's own real captured fixture build logs
+    /// (`Tests/Fixtures/*/.build/debug.yaml`), matching the condition precisely. `cursorinfo`'s own
+    /// semantic query (type/USR/isolation-attribute lookup on an already-type-checked AST) has no
+    /// use for debug info at all, so dropping `-g` changes nothing about what a query can resolve --
+    /// confirmed via a real before/after CLI run against Project Iris (docs/task-anonymous-context-
+    /// mangled-names-noise.md): byte-identical `crossActorBoundaries`/`highRiskBoundaries`/
+    /// `unspecifiedIsolation`, zero occurrences of the diagnostic in a previously-reproducing run.
+    private static let debugInfoFlagsThatTriggerSourcekitdsOwnBuggyReinjection: Set<String> = ["-g"]
+
     public static func sanitized(_ arguments: [String]) -> [String] {
         var result: [String] = []
         var skipNext = false
@@ -76,6 +104,9 @@ public enum CompilerArgumentsSanitizing {
             }
             if let takesValue = frontendOnlyFlags[argument] {
                 skipNext = takesValue
+                continue
+            }
+            if debugInfoFlagsThatTriggerSourcekitdsOwnBuggyReinjection.contains(argument) {
                 continue
             }
             result.append(argument)
