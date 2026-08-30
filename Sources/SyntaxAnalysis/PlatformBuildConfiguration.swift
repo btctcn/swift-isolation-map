@@ -36,27 +36,40 @@ public enum TargetPlatform: Sendable, Equatable {
 /// that excises inactive regions from the tree, which would shift every downstream declaration's
 /// line/column relative to the real file on disk.)
 ///
-/// Deliberately narrow beyond `os(...)`/`canImport(...)`: every other `BuildConfiguration` query
-/// below answers permissively (`true`, "assume active") rather than attempting a fully faithful
-/// re-implementation of the real compiler's build-configuration evaluation. Two concrete reasons,
-/// not just caution for its own sake:
+/// Deliberately narrow beyond `os(...)`/`canImport(...)`/custom `-D` conditions (issue #121):
+/// every other `BuildConfiguration` query below answers permissively (`true`, "assume active")
+/// rather than attempting a fully faithful re-implementation of the real compiler's
+/// build-configuration evaluation. Two concrete reasons, not just caution for its own sake:
 /// - This project's own real corpus builds *multiple* architectures for one destination (a generic
 ///   `iOS Simulator` destination produces both `arm64` and `x86_64` `swiftc` invocations for the
 ///   same target -- confirmed directly against `Cartography`'s own real captured build log) --
 ///   answering `isActiveTargetArchitecture` for one specific architecture would incorrectly treat
 ///   the *other*, equally real architecture's own `#if arch(...)`-guarded code as dead.
-/// - `os(...)`/`canImport(...)` are the two mechanisms this investigation's own real corpus (four
-///   independent third-party dependencies: Cartography, Kingfisher, SwiftRichString, PromiseKit)
-///   was confirmed to actually hit; the remaining `BuildConfiguration` axes (custom `-D` flags,
-///   language/compiler version checks, target environment, runtime, pointer authentication, object
-///   format) are real but unconfirmed here, and answering them wrong risks trading one class of
-///   false negative (a phantom declaration, this fix's whole point) for a different one (a real
-///   declaration silently dropped because this project guessed a flag/version wrong).
+/// - `os(...)`/`canImport(...)`/custom `-D` conditions are the three mechanisms confirmed to
+///   actually matter against real corpora: `os`/`canImport` against four independent third-party
+///   dependencies (Cartography, Kingfisher, SwiftRichString, PromiseKit); custom conditions against
+///   Project Iris's own app code (`#if DEBUG`/`#else` gating two competing `MoyaPlugins.logOptions`
+///   declarations, and several other declaration-level `#if DEBUG` guards -- issue #121's own
+///   follow-up). The remaining `BuildConfiguration` axes (language/compiler version checks beyond
+///   the two below, target environment, runtime, pointer authentication, object format) are real
+///   but still unconfirmed against any real corpus available to this project -- re-checked
+///   directly against both Project Iris and SQLumen (2026-08-30), zero declaration-level usages of
+///   any of them found (`targetEnvironment(simulator)` appears exactly once in Project Iris, but
+///   only around plain statements inside a function body, never gating a declaration). Answering
+///   them wrong risks trading one class of false negative (a phantom declaration) for a different
+///   one (a real declaration silently dropped because this project guessed a flag/version wrong),
+///   so they stay permissive until real evidence says otherwise, same discipline that motivated
+///   fixing `isCustomConditionSet` once real evidence for *it* appeared.
 public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
     public let platform: TargetPlatform
+    /// This file's own real, active `#if <name>` custom-condition set (issue #121) -- `nil` means
+    /// unresolvable (no compiler arguments for this file, mirroring `platform == .unknown`), which
+    /// `isCustomConditionSet` treats permissively, same fail-safe direction as `platform`.
+    private let activeCustomConditions: Set<String>?
 
-    public init(platform: TargetPlatform) {
+    public init(platform: TargetPlatform, activeCustomConditions: Set<String>? = nil) {
         self.platform = platform
+        self.activeCustomConditions = activeCustomConditions
     }
 
     /// Real `#if os(...)` name aliases -- confirmed against a real third-party source
@@ -111,9 +124,20 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
         return availableOn.contains(platform)
     }
 
+    /// Real `-D<name>`/`-D <name>` custom conditions (issue #121) -- confirmed against Project
+    /// Iris's own real captured compiler arguments for an Xcode target: both the joined form
+    /// (`-DDEBUG`, standalone, never preceded by `-Xcc`) and the split form (`-D`, `COCOAPODS`, as
+    /// two separate array elements) are real, both un-prefixed by `-Xcc`. Every `-D...=...` form
+    /// observed was *always* immediately preceded by `-Xcc` (a Clang/Objective-C preprocessor
+    /// macro, e.g. `-Xcc -DPB_FIELD_32BIT=1` from a nanopb-generated header) -- categorically
+    /// unrelated to Swift's own `#if <name>` evaluation, so anything immediately after a literal
+    /// `-Xcc` token is skipped entirely, joined or split.
+    public func isCustomConditionSet(name: String) throws -> Bool {
+        activeCustomConditions?.contains(name) ?? true
+    }
+
     // MARK: - Deliberately permissive (see this type's own doc comment)
 
-    public func isCustomConditionSet(name: String) throws -> Bool { true }
     public func hasFeature(name: String) throws -> Bool { true }
     public func hasAttribute(name: String) throws -> Bool { true }
     public func isActiveTargetArchitecture(name: String) throws -> Bool { true }
@@ -130,6 +154,47 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
     /// available" as usually-true keeps that code active rather than silently dropping it.
     public var languageVersion: VersionTuple { VersionTuple(6, 0) }
     public var compilerVersion: VersionTuple { VersionTuple(6, 0) }
+}
+
+/// Extracts the real, active Swift `#if <name>` custom-condition set from one file's own real
+/// compiler arguments (issue #121) -- feeds `PlatformBuildConfiguration.isCustomConditionSet`.
+///
+/// **Real grammar, confirmed against Project Iris's own real captured Xcode compiler arguments,
+/// not guessed**: a Swift-driver custom condition appears as either the joined form (`-DDEBUG`,
+/// one array element) or the split form (`-D`, `COCOAPODS`, two consecutive array elements) --
+/// both real, both observed in the same real argument list, neither one a stand-in for the other.
+/// **The one real trap**: `-Xcc`-prefixed arguments look identical (`-Xcc -DPB_FIELD_32BIT=1`,
+/// `-Xcc -DDEBUG=1`) but are Clang/Objective-C preprocessor macros passed through to header
+/// compilation -- categorically unrelated to Swift's own `#if` evaluation. Every real `-D...=...`
+/// (with a value) observed was *always* `-Xcc`-prefixed; a bare Swift condition never carries `=`.
+/// Distinguishing the two isn't optional politeness -- treating a Clang macro as a Swift condition
+/// would make `#if COCOAPODS`-style guards answer based on the wrong axis entirely.
+public enum ActiveCustomConditionParsing {
+    public static func parse(fromCompilerArguments arguments: [String]) -> Set<String> {
+        var result: Set<String> = []
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "-Xcc" {
+                // The one argument immediately after `-Xcc` is Clang-destined, whatever it looks
+                // like -- skip both, never inspect the Clang-destined one as if it were Swift's own.
+                index += 2
+                continue
+            }
+            if argument == "-D" {
+                if index + 1 < arguments.count {
+                    result.insert(arguments[index + 1])
+                }
+                index += 2
+                continue
+            }
+            if argument.hasPrefix("-D"), !argument.contains("=") {
+                result.insert(String(argument.dropFirst(2)))
+            }
+            index += 1
+        }
+        return result
+    }
 }
 
 /// Every `SyntaxAnalysis` extractor's own visitor base class -- behaves exactly like

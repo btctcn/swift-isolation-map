@@ -79,14 +79,18 @@ public struct ExtractionResult: Equatable, Sendable {
 }
 
 public enum DeclarationExtractor {
-    public static func extract(source: String, fileName: String, platform: TargetPlatform = .unknown) -> [DeclarationInfo] {
-        extractWithContext(source: source, fileName: fileName, platform: platform).declarations
+    public static func extract(
+        source: String, fileName: String, platform: TargetPlatform = .unknown, activeCustomConditions: Set<String>? = nil
+    ) -> [DeclarationInfo] {
+        extractWithContext(source: source, fileName: fileName, platform: platform, activeCustomConditions: activeCustomConditions).declarations
     }
 
-    public static func extractWithContext(source: String, fileName: String, platform: TargetPlatform = .unknown) -> ExtractionResult {
+    public static func extractWithContext(
+        source: String, fileName: String, platform: TargetPlatform = .unknown, activeCustomConditions: Set<String>? = nil
+    ) -> ExtractionResult {
         let tree = Parser.parse(source: source)
         let converter = SourceLocationConverter(fileName: fileName, tree: tree)
-        let configuration = PlatformBuildConfiguration(platform: platform)
+        let configuration = PlatformBuildConfiguration(platform: platform, activeCustomConditions: activeCustomConditions)
 
         let fileWideNames = FileWideNameCollector.collect(from: tree, configuration: configuration)
         let (index, protocolGlobalActorNames, protocolRequirementGlobalActorNames, protocolInheritedProtocolNames) = TypeIndexBuilder.buildIndex(
