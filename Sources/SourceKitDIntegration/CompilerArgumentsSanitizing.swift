@@ -94,6 +94,38 @@ public enum CompilerArgumentsSanitizing {
     /// `unspecifiedIsolation`, zero occurrences of the diagnostic in a previously-reproducing run.
     private static let debugInfoFlagsThatTriggerSourcekitdsOwnBuggyReinjection: Set<String> = ["-g"]
 
+    /// docs/task-anonymous-context-mangled-names-noise.md's own real-corpus verification found that
+    /// stripping `-g` lets sourcekitd's internal driver-emulation logic proceed *further* into its
+    /// own default-argument computation than it could before -- issue #135 (docs/task-external-
+    /// plugin-path-noise.md) is the second, separate bug that further progress newly reaches, not a
+    /// regression in the `-g` fix itself. Investigating *why* `-g`'s presence had been masking it led
+    /// to this file's real root cause, fixed directly above (the `-Xcc`/`-Xfrontend` orphan repair in
+    /// `sanitized(_:)`) -- `-external-plugin-path` itself needs no special-casing at all once that
+    /// repair is in place; it was never sourcekitd's own value that was the problem (an early attempt
+    /// to supply a correct, verified-existing toolchain-relative value in its place was empirically
+    /// falsified: identical error count, just renamed). A real, isolated-file A/B against Project
+    /// Iris confirmed the fix directly: dropping the blanket `-external-plugin-path` strip this entry
+    /// used to also carry *increased* `crossActorBoundaries` by 10 and `unspecifiedIsolation` by 2,
+    /// converging exactly on the same numbers a real pre-issue-#120 build (`-g` still present, before
+    /// either fix existed) produces -- the blanket strip had been silently masking a real 10-edge
+    /// discrepancy the `-Xcc`/`-Xfrontend` repair actually resolves, not just hides.
+    ///
+    /// `-plugin-path` is the one entry still kept here, for a *separate*, confirmed-but-narrower
+    /// defect: a real Swift Testing target file legitimately carries `-plugin-path <toolchain>/usr/
+    /// lib/swift/host/plugins/testing` -- a real, correct, *existing* directory, put there by the
+    /// real build system itself, unrelated to any `-Xcc` orphaning (confirmed: no `-Xcc` precedes it
+    /// in the real captured arguments). sourcekitd's own `fileContentsForFilesInCompilerInvocation`/
+    /// `getBufferStamp` file-content pre-loading step still can't tell a directory from a file it
+    /// should read, failing with "Is a directory" -- reproduced directly via a live `lldb` breakpoint
+    /// on `ArgsToFrontendInputsConverter::addFile` for this exact value. Not observed at real Project
+    /// Iris corpus scale in practice (a real A/B with this entry disabled found zero "Is a directory"
+    /// occurrences and byte-identical `crossActorBoundaries`/`highRiskBoundaries`/`unspecifiedIsolation`
+    /// either way) -- kept anyway as a cheap, confirmed-harmless defensive fix for the one file shape
+    /// that does trigger it.
+    private static let pluginPathFlagsThatSourcekitdMisreadsAsFileContent: [String: Bool] = [
+        "-plugin-path": true
+    ]
+
     public static func sanitized(_ arguments: [String]) -> [String] {
         var result: [String] = []
         var skipNext = false
@@ -103,10 +135,38 @@ public enum CompilerArgumentsSanitizing {
                 continue
             }
             if let takesValue = frontendOnlyFlags[argument] {
+                // `-fretain-comments-from-system-headers` (and potentially others in this list)
+                // can arrive as the tail of a real `-Xcc -Xclang -Xcc <flag>` unit -- Swift's own
+                // idiom for forwarding a flag straight to Clang's cc1, bypassing its driver
+                // (confirmed directly against a real Project Iris file,
+                // docs/task-external-plugin-path-noise.md, issue #135's real root cause). Dropping
+                // only the trailing `<flag>` -- or naively popping just the immediately-preceding
+                // `-Xcc` -- corrupts every *other*, untouched `-Xcc -Xclang -Xcc <flag>` unit that
+                // follows: Clang's own driver re-pairs "-Xclang" with whatever token the shifted
+                // count leaves next to it. Confirmed the hard way: a real, reproduced cascading
+                // "-Xclang: unknown argument" failure from the naive single-token-pop version of
+                // this fix. Removing the whole 4-token unit keeps every other unit's own pairing
+                // intact.
+                if result.count >= 3, result[result.count - 1] == "-Xcc",
+                   result[result.count - 2] == "-Xclang", result[result.count - 3] == "-Xcc" {
+                    result.removeLast(3)
+                } else if result.last == "-Xcc" || result.last == "-Xfrontend" {
+                    // `-Xfrontend <flag>` is the same real idiom as `-Xcc <flag>`, one level up
+                    // (forwards `<flag>` straight to `swift-frontend`, bypassing the *driver's* own
+                    // validation) -- confirmed against a second, real orphaning case in the same
+                    // file: `-Xfrontend -empty-abi-descriptor`. Popping only the trailing flag here
+                    // leaves a bare `-Xfrontend` that then swallows whatever real token comes next
+                    // (here, the start of the next unit's own `-Xcc`), corrupting it identically.
+                    result.removeLast()
+                }
                 skipNext = takesValue
                 continue
             }
             if debugInfoFlagsThatTriggerSourcekitdsOwnBuggyReinjection.contains(argument) {
+                continue
+            }
+            if let takesValue = pluginPathFlagsThatSourcekitdMisreadsAsFileContent[argument] {
+                skipNext = takesValue
                 continue
             }
             result.append(argument)

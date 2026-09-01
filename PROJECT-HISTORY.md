@@ -7,11 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-107 PRs exist in total as of PR #133 (PR numbers up to #133, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 26 issues exist in total, 8 open (#120-127,
-tracked limitations/features filed 2026-08-29, not yet acted on) as of this writing. At least 23
-PRs explicitly reference one of the (then-18) closed issue numbers in their own title or body as of
-the original pass through this log -- not recomputed against the 8 newer open issues.
+109 PRs exist in total as of PR #136 (PR numbers up to #136, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 27 issues exist in total, 7 open (#122-127, #135)
+as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers
+in their own title or body as of the original pass through this log -- not recomputed against the
+newer open issues.
 
 ---
 
@@ -556,6 +556,11 @@ Done: Root-caused precisely against real `swiftlang/swift` source (`lib/Driver/T
 Issue: #121
 Question: Issue #121 tracked `PlatformBuildConfiguration.isCustomConditionSet` hardcoding every `#if <name>` custom condition to `true`, with the issue's own text explicitly scoping any fix to "revisit if a real corpus surfaces a problem" rather than requesting eager work on any axis.
 Done: Checked all 8 other permissive axes against both real corpora available to this project (Project Iris, SQLumen) first — zero declaration-level evidence for any of them, left as-is with an updated doc comment recording the check. Found real evidence specifically for `isCustomConditionSet`: 12 real `#if DEBUG`/`#if !DEBUG` occurrences in Project Iris's own app code, including two competing declarations of the same name (`MoyaPlugins.swift`'s `logOptions`) gated one per branch. Implemented `ActiveCustomConditionParsing`, reading a file's own real, active `-D<name>` set (both joined and split forms, confirmed against Project Iris's own captured compiler arguments; anything after `-Xcc` correctly excluded as a Clang macro). Real, controlled before/after verification against Project Iris found both directions of risk this mechanism exists to balance were actually present in `Pods/PromiseKit`: 3 phantom deprecated-method declarations (gated by a condition not actually defined for this build) correctly removed, and 1 real declaration (the negated-condition case, `#if !SWIFT_PACKAGE`) correctly recovered — zero edges or `highRiskBoundaries` changed.
+
+## PR #136 — Fix -Xcc/-Xfrontend token orphaning that misroutes -external-plugin-path as a source file (2026-09-01)
+Issue: #135
+Question: Issue #135 tracked `sourcekitd` stderr noise (6269-6921 occurrences per Project Iris run) that appeared immediately after PR #133 stripped `-g` — two shapes, `-external-plugin-path <SDK>/...#.../swift-plugin-server (No such file or directory)` and `-plugin-path .../host/plugins/testing (Is a directory)`, both from `fileContentsForFilesInCompilerInvocation` misreading a plugin-search argument's value as a source file.
+Done: A first fix attempt (supplying our own correct, `ls`-verified toolchain-relative `-external-plugin-path` value) was empirically falsified — identical error count, just renamed. A second attempt (blanket-stripping `-plugin-path`/`-external-plugin-path`) eliminated the noise and was verified as zero-regression, but a live `lldb` session against the real shipped `sourcekitdInProc` binary (no Swift-from-source build needed — full symbol tables already present) found the real root cause instead: `CompilerArgumentsSanitizing.sanitized(_:)` was dropping `-fretain-comments-from-system-headers`/`-empty-abi-descriptor` as bare tokens, orphaning the real `-Xcc`/`-Xfrontend` that precedes them in real Project Iris arguments, which then swallowed Apple's own internally-injected `-external-plugin-path` as its own value — leaving that flag's value as a stray positional. Removing the whole `-Xcc -Xclang -Xcc <flag>` unit (or `-Xfrontend <flag>` pair) instead of just the trailing token fixes this at the root; `-external-plugin-path` needs no special-casing at all once fixed. A real A/B against Project Iris found the blanket strip had itself been silently masking a genuine 10-edge/2-`unspecifiedIsolation` discrepancy relative to the true, uncorrupted baseline (the exact numbers a pre-#120 build with `-g` still present produces) — the real fix recovers those, confirmed deterministic across three independent full-corpus runs. `-plugin-path` is kept as a separate, narrower, confirmed-safe defensive strip for the unrelated Swift Testing case.
 
 ---
 
