@@ -7,10 +7,10 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-109 PRs exist in total as of PR #136 (PR numbers up to #136, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 27 issues exist in total, 7 open (#122-127, #135)
-as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers
-in their own title or body as of the original pass through this log -- not recomputed against the
+110 PRs exist in total as of PR #137 (PR numbers up to #137, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 27 issues exist in total, 6 open (#122-127) as of
+this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+their own title or body as of the original pass through this log -- not recomputed against the
 newer open issues.
 
 ---
@@ -561,6 +561,11 @@ Done: Checked all 8 other permissive axes against both real corpora available to
 Issue: #135
 Question: Issue #135 tracked `sourcekitd` stderr noise (6269-6921 occurrences per Project Iris run) that appeared immediately after PR #133 stripped `-g` — two shapes, `-external-plugin-path <SDK>/...#.../swift-plugin-server (No such file or directory)` and `-plugin-path .../host/plugins/testing (Is a directory)`, both from `fileContentsForFilesInCompilerInvocation` misreading a plugin-search argument's value as a source file.
 Done: A first fix attempt (supplying our own correct, `ls`-verified toolchain-relative `-external-plugin-path` value) was empirically falsified — identical error count, just renamed. A second attempt (blanket-stripping `-plugin-path`/`-external-plugin-path`) eliminated the noise and was verified as zero-regression, but a live `lldb` session against the real shipped `sourcekitdInProc` binary (no Swift-from-source build needed — full symbol tables already present) found the real root cause instead: `CompilerArgumentsSanitizing.sanitized(_:)` was dropping `-fretain-comments-from-system-headers`/`-empty-abi-descriptor` as bare tokens, orphaning the real `-Xcc`/`-Xfrontend` that precedes them in real Project Iris arguments, which then swallowed Apple's own internally-injected `-external-plugin-path` as its own value — leaving that flag's value as a stray positional. Removing the whole `-Xcc -Xclang -Xcc <flag>` unit (or `-Xfrontend <flag>` pair) instead of just the trailing token fixes this at the root; `-external-plugin-path` needs no special-casing at all once fixed. A real A/B against Project Iris found the blanket strip had itself been silently masking a genuine 10-edge/2-`unspecifiedIsolation` discrepancy relative to the true, uncorrupted baseline (the exact numbers a pre-#120 build with `-g` still present produces) — the real fix recovers those, confirmed deterministic across three independent full-corpus runs. `-plugin-path` is kept as a separate, narrower, confirmed-safe defensive strip for the unrelated Swift Testing case.
+
+## PR #137 — Fix stale doc comment: issue #122's compression gap was already closed by PR #99 (2026-09-01)
+Issue: #122
+Question: Issue #122 asked whether `MultiTargetDeclarationAliasing`'s mangling-substitution-compression false-negative gap (a sibling-target USR's suffix diverging when a target's module name is a textual prefix of the type name) was still an open, unaddressed limitation, since the type's own doc comment still described it that way.
+Done: Confirmed by reading the real pipeline that it was not — `ExternalIsolationBackfill.collectEdgeLevelWorkItems` already feeds every still-unresolved multi-target-shaped USR into `DemangledSiblingMatching`'s real-`swift-demangle`-based fallback (PR #99, 2026-08-16, verified then on Project Iris: unresolved edges 81 → 46), which is immune to this exact compression by construction. `git log --follow` confirmed `MultiTargetDeclarationAliasing.swift`'s doc comment had exactly one commit ever (its original addition), never updated after PR #99 wired the fallback in — which is what made issue #122's re-reading plausible. No functional change: corrected the doc comment to describe the real, already-shipping fallback instead of a gap that no longer exists in practice.
 
 ---
 
