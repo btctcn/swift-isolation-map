@@ -42,15 +42,20 @@ import Foundation
 /// inheritance/module-default resolution downstream works identically to the winning variant) can
 /// be reused verbatim under the new USR key, zero live query needed.
 ///
-/// **A known, deliberately accepted limitation, not a correctness risk**: Swift's own mangling
-/// substitution compression can make two module-qualified variants' suffixes *diverge* when the
-/// module name happens to be a textual prefix of the type name (confirmed directly while building
-/// this fix's own mini reproduction: naming the test app target `"App"`, a prefix of
-/// `"AppGroupFetcher"`, triggered a compressed `"0A12GroupFetcherC..."` suffix instead of the
-/// uncompressed `"15AppGroupFetcherC..."` form) -- a false *negative* (this fix simply doesn't fire
-/// for that one variant, exactly as if it didn't exist), never a false positive, since the
-/// comparison is exact-string, matching this project's own "a wrong answer is worse than no
-/// answer" principle.
+/// **A known limitation of *this* cheap suffix comparison alone -- already closed by a fallback,
+/// not left open (issue #122 reopened this question by reading only this doc comment, which had
+/// never been updated since; corrected here)**: Swift's own mangling substitution compression can
+/// make two module-qualified variants' suffixes *diverge* when the module name happens to be a
+/// textual prefix of the type name (confirmed directly while building this fix's own mini
+/// reproduction: naming the test app target `"App"`, a prefix of `"AppGroupFetcher"`, triggered a
+/// compressed `"0A12GroupFetcherC..."` suffix instead of the uncompressed `"15AppGroupFetcherC..."`
+/// form) -- a false *negative* here (this exact-string comparison simply doesn't fire for that one
+/// variant), never a false positive, matching this project's own "a wrong answer is worse than no
+/// answer" principle. `ExternalIsolationBackfill.collectEdgeLevelWorkItems` runs `
+/// DemangledSiblingMatching`'s own real-`swift-demangle`-based fallback (immune to compression by
+/// construction) on exactly the USRs this comparison misses, closing the gap without weakening this
+/// type's own zero-query, exact-string matching -- see that fallback's own doc comment, and PR #99
+/// (2026-08-16, real Project Iris verification: unresolved edges 81 -> 46).
 public enum MultiTargetDeclarationAliasing {
     /// Reads one length-prefixed identifier per Swift's own real mangling convention. `nil` (not
     /// this shape at all) whenever the byte right after `"s:"` isn't a digit -- this is exactly
