@@ -343,7 +343,7 @@ public struct DeclarationLinker {
                 moduleName: declaration.moduleName
             )
             if let existing = byUSR[linked.usr] {
-                byUSR[linked.usr] = Self.merged(existing, linked)
+                byUSR[linked.usr] = Self.merged(existing, linked, filesWithIndexedSymbols: filesWithIndexedSymbols)
             } else {
                 byUSR[linked.usr] = linked
             }
@@ -691,10 +691,31 @@ public struct DeclarationLinker {
     /// both correctly rewrite to the identical real USR. Field-by-field rules, each informed by
     /// what `DeclarationExtractor.swift` can actually make differ between two such entries (not
     /// guessed):
-    /// - `superclassUSR`/`location`/`isActorType`/`explicitIsolation`: only a *primary* declaration
-    ///   can ever set these (`applyInheritance`/`recordPrimaryDeclaration`'s own construction) --
-    ///   at most one side is ever non-nil/true in practice, so preferring whichever is present is
-    ///   safe, not a guess between two conflicting real facts.
+    /// - `superclassUSR`/`isActorType`/`explicitIsolation`: only a *primary* declaration can ever
+    ///   set these (`applyInheritance`/`recordPrimaryDeclaration`'s own construction) -- at most one
+    ///   side is ever non-nil/true in practice, so preferring whichever is present is safe, not a
+    ///   guess between two conflicting real facts.
+    /// - `location`: the one field where *both* sides genuinely can be non-nil for two unrelated
+    ///   reasons -- the legitimate cross-file case above (where, per the previous bullet, only one
+    ///   side ever really has one) and a second, real, confirmed shape this project's own corpus
+    ///   hygiene sweep found (issue #123, docs/task-own-module-declaration-gaps.md §4): two *actual
+    ///   primary* declarations of "the same" type, because the source tree contains a stray,
+    ///   uncompiled duplicate file (a Finder `" 2.swift"` copy) alongside the real one -- both
+    ///   syntactically parsed, both with their own real, non-nil location. Left to plain `??`
+    ///   before this fix, the winner depended on whichever file `SyntaxAnalysis` happened to process
+    ///   first (in practice, a lexical file-path sort -- confirmed real on Project Iris: `"...2.swift"`'s
+    ///   own leading space, `0x20`, sorts before `.swift`'s `.`, `0x2E`), with no relation to which
+    ///   file is actually real. `filesWithIndexedSymbols` (already computed for the unrelated
+    ///   `rewrittenReference` guard above -- "every file the real index actually has *any* symbol
+    ///   for") is exactly the right, already-available signal: a stray file that's never part of any
+    ///   compiled target has zero real indexed symbols, so its location loses the tie-break to a
+    ///   location backed by real indexing, with no new dependency (a live compiler-arguments lookup,
+    ///   this project's own doc comment for the issue's original discovery had proposed) needed.
+    ///   Falls back to the original, unconditional `??` (whichever side is `existing`, i.e.
+    ///   processed first) when both or neither side's file is indexed -- covers both the legitimate
+    ///   cross-file case (only one side non-nil, `??` picks it regardless of indexing) and the
+    ///   degenerate case of two stray files sharing a USR (indexing can't distinguish them either;
+    ///   no worse than before).
     /// - `conformances`: concatenated, not picked -- both sides can carry real, *different*
     ///   conformances (the entire shape of the bug: one file's own extension states a conformance
     ///   the other file's entry never saw), and each `ProtocolConformance` already carries its own
@@ -708,7 +729,9 @@ public struct DeclarationLinker {
     /// depends on which side is `existing` vs. `incoming`) -- harmless, since every conformances
     /// consumer (`IsolationInferenceEngine`) searches the whole array for a match, never depends on
     /// order.
-    static func merged(_ existing: DeclarationInfo, _ incoming: DeclarationInfo) -> DeclarationInfo {
+    static func merged(
+        _ existing: DeclarationInfo, _ incoming: DeclarationInfo, filesWithIndexedSymbols: Set<String> = []
+    ) -> DeclarationInfo {
         DeclarationInfo(
             usr: existing.usr,
             name: existing.name,
@@ -721,13 +744,28 @@ public struct DeclarationLinker {
             isEligibleForModuleDefaultIsolation: existing.isEligibleForModuleDefaultIsolation && incoming.isEligibleForModuleDefaultIsolation,
             enclosingExtensionIsolation: existing.enclosingExtensionIsolation ?? incoming.enclosingExtensionIsolation,
             isNestedType: existing.isNestedType || incoming.isNestedType,
-            location: existing.location ?? incoming.location,
+            location: preferredLocation(existing.location, incoming.location, filesWithIndexedSymbols: filesWithIndexedSymbols),
             isImmutableStoredProperty: existing.isImmutableStoredProperty || incoming.isImmutableStoredProperty,
             isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer,
             hasPreconcurrencyAttribute: existing.hasPreconcurrencyAttribute || incoming.hasPreconcurrencyAttribute,
             isNonisolatedUnsafe: existing.isNonisolatedUnsafe || incoming.isNonisolatedUnsafe,
             moduleName: existing.moduleName ?? incoming.moduleName
         )
+    }
+
+    /// See `merged(_:_:filesWithIndexedSymbols:)`'s own `location` bullet for the real, confirmed
+    /// gap (issue #123) this closes and why `filesWithIndexedSymbols` is the right signal.
+    private static func preferredLocation(
+        _ existing: SymbolLocation?, _ incoming: SymbolLocation?, filesWithIndexedSymbols: Set<String>
+    ) -> SymbolLocation? {
+        guard let existing else { return incoming }
+        guard let incoming else { return existing }
+        let existingIsIndexed = filesWithIndexedSymbols.contains(existing.file)
+        let incomingIsIndexed = filesWithIndexedSymbols.contains(incoming.file)
+        if existingIsIndexed != incomingIsIndexed {
+            return incomingIsIndexed ? incoming : existing
+        }
+        return existing
     }
 }
 

@@ -526,6 +526,64 @@ func mergedIsConservativeForModuleDefaultEligibility() {
     #expect(DeclarationLinker.merged(eligible, eligible).isEligibleForModuleDefaultIsolation == true)
 }
 
+// MARK: - Stray duplicate file poisoning the merged location (issue #123)
+
+@Test("DeclarationLinker.merged(_:_:filesWithIndexedSymbols:) prefers the location backed by real indexed symbols, regardless of which side is `existing`")
+func mergedPrefersIndexedLocationOverUnindexed() {
+    let realLocation = SymbolLocation(file: "/Widget.swift", line: 3, column: 7)
+    let strayLocation = SymbolLocation(file: "/Widget 2.swift", line: 3, column: 7)
+    let real = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], location: realLocation)
+    let stray = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], location: strayLocation)
+    let filesWithIndexedSymbols: Set<String> = ["/Widget.swift"]
+
+    // The stray file's own name sorts first lexically (a space, 0x20, sorts before ".", 0x2E) --
+    // exactly the real Project Iris shape (docs/task-own-module-declaration-gaps.md §4) that made
+    // plain `??` pick it whenever it happened to be `existing`. Both orders must still pick the
+    // indexed one.
+    #expect(DeclarationLinker.merged(stray, real, filesWithIndexedSymbols: filesWithIndexedSymbols).location == realLocation)
+    #expect(DeclarationLinker.merged(real, stray, filesWithIndexedSymbols: filesWithIndexedSymbols).location == realLocation)
+}
+
+@Test("DeclarationLinker.merged(_:_:filesWithIndexedSymbols:) falls back to preferring `existing` when both or neither side is indexed")
+func mergedFallsBackToExistingWhenIndexingStatusMatches() {
+    let locationA = SymbolLocation(file: "/A.swift", line: 1, column: 1)
+    let locationB = SymbolLocation(file: "/B.swift", line: 1, column: 1)
+    let declA = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], location: locationA)
+    let declB = DeclarationInfo(usr: "s:real", name: "Widget", conformances: [], location: locationB)
+
+    // Neither file indexed (e.g. two stray files sharing a USR) -- no worse than before this fix.
+    #expect(DeclarationLinker.merged(declA, declB, filesWithIndexedSymbols: []).location == locationA)
+    #expect(DeclarationLinker.merged(declB, declA, filesWithIndexedSymbols: []).location == locationB)
+
+    // Both files indexed (the legitimate two-real-declarations-collide-by-name edge case) -- same
+    // unconditional `??`-style behavior as before this fix, since indexing status alone can't
+    // distinguish them either.
+    let bothIndexed: Set<String> = ["/A.swift", "/B.swift"]
+    #expect(DeclarationLinker.merged(declA, declB, filesWithIndexedSymbols: bothIndexed).location == locationA)
+    #expect(DeclarationLinker.merged(declB, declA, filesWithIndexedSymbols: bothIndexed).location == locationB)
+}
+
+@Test("link(_:) prefers the real, compiled file's location over a stray uncompiled duplicate's, even when the stray file is processed first (real Project Iris SubscriptionNotifCell/\" 2.swift\" shape)")
+func linkPrefersIndexedFileOverStrayDuplicate() throws {
+    let fake = FakeIndexStoreQuerying()
+    let realLocation = SymbolLocation(file: "/SubscriptionNotifCell.swift", line: 5, column: 7)
+    // Only the real file has any real indexed symbol -- the stray duplicate was never compiled,
+    // exactly the real corpus shape this test reproduces.
+    fake.symbolsByFile["/SubscriptionNotifCell.swift"] = [IndexedSymbol(usr: "s:real", name: "SubscriptionNotifCell", location: realLocation)]
+
+    let strayLocation = SymbolLocation(file: "/SubscriptionNotifCell 2.swift", line: 5, column: 7)
+    let strayDeclaration = makeDeclaration(usr: "syntactic:SubscriptionNotifCell", name: "SubscriptionNotifCell", location: strayLocation)
+    let realDeclaration = makeDeclaration(usr: "syntactic:SubscriptionNotifCell", name: "SubscriptionNotifCell", location: realLocation)
+
+    // Stray file listed *first* -- matching the real bug's own lexical sort (a space sorts before
+    // "."), which is exactly what made the stray copy win before this fix, order-dependently.
+    let linked = DeclarationLinker(indexStore: fake).link([
+        ExtractionResult(declarations: [strayDeclaration, realDeclaration], protocolGlobalActorNames: [:])
+    ])
+
+    #expect(try #require(linked.declarations["s:real"]).location == realLocation)
+}
+
 // MARK: - Escape-hatch fields must survive linking, not just extraction
 // (docs/task-escape-hatch-and-preconcurrency-severity.md) -- a real bug found on a real corpus
 // (Kingfisher's own `WeakBox`/`Image.swift` malloc-key `let`s): `DeclarationLinker.link()` rewrites
