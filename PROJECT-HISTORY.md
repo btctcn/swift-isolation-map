@@ -7,8 +7,8 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-110 PRs exist in total as of PR #137 (PR numbers up to #137, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 27 issues exist in total, 6 open (#122-127) as of
+111 PRs exist in total as of PR #138 (PR numbers up to #138, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 27 issues exist in total, 5 open (#123-127) as of
 this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
 their own title or body as of the original pass through this log -- not recomputed against the
 newer open issues.
@@ -566,6 +566,11 @@ Done: A first fix attempt (supplying our own correct, `ls`-verified toolchain-re
 Issue: #122
 Question: Issue #122 asked whether `MultiTargetDeclarationAliasing`'s mangling-substitution-compression false-negative gap (a sibling-target USR's suffix diverging when a target's module name is a textual prefix of the type name) was still an open, unaddressed limitation, since the type's own doc comment still described it that way.
 Done: Confirmed by reading the real pipeline that it was not — `ExternalIsolationBackfill.collectEdgeLevelWorkItems` already feeds every still-unresolved multi-target-shaped USR into `DemangledSiblingMatching`'s real-`swift-demangle`-based fallback (PR #99, 2026-08-16, verified then on Project Iris: unresolved edges 81 → 46), which is immune to this exact compression by construction. `git log --follow` confirmed `MultiTargetDeclarationAliasing.swift`'s doc comment had exactly one commit ever (its original addition), never updated after PR #99 wired the fallback in — which is what made issue #122's re-reading plausible. No functional change: corrected the doc comment to describe the real, already-shipping fallback instead of a gap that no longer exists in practice.
+
+## PR #138 — Fix DeclarationLinker's same-USR merge tie-break for stray duplicate files (2026-09-02)
+Issue: #123
+Question: Issue #123 tracked `DeclarationLinker.merged(_:_:)` picking the merged declaration's `location` via an unconditional `existing.location ?? incoming.location` with no tie-break rule, confirmed real on Project Iris: a stray Finder-duplicate file (`"SubscriptionNotifCell 2.swift"`) alongside the real `SubscriptionNotifCell.swift` could win the merge purely because its own leading space sorts before the real file's `.` lexically, causing a live oracle query against the stray file's (uncompiled) location to fail and sweep every member of that type into `.unknown` isolation.
+Done: Rather than the issue's own speculated fix direction (a new live `CompilerArgumentsProviding` dependency), reused `filesWithIndexedSymbols` — already computed in `buildUSRRewriteMap` for an unrelated guard, "every file the real index actually has any symbol for" — since a stray, uncompiled file has zero real indexed symbols by construction, same signal with zero new dependency and zero live query. `merged(_:_:filesWithIndexedSymbols:)` now prefers whichever candidate's file is actually indexed, falling back to the original unconditional `??` when both or neither side is indexed (preserving the legitimate cross-file primary-declaration-plus-extension case unchanged). Three new tests reproduce the real `SubscriptionNotifCell` shape directly, with the stray file deliberately listed first to prove the fix isn't itself order-dependent. No full corpus before/after — the 22 real stray files that originally exposed this gap were already removed from Project Iris as data hygiene, so this is a defense against future stray files, verified via unit test instead.
 
 ---
 
