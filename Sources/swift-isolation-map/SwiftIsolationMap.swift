@@ -231,6 +231,31 @@ struct SwiftIsolationMap: ParsableCommand {
             throw ExitCode(2)
         }
 
+        // `PrerequisiteChecking` above only verifies `sourcekitdInProc`'s *path* resolves --
+        // `dlopen`/`sourcekitd_initialize()` can still fail for a real, if rarer, reason after that
+        // check passes. Constructed once here, this early, and threaded through every phase that
+        // needs it below (`resolveLocalDeclarationFallback`, `resolveExternalIsolation`) instead of
+        // either constructing its own client on demand: a project analysis with genuinely no usable
+        // sourcekitd would otherwise silently disable both live-query phases -- and, since
+        // `resolveExternalIsolation` only ever applies the already-computed bulk-symbolgraph cache
+        // *through* that same call, even the isolation facts that needed no live query at all --
+        // and still print a full report. A report missing the large majority of its own external-
+        // dependency isolation data (CocoaPods/XCFrameworks/SDK frameworks) is actively misleading,
+        // not merely incomplete, so this is treated exactly like every other prerequisite failure
+        // above: same message shape, same `exit(2)`, before any real analysis work begins. Per-USR
+        // live-query failures once sourcekitd *is* up stay fail-soft (`isUnknown`) -- that is the
+        // legitimate "I don't know this one" case `isUnknown` exists for, categorically different
+        // from the whole mechanism being unusable (issue #125's own loose end 1 investigation).
+        let sourceKitD: SourceKitDClient
+        do {
+            sourceKitD = try SourceKitDClient()
+        } catch {
+            eprint("swift-isolation-map can't run in this environment:")
+            eprint("")
+            eprint("sourcekitd could not be initialized (\(error)) -- compiled-dependency isolation and local declaration completeness fallback both depend on it, and a report silently missing that data would be misleading rather than merely incomplete.")
+            throw ExitCode(2)
+        }
+
         // Bootstrap-only private path, computed before anything else: every real `xcodebuild`
         // invocation this run makes must stay contained to this tool's own private DerivedData,
         // never Xcode's shared one (docs/task-private-derived-data-hypothesis.md) -- but the real,
@@ -409,7 +434,8 @@ struct SwiftIsolationMap: ParsableCommand {
         logVerbose("\(unresolvedPlaceholders.count) declaration(s) unresolved by bulk index linking; attempting live fallback")
         let localFallbackOverrides = runAsyncBridge {
             await resolveLocalDeclarationFallback(
-                unresolved: unresolvedPlaceholders, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem
+                unresolved: unresolvedPlaceholders, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
+                sourceKitD: sourceKitD
             )
         }
         logVerbose("Live fallback resolved \(localFallbackOverrides.count) of \(unresolvedPlaceholders.count) unresolved declaration(s)")
@@ -450,7 +476,7 @@ struct SwiftIsolationMap: ParsableCommand {
             await resolveExternalIsolation(
                 linked: linked, container: container, compilerArguments: compilerArguments, processRunning: processRunning, fileSystem: fileSystem,
                 oracleWorkers: oracleWorkers, derivedDataPath: derivedDataPathForExternalIsolation,
-                precomputedBulkResolution: bulkResolution
+                precomputedBulkResolution: bulkResolution, sourceKitD: sourceKitD
             )
         }
         logVerbose(
@@ -865,28 +891,21 @@ struct SwiftIsolationMap: ParsableCommand {
 
     // MARK: - Local declaration completeness fallback (docs/task-indexstore-declaration-completeness.md)
 
-    /// One-off `SourceKitDClient`, separate from `resolveExternalIsolation`'s own -- kept simple
-    /// and independent rather than threading a shared client through both call sites, since
-    /// construction is a local, in-process `dlopen` + connection setup, not a network round trip.
-    /// Skips creating a client at all when there's nothing to resolve (the common case for a
-    /// small project, or once bulk linking is fully reliable for a given run). Fail-soft, same
-    /// precedent as `resolveExternalIsolation`: sourcekitd unavailable, or any individual query
-    /// failing, just means those declarations stay unresolved -- never a crash, never a silently
-    /// wrong answer.
+    /// Uses the one `SourceKitDClient` `run()` constructs up front for the whole analysis (right
+    /// after `PrerequisiteChecking` -- see that construction site's own doc comment, issue #125
+    /// loose end 1), shared with `resolveExternalIsolation` below. Skips doing anything at all when
+    /// there's nothing to resolve (the common case for a small project, or once bulk linking is
+    /// fully reliable for a given run). Fail-soft only for an *individual* query failing -- those
+    /// declarations just stay unresolved, never a crash, never a silently wrong answer -- not for
+    /// sourcekitd being unusable at all, which is a hard failure further up in `run()` instead.
     private func resolveLocalDeclarationFallback(
         unresolved: [(placeholder: String, location: SymbolLocation)],
         compilerArguments: CompilerArgumentsProviding,
         processRunning: ProcessRunning,
-        fileSystem: FileSystemQuerying
+        fileSystem: FileSystemQuerying,
+        sourceKitD: SourceKitDClient
     ) async -> [String: String] {
         guard !unresolved.isEmpty else { return [:] }
-        let sourceKitD: SourceKitDClient
-        do {
-            sourceKitD = try SourceKitDClient()
-        } catch {
-            eprint("Warning: sourcekitd unavailable (\(error)) -- local declaration completeness fallback will not run this run.")
-            return [:]
-        }
         // Same worker-count knob and executable-relaunch pattern as `resolveExternalIsolation`'s
         // own oracle-worker dispatch below -- 10954 unresolved placeholders measured on a real run
         // against Project Iris made the plain sequential path (confirmed by a real timed run:
@@ -942,10 +961,11 @@ struct SwiftIsolationMap: ParsableCommand {
 
     /// Resolves every USR the analyzed project references but doesn't declare itself (external
     /// superclasses/protocols/call targets in compiled dependencies) via `sourcekitd`, per
-    /// docs/task-compiled-dependency-isolation.md. Deliberately fail-soft end to end: if the
-    /// toolchain has no `sourcekitdInProc` at all, or the compiler-arguments provider itself can't
-    /// be constructed, this returns an empty resolution (today's exact prior behavior) rather than
-    /// aborting the whole analysis over one optional enrichment step failing.
+    /// docs/task-compiled-dependency-isolation.md. `sourcekitd` being unusable at all is a hard
+    /// failure in `run()`, before this is ever called (issue #125, loose end 1) -- what stays
+    /// fail-soft here is the compiler-arguments provider itself failing to produce an environment
+    /// (e.g. no real build settings available yet for this project state), which returns an empty
+    /// resolution rather than aborting the whole analysis over one optional enrichment step.
     private func resolveExternalIsolation(
         linked: LinkedAnalysis,
         container: ProjectContainer,
@@ -954,10 +974,9 @@ struct SwiftIsolationMap: ParsableCommand {
         fileSystem: FileSystemQuerying,
         oracleWorkers: Int,
         derivedDataPath: URL?,
-        precomputedBulkResolution: BulkSymbolGraphResolution
+        precomputedBulkResolution: BulkSymbolGraphResolution,
+        sourceKitD: SourceKitDClient
     ) async -> ExternalIsolationResolution {
-        let empty = ExternalIsolationResolution(backfilledDeclarations: [:], updatedDeclarations: [:], unknownUSRs: [])
-
         // The caller already ran this run's one bulk symbol-graph pass, before `linker.link(...)`
         // (Issue #40's own `discoveredGlobalActorNames` need) -- an `environmentProvider` is still
         // constructed and passed to `ExternalIsolationBackfill.resolve` below (it's a required
@@ -966,14 +985,6 @@ struct SwiftIsolationMap: ParsableCommand {
         let environmentProvider = makeBulkExtractionEnvironmentProvider(
             container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: derivedDataPath
         )
-
-        let sourceKitD: SourceKitDClient
-        do {
-            sourceKitD = try SourceKitDClient()
-        } catch {
-            eprint("Warning: sourcekitd unavailable (\(error)) -- compiled-dependency isolation will not be resolved this run.")
-            return empty
-        }
 
         // Permanent, opt-in diagnostic (docs/hypothesis-0-file-sorted-oracle-queries.md; full
         // decision record in docs/task-oracle-query-concurrency.md's §7) -- originally added for
