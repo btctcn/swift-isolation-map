@@ -81,6 +81,57 @@ struct PlatformBuildConfigurationCustomConditionTests {
     }
 }
 
+@Suite("PlatformBuildConfiguration.isActiveTargetEnvironment (issue #139)")
+struct PlatformBuildConfigurationTargetEnvironmentTests {
+    @Test("macCatalyst is confirmed always inactive for iOS/tvOS/watchOS -- this tool's own destination resolution structurally never selects it")
+    func macCatalystIsAlwaysInactiveForSimulatorPlatforms() throws {
+        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS] {
+            let configuration = PlatformBuildConfiguration(platform: platform)
+            #expect(try configuration.isActiveTargetEnvironment(name: "macCatalyst") == false, "\(platform)")
+            #expect(try configuration.isActiveTargetEnvironment(name: "MACCATALYST") == false, "\(platform), case-insensitive")
+        }
+    }
+
+    @Test("simulator, and any other/unrecognized environment name, stays permissive (true) for iOS/tvOS/watchOS")
+    func otherEnvironmentNamesStayPermissiveForSimulatorPlatforms() throws {
+        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS] {
+            let configuration = PlatformBuildConfiguration(platform: platform)
+            #expect(try configuration.isActiveTargetEnvironment(name: "simulator") == true, "\(platform)")
+            #expect(try configuration.isActiveTargetEnvironment(name: "unrealistic") == true, "\(platform)")
+        }
+    }
+
+    @Test("macOS and .unknown stay permissive for every name, including macCatalyst -- no Simulator-destination concept applies to either")
+    func macOSAndUnknownStayPermissiveEvenForMacCatalyst() throws {
+        for platform: TargetPlatform in [.macOS, .unknown] {
+            let configuration = PlatformBuildConfiguration(platform: platform)
+            #expect(try configuration.isActiveTargetEnvironment(name: "macCatalyst") == true, "\(platform)")
+            #expect(try configuration.isActiveTargetEnvironment(name: "simulator") == true, "\(platform)")
+        }
+    }
+}
+
+/// End-to-end: the real `#if os(iOS) && !targetEnvironment(macCatalyst)` shape
+/// (`home-assistant-iOS`'s own convention, gating several whole real files -- confirmed via a real
+/// corpus sweep for issue #139) -- proves the old unconditional `true` answered this shape
+/// *backwards* (`!true == false`, silently dropping the declaration), and the fix now doesn't.
+@Suite("DeclarationExtractor + real #if os(iOS) && !targetEnvironment(macCatalyst) declaration gating (issue #139)")
+struct DeclarationExtractorTargetEnvironmentTests {
+    private let source = """
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    struct RealDeclaration {
+        let value = 1
+    }
+    #endif
+    """
+
+    @Test("On iOS (never Mac Catalyst, per this tool's own destination model), the guarded declaration is extracted")
+    func extractsGuardedDeclarationOnIOS() {
+        let declarations = DeclarationExtractor.extract(source: source, fileName: "Guarded.swift", platform: .iOS)
+        #expect(declarations.contains { $0.name == "RealDeclaration" })
+    }
+}
+
 /// End-to-end: the real `MoyaPlugins.swift` shape (Project Iris) -- two competing declarations of
 /// the same name, one per branch. Proves the mechanism, not just the parsing utility in isolation.
 @Suite("DeclarationExtractor + real #if DEBUG/#else declaration gating (issue #121)")
