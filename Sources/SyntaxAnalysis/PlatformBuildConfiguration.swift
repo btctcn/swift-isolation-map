@@ -138,10 +138,43 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
 
     // MARK: - Deliberately permissive (see this type's own doc comment)
 
+    /// Real destinations, confirmed by this tool's own architecture for an Xcode container -- not
+    /// corpus-inferred the way `isCustomConditionSet`'s own fix was (issue #121), though issue #139
+    /// itself was originally filed *because of* real corpus evidence: `IceCubesApp`/
+    /// `home-assistant-iOS` both gate real declarations (whole files, in several cases) on
+    /// `#if os(iOS) && !targetEnvironment(macCatalyst)` -- a shape the old unconditional `true`
+    /// answered *backwards* (`!true == false`), silently dropping every declaration in those files.
+    ///
+    /// `resolveDeterministicSimulatorDestination` (`ProjectResolution/
+    /// XcodeIndexingBuildSettings.swift`) only ever returns `nil` or a destination whose own
+    /// platform string contains `"Simulator"` -- it structurally can never select a Mac Catalyst
+    /// destination -- and `SwiftBuildCompilerArgumentsProvider`'s own `nil`-destination fallback is
+    /// `.iphonesimulator` (docs/task-multi-platform-target-support.md), Simulator-flavored either
+    /// way. So, for an Xcode container targeting `.iOS`/`.tvOS`/`.watchOS`, `"macCatalyst"` is
+    /// confirmed always inactive and `"simulator"` confirmed always active. **Acknowledged residual
+    /// gap, not assumed equivalent** (same honesty this file's own `isCustomConditionSet` follow-up
+    /// discipline expects): this reasoning is specifically about the Xcode-container destination
+    /// path; a `Package.swift` container cross-compiled for iOS via a custom SPM destination bundle
+    /// (never observed in any real corpus available to this project) would not actually go through
+    /// `resolveDeterministicSimulatorDestination` at all, so the same certainty wouldn't hold there
+    /// -- `platform` alone carries no container-kind information to distinguish the two cases, and
+    /// this project's own real SPM analysis is only ever observed to resolve `.macOS` in practice.
+    /// Every other target-environment name (and `.macOS`, which has no Simulator concept in this
+    /// tool's own model at all) stays permissive, same discipline as every other still-unconfirmed
+    /// axis this type's own doc comment lists.
+    public func isActiveTargetEnvironment(name: String) throws -> Bool {
+        switch platform {
+        case .iOS, .tvOS, .watchOS:
+            if name.caseInsensitiveCompare("macCatalyst") == .orderedSame { return false }
+            return true
+        case .macOS, .unknown:
+            return true
+        }
+    }
+
     public func hasFeature(name: String) throws -> Bool { true }
     public func hasAttribute(name: String) throws -> Bool { true }
     public func isActiveTargetArchitecture(name: String) throws -> Bool { true }
-    public func isActiveTargetEnvironment(name: String) throws -> Bool { true }
     public func isActiveTargetRuntime(name: String) throws -> Bool { true }
     public func isActiveTargetPointerAuthentication(name: String) throws -> Bool { true }
     public func isActiveTargetObjectFormat(name: String) throws -> Bool { true }
