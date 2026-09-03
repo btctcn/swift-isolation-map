@@ -7,11 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-111 PRs exist in total as of PR #138 (PR numbers up to #138, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 27 issues exist in total, 5 open (#123-127) as of
-this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
-their own title or body as of the original pass through this log -- not recomputed against the
-newer open issues.
+112 PRs exist in total as of PR #141 (PR numbers up to #141, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 29 issues exist in total, 6 open (#124-127,
+#139-140) as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue
+numbers in their own title or body as of the original pass through this log -- not recomputed
+against the newer open issues.
 
 ---
 
@@ -571,6 +571,11 @@ Done: Confirmed by reading the real pipeline that it was not — `ExternalIsolat
 Issue: #123
 Question: Issue #123 tracked `DeclarationLinker.merged(_:_:)` picking the merged declaration's `location` via an unconditional `existing.location ?? incoming.location` with no tie-break rule, confirmed real on Project Iris: a stray Finder-duplicate file (`"SubscriptionNotifCell 2.swift"`) alongside the real `SubscriptionNotifCell.swift` could win the merge purely because its own leading space sorts before the real file's `.` lexically, causing a live oracle query against the stray file's (uncompiled) location to fail and sweep every member of that type into `.unknown` isolation.
 Done: Rather than the issue's own speculated fix direction (a new live `CompilerArgumentsProviding` dependency), reused `filesWithIndexedSymbols` — already computed in `buildUSRRewriteMap` for an unrelated guard, "every file the real index actually has any symbol for" — since a stray, uncompiled file has zero real indexed symbols by construction, same signal with zero new dependency and zero live query. `merged(_:_:filesWithIndexedSymbols:)` now prefers whichever candidate's file is actually indexed, falling back to the original unconditional `??` when both or neither side is indexed (preserving the legitimate cross-file primary-declaration-plus-extension case unchanged). Three new tests reproduce the real `SubscriptionNotifCell` shape directly, with the stray file deliberately listed first to prove the fix isn't itself order-dependent. No full corpus before/after — the 22 real stray files that originally exposed this gap were already removed from Project Iris as data hygiene, so this is a defense against future stray files, verified via unit test instead.
+
+## PR #141 — Generalize SwiftBuildCompilerArgumentsProvider beyond iOS Simulator (2026-09-03)
+Issue: #124
+Question: Issue #124 was filed as a deliberate scoping placeholder ("a Swiftfin tvOS target is currently ignored"), with no fix direction decided — did the tool's Xcode-project compiler-argument resolution have a real, fixable gap for non-iOS platforms, or was this purely a design question?
+Done: Installed the missing tvOS/watchOS/visionOS Simulator runtimes and traced the real cause directly against a real Swiftfin checkout: `SwiftBuildCompilerArgumentsProvider` was unconditionally hardcoded to iOS Simulator at three points (`activeRunDestination`, `matchesSimulatorPlatform`, `simulatorSDKVersion`), so a shared file compiled by both `Swiftfin iOS` and `Swiftfin tvOS` (127 of 152 real files, living under a shared `Swiftfin/` directory neither target name matches) always silently got the iOS target's own args, regardless of which scheme was requested. New `SimulatorSDKFamily` enum parses `resolveDeterministicSimulatorDestination`'s own already-computed destination string (no new query) to resolve the right SDK family; `preferredArguments` (PR #106) needed no changes, since filtering by the requested platform alone already leaves at most one surviving candidate for a shared file. Verified on three independent real corpora: zero regression on Project Iris (controlled A/B against the pre-fix binary) and on Swiftfin's own iOS scheme; `Target platform: tvOS` now correctly detected for `Swiftfin tvOS` (previously `iOS`); and, per explicit follow-up instruction to find and check a real watchOS corpus, a full, complete, real run against `home-assistant/iOS`'s `WatchApp` scheme (`Target platform: watchOS`, 606/606 targets resolved). A distinct, real gap found while checking visionOS (`Dimillian/IceCubesApp`'s single scheme lists iOS/macOS Catalyst/visionOS as simultaneous destinations, and destination selection always picks iOS first) was deliberately left out of scope and filed separately (#140) rather than silently expanding this fix.
 
 ---
 
