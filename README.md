@@ -109,6 +109,13 @@ OPTIONS:
                               ~1.8x at N=4, ~3.3x at N=8 -- see docs/task-process-tree-optimization.md.
   --out-file <path>           Where to write the result (default: stdout)
   --output <format>           mermaid | dot | json (default: mermaid)
+  --platform <name>           For a scheme offering more than one simultaneous Simulator
+                              destination (e.g. visionOS added alongside iOS on the same
+                              scheme, not a separate one): iOS | tvOS | watchOS | visionOS.
+                              Matched case-insensitively. Fails with a clear error (listing
+                              what's actually available) rather than silently picking a
+                              platform you didn't ask for. Default: whichever Simulator
+                              destination xcodebuild lists first for the scheme.
   --scheme <scheme>           Build scheme (Xcode) or product/target (SPM). Required.
   --severity <level>          Only include edges at or above this risk level in the output:
                               low | medium | high (default: no filtering, everything is

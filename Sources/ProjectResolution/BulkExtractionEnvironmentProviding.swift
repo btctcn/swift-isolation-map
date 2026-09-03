@@ -51,6 +51,12 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
     /// pollution risk `docs/task-private-derived-data-hypothesis.md` exists to rule out everywhere
     /// else, missed for this one provider.
     private let derivedDataPath: URL?
+    /// Threaded through to `resolveDeterministicSimulatorDestination` below, same `--platform` flag
+    /// (issue #140) every other real destination-resolution call site in this project now honors --
+    /// kept consistent deliberately: a bulk symbol-graph pass extracted against a *different*
+    /// platform's SDK/target than the rest of this run would silently produce wrong isolation facts
+    /// for platform-conditional dependencies, not just an inconsistent destination choice.
+    private let preferredPlatform: String?
     private let lock = NSLock()
     private var cached: BulkExtractionEnvironment?
 
@@ -59,13 +65,15 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
         scheme: String,
         processRunning: ProcessRunning = LiveProcessRunner(),
         fileSystem: FileSystemQuerying = LiveFileSystem(),
-        derivedDataPath: URL? = nil
+        derivedDataPath: URL? = nil,
+        preferredPlatform: String? = nil
     ) {
         self.container = container
         self.scheme = scheme
         self.processRunning = processRunning
         self.fileSystem = fileSystem
         self.derivedDataPath = derivedDataPath
+        self.preferredPlatform = preferredPlatform
     }
 
     public func environment() throws -> BulkExtractionEnvironment {
@@ -93,8 +101,9 @@ public final class LiveXcodeBulkExtractionEnvironmentProvider: BulkExtractionEnv
         // disabling bulk pre-resolution for every discovered third-party module (confirmed via
         // direct `symbolgraph-extract` reproduction: `Couldn't load module 'X'` for every one of
         // them). See docs/task-bulk-extraction-wrong-platform.md §2.
-        if let destination = resolveDeterministicSimulatorDestination(
-            container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+        if let destination = try resolveDeterministicSimulatorDestination(
+            container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath,
+            preferredPlatform: preferredPlatform
         ) {
             arguments += ["-destination", destination]
         }

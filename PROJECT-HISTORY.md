@@ -7,9 +7,9 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-116 PRs exist in total as of PR #146 (PR numbers up to #146, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 30 issues exist in total, 2 open (#140, #142) as
-of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+117 PRs exist in total as of PR #147 (PR numbers up to #147, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 30 issues exist in total, 1 open (#142) as of
+this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
 their own title or body as of the original pass through this log -- not recomputed against the
 newer open issues.
 
@@ -596,6 +596,11 @@ Done: A temporary, USR-gated debug probe (reverted before this fix) found the re
 Issue: #139
 Question: Issue #139 tracked `isActiveTargetEnvironment` unconditionally answering `true` for any name -- permissive by this file's own deliberate design, unconfirmed against any real corpus at the time (a 2026-08-30 sweep of Project Iris/SQLumen, excluding `Pods/`, found only one statement-level occurrence).
 Done: Re-swept every corpus available to this project, this time including CocoaPods dependencies -- `IceCubesApp`/`home-assistant-iOS` both gate whole real files (`LiveActivitySettingsView.swift`, `YAMLSyntaxHighlighter.swift`, `HealthSensorListViewModel.swift`, `HealthSensorListView.swift`) on `#if os(iOS) && !targetEnvironment(macCatalyst)`, which the old unconditional `true` answered backwards (`!true == false`), silently excluding them. Fixed with an architecture-confirmed answer rather than a corpus-inferred one: `resolveDeterministicSimulatorDestination` structurally never selects a Mac Catalyst destination (only `nil` or a Simulator-flavored one), and `SwiftBuildCompilerArgumentsProvider`'s own `nil`-destination fallback is Simulator-flavored too -- so `"macCatalyst"` is confirmed always inactive for `.iOS`/`.tvOS`/`.watchOS`, documented with an acknowledged residual gap for a hypothetical iOS-cross-compiling SPM package (never observed in any real corpus). Real-corpus A/B on Project Iris: a real Kingfisher `CPListItem+Kingfisher.swift` file (`#if canImport(CarPlay) && !targetEnvironment(macCatalyst)`) was silently excluded entirely before this fix -- 14 real declarations recovered, all correctly `globalActor(MainActor)`, `highRiskBoundaries` unchanged.
+
+## PR #147 — Add --platform to select a destination for a multi-platform scheme (2026-09-03)
+Issue: #140
+Question: Issue #140 tracked a gap issue #124's own `SimulatorSDKFamily` fix didn't cover: a modern multiplatform SwiftUI scheme (`IceCubesApp`) offers several simultaneously-valid Simulator destinations on *one* scheme (iOS, visionOS), and `resolveDeterministicSimulatorDestination` always picked whichever `xcodebuild -showdestinations` happened to list first, with no way for a user to ask for a different one.
+Done: Added `--platform <name>`, threaded consistently as `preferredPlatform` through all three real destination-resolution call sites (a `--platform visionOS` run resolving compiler args for visionOS while still bulk-extracting symbol-graph data for iOS would be a real, silent inconsistency worse than not having the flag at all); a genuinely unavailable platform throws `DestinationResolutionError` listing what's actually available, never silently falling back. Verifying against `IceCubesApp` found a second, real gap: with `--platform visionOS`, destination and compiler-argument resolution correctly reached visionOS, but `Target platform: unknown` -- `TargetPlatform` had no `.visionOS` case at all, silently reverting declaration extraction to platform-blind mode. Fixed by adding it, plus visionOS's real (Apple-internal) target-triple OS component `"xros"`, confirmed via a real `swiftc -target arm64-apple-xros1.0-simulator` compile, and extending `isActiveTargetEnvironment`'s own Simulator-platform case (issue #139) to `.visionOS` too. Real-corpus verification against `IceCubesApp` confirmed `Target platform: visionOS` now resolves correctly (the full index-store build fails downstream on an unrelated, pre-existing missing `IceCubesApp.xcconfig` in this local checkout); real-corpus A/B on Project Iris (default, no `--platform`) found zero added/removed/changed nodes.
 
 ---
 

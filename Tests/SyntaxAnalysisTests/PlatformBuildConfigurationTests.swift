@@ -83,18 +83,18 @@ struct PlatformBuildConfigurationCustomConditionTests {
 
 @Suite("PlatformBuildConfiguration.isActiveTargetEnvironment (issue #139)")
 struct PlatformBuildConfigurationTargetEnvironmentTests {
-    @Test("macCatalyst is confirmed always inactive for iOS/tvOS/watchOS -- this tool's own destination resolution structurally never selects it")
+    @Test("macCatalyst is confirmed always inactive for iOS/tvOS/watchOS/visionOS -- this tool's own destination resolution structurally never selects it")
     func macCatalystIsAlwaysInactiveForSimulatorPlatforms() throws {
-        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS] {
+        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS, .visionOS] {
             let configuration = PlatformBuildConfiguration(platform: platform)
             #expect(try configuration.isActiveTargetEnvironment(name: "macCatalyst") == false, "\(platform)")
             #expect(try configuration.isActiveTargetEnvironment(name: "MACCATALYST") == false, "\(platform), case-insensitive")
         }
     }
 
-    @Test("simulator, and any other/unrecognized environment name, stays permissive (true) for iOS/tvOS/watchOS")
+    @Test("simulator, and any other/unrecognized environment name, stays permissive (true) for iOS/tvOS/watchOS/visionOS")
     func otherEnvironmentNamesStayPermissiveForSimulatorPlatforms() throws {
-        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS] {
+        for platform: TargetPlatform in [.iOS, .tvOS, .watchOS, .visionOS] {
             let configuration = PlatformBuildConfiguration(platform: platform)
             #expect(try configuration.isActiveTargetEnvironment(name: "simulator") == true, "\(platform)")
             #expect(try configuration.isActiveTargetEnvironment(name: "unrealistic") == true, "\(platform)")
