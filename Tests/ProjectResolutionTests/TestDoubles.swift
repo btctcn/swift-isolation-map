@@ -11,6 +11,14 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
 
     private var responses: [Invocation: ProcessResult] = [:]
     private(set) var invocations: [Invocation] = []
+    /// For a caller whose response must differ across repeated calls to the identical
+    /// (executable, arguments) pair -- e.g. a retry path (issue #142's own
+    /// `LiveSwiftPMCompilerArgumentsProvider` retry-with-clean test), where the plain, static
+    /// `stub(...)` dictionary can't distinguish "first call" from "second call". Checked before
+    /// the exact-match `responses` dictionary; returning `nil` falls through to it (and its own
+    /// "no stub" error) as before, so every existing `.stub(...)` usage is unaffected. Mirrors
+    /// `Tests/swift-isolation-mapTests/TestDoubles.swift`'s own identical precedent.
+    var onRun: ((_ executable: String, _ arguments: [String]) -> ProcessResult?)?
 
     func stub(executable: String, arguments: [String], result: ProcessResult) {
         responses[Invocation(executable: executable, arguments: arguments)] = result
@@ -19,6 +27,9 @@ final class FakeProcessRunner: ProcessRunning, @unchecked Sendable {
     func run(executable: String, arguments: [String], workingDirectory: URL?, timeout: TimeInterval?) throws -> ProcessResult {
         let invocation = Invocation(executable: executable, arguments: arguments)
         invocations.append(invocation)
+        if let dynamic = onRun?(executable, arguments) {
+            return dynamic
+        }
         guard let result = responses[invocation] else {
             throw NSError(domain: "FakeProcessRunner", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "No stubbed response for \(executable) \(arguments)"

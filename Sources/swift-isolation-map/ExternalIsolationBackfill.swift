@@ -1206,13 +1206,39 @@ enum ExternalIsolationBackfill {
         if let cached = bulkCache[targetUSR] {
             return .resolved(cached, moduleName: bulkModuleNameByUSR[targetUSR])
         }
+        // Issue #142 (loose end 2 of #125): permanent, opt-in categorized diagnostic -- which
+        // stage a query failed at, and the real error text, since `.unknown` alone can't
+        // distinguish "no compiler args" from "cursorinfo itself threw" from "no USR matched" when
+        // comparing a "good" run against a "bad" one for the exact same USR. Kept, same precedent
+        // as `SWIFT_ISOLATION_MAP_ORACLE_STATS`/`SWIFT_ISOLATION_MAP_WORKER_STDERR` -- useful for
+        // the still-open Xcode-path (Swiftfin) half of issue #142, not just the SwiftPM-path half
+        // this diagnostic's own first use already found and fixed
+        // (docs/task-swiftpm-compiler-args-retry-threshold.md). Never active unless explicitly
+        // requested; zero cost/behavior change otherwise.
+        let diagnosticsEnabled = ProcessInfo.processInfo.environment["SWIFT_ISOLATION_MAP_QUERY_DIAGNOSTICS"] != nil
+        func logDiagnostic(_ stage: String, _ detail: String) {
+            guard diagnosticsEnabled else { return }
+            FileHandle.standardError.write(Data("QUERY-DIAG\t\(targetUSR)\t\(stage)\t\(detail)\n".utf8))
+        }
+        let rawArguments: [String]
         do {
-            let rawArguments = try compilerArguments.compilerArguments(forFile: file)
-            // `compilerArguments(forFile:)` faithfully returns the real build's real (frontend-
-            // level, for SwiftPM) arguments -- `sourcekitd`'s `key.compilerargs` needs driver-
-            // level arguments instead, confirmed empirically (docs/priority-3-phase-e-fixtures.md).
-            let arguments = CompilerArgumentsSanitizing.sanitized(rawArguments)
-            let offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
+            rawArguments = try compilerArguments.compilerArguments(forFile: file)
+        } catch {
+            logDiagnostic("no-compiler-args", "\(file) error=\(error)")
+            return .unknown
+        }
+        // `compilerArguments(forFile:)` faithfully returns the real build's real (frontend-
+        // level, for SwiftPM) arguments -- `sourcekitd`'s `key.compilerargs` needs driver-
+        // level arguments instead, confirmed empirically (docs/priority-3-phase-e-fixtures.md).
+        let arguments = CompilerArgumentsSanitizing.sanitized(rawArguments)
+        let offset: Int
+        do {
+            offset = try UTF8OffsetLocator.utf8Offset(inFile: file, line: line, utf8Column: utf8Column, fileSystem: fileSystem)
+        } catch {
+            logDiagnostic("offset-failure", "\(file):\(line):\(utf8Column) error=\(error)")
+            return .unknown
+        }
+        do {
             let result = try await sourceKitD.cursorInfo(CursorInfoRequest(sourceFile: file, byteOffset: offset, compilerArguments: arguments))
             // `BridgedExternConstantMatching` only ever runs once strict USR equality has already
             // failed -- a narrow fallback for a confirmed, real shape strict matching can never
@@ -1226,7 +1252,10 @@ enum ExternalIsolationBackfill {
                 ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR)
-                ?? TypealiasWrappedStructMemberMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+                ?? TypealiasWrappedStructMemberMatching.select(from: result, targetUSR: targetUSR) else {
+                logDiagnostic("no-usr-match", "\(file):\(line):\(utf8Column) primary.usr=\(result.primary.usr) secondary=\(result.secondary.map { $0.usr })")
+                return .unknown
+            }
             let moduleName = symbol.moduleName.map(topLevelModuleName(from:))
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
@@ -1236,8 +1265,10 @@ enum ExternalIsolationBackfill {
                let isolation = FullyAnnotatedDeclParser.isolation(fromXML: xml, knownGlobalActorNames: knownGlobalActorNames) {
                 return .resolved(isolation, moduleName: moduleName)
             }
+            logDiagnostic("no-isolation-parsed", "matched.usr=\(symbol.usr) symbolGraphJSON=\(symbol.symbolGraphJSON == nil ? "nil" : "present") xml=\(symbol.fullyAnnotatedDeclXML == nil ? "nil" : "present")")
             return .unknown
         } catch {
+            logDiagnostic("cursorinfo-threw", "\(file):\(line):\(utf8Column) error=\(error)")
             return .unknown
         }
     }
