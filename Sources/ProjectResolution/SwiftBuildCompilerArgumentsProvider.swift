@@ -5,6 +5,43 @@ func writeStderr(_ message: String, terminator: String = "\n") {
     FileHandle.standardError.write(Data((message + terminator).utf8))
 }
 
+/// Real SDK-family identifiers for every Simulator-based Apple platform -- confirmed directly
+/// (`xcodebuild -showsdks`), not guessed: `iphonesimulator`/`appletvsimulator`/`watchsimulator`/
+/// `xrsimulator`. Both the bare identifier (`SWBRunDestinationInfo.platform`/`.sdkVariant`, and
+/// `xcrun --sdk <this> --show-sdk-version`) and the identifier plus a version suffix
+/// (`SWBRunDestinationInfo.sdk`, `-sdk` in real captured compiler arguments) follow this same
+/// family name uniformly across all four platforms -- confirmed against this project's own real
+/// captured Project Iris (iOS) and Swiftfin (tvOS) compiler arguments.
+///
+/// Deliberately covers only the four Simulator-based platforms, not macOS: a pure macOS/host
+/// scheme has no Simulator destination at all (`resolveDeterministicSimulatorDestination` already
+/// returns `nil` for one, unchanged by this type), and a real macOS Xcode scheme's own compiler
+/// arguments have never been confirmed against a real corpus this project has access to -- left
+/// exactly as this provider's own pre-existing `nil`-destination fallback handles it today, per
+/// this project's own "never generalize past real evidence" discipline (issue #124's own text
+/// scopes this the same way: "macOS/watchOS/tvOS/...").
+enum SimulatorSDKFamily: String {
+    case iphonesimulator, appletvsimulator, watchsimulator, xrsimulator
+
+    /// Parses `resolveDeterministicSimulatorDestination`'s own real return-value shape --
+    /// `"generic/platform=<Name> Simulator"`, where `<Name>` is copied verbatim from a real
+    /// `xcodebuild -showdestinations`'s own `platform:` field (confirmed real values: `"iOS"`,
+    /// `"tvOS"`, `"watchOS"`, `"visionOS"`). `nil` for a `nil` destination (a pure macOS/host
+    /// scheme) or any unrecognized platform name -- both cases the caller falls back to this
+    /// provider's pre-existing, unconditional `.iphonesimulator` behavior for, unchanged.
+    static func parsing(destination: String?) -> Self? {
+        guard let destination, let markerRange = destination.range(of: "platform=") else { return nil }
+        let name = destination[markerRange.upperBound...].prefix { $0 != " " }
+        switch name {
+        case "iOS": return .iphonesimulator
+        case "tvOS": return .appletvsimulator
+        case "watchOS": return .watchsimulator
+        case "visionOS": return .xrsimulator
+        default: return nil
+        }
+    }
+}
+
 /// The main `CompilerArgumentsProviding` conformer for Xcode projects (promoted from EXPERIMENTAL
 /// once docs/task-swift-build-prepare-for-indexing-spike.md's Steps 13-26 real-corpus-verified it
 /// end to end on WordPress-iOS). The `xcodebuild -verbose`-based conformer it superseded
@@ -33,6 +70,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
     private let container: ProjectContainer
     private let scheme: String
     private let derivedDataPath: URL
+    private let sdkFamily: SimulatorSDKFamily
     private let locator: SWBBuildServiceLocating
     private let processRunning: ProcessRunning
 
@@ -41,16 +79,26 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
     private var cachedModuleNames: Set<String> = []
     private var cachedError: Error?
 
+    /// `destination` -- `resolveDeterministicSimulatorDestination`'s own real return value for
+    /// *this* run (already computed by the one real caller, `SwiftIsolationMap.swift`, before this
+    /// provider is even constructed) -- decides which Simulator SDK family this run actually
+    /// resolves compiler arguments for (issue #124: this provider was unconditionally hardcoded to
+    /// `.iphonesimulator`, silently discarding every real tvOS/watchOS/visionOS target's own
+    /// correct compiler arguments). `nil`, or a destination `SimulatorSDKFamily.parsing` doesn't
+    /// recognize, falls back to `.iphonesimulator` -- this provider's exact, unchanged prior
+    /// behavior for a pure macOS/host scheme or any other case with no real evidence yet.
     public init(
         container: ProjectContainer,
         scheme: String,
         derivedDataPath: URL,
+        destination: String? = nil,
         locator: SWBBuildServiceLocating = LiveSWBBuildServiceLocator(),
         processRunning: ProcessRunning = LiveProcessRunner()
     ) {
         self.container = container
         self.scheme = scheme
         self.derivedDataPath = derivedDataPath
+        self.sdkFamily = SimulatorSDKFamily.parsing(destination: destination) ?? .iphonesimulator
         self.locator = locator
         self.processRunning = processRunning
     }
@@ -194,7 +242,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         // so this check never gated which targets were actually resolved, only whether the whole
         // provider aborted before trying -- pure false-negative risk, no real safety value.
 
-        let sdkVersion = try Self.simulatorSDKVersion()
+        let sdkVersion = try Self.simulatorSDKVersion(sdkFamily: sdkFamily)
         var params = SWBBuildParameters()
         // `"indexbuild"`, not `"build"` -- confirmed the hard way against a real second corpus
         // (Swiftfin): with `action = "build"`, `generateIndexingFileSettings` failed outright for
@@ -211,9 +259,9 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         params.action = "indexbuild"
         params.configurationName = "Debug"
         params.activeRunDestination = SWBRunDestinationInfo(
-            platform: "iphonesimulator",
-            sdk: "iphonesimulator\(sdkVersion)",
-            sdkVariant: "iphonesimulator",
+            platform: sdkFamily.rawValue,
+            sdk: "\(sdkFamily.rawValue)\(sdkVersion)",
+            sdkVariant: sdkFamily.rawValue,
             targetArchitecture: "arm64",
             supportedArchitectures: ["arm64", "x86_64"],
             disableOnlyActiveArch: false
@@ -285,7 +333,7 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
             // paths that were never built here at all. Filtering by the args' own real `-sdk` value
             // (not by target/product-type metadata, which would need its own separate query) keeps
             // exactly the files this DerivedData can actually answer for.
-            for (path, args) in targetMap where Self.matchesSimulatorPlatform(args) {
+            for (path, args) in targetMap where Self.matchesSimulatorPlatform(args, sdkFamily: sdkFamily) {
                 candidatesByPath[path, default: []].append((targetInfo.targetName, args))
             }
             moduleNames.formUnion(targetModuleNames)
@@ -313,15 +361,17 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         return map
     }
 
-    /// Pure: true when `args`' own real `-sdk` value is an iOS Simulator SDK -- see the real call
-    /// site's own comment for why this check exists (a platform-incompatible target silently
-    /// returns its own native platform's args instead of erroring). Checks the args' own `-sdk`
-    /// value, not target/product-type metadata, so it stays correct regardless of *why* a
-    /// particular target's response didn't match (a tvOS/macOS/watchOS app target today, some other
-    /// platform-specific target shape tomorrow) without needing to enumerate every case.
-    static func matchesSimulatorPlatform(_ args: [String]) -> Bool {
+    /// Pure: true when `args`' own real `-sdk` value matches the *requested* Simulator SDK family
+    /// -- see the real call site's own comment for why this check exists (a target that doesn't
+    /// support the requested destination's own platform silently returns its own, different,
+    /// native platform's args instead of erroring). Checks the args' own `-sdk` value, not target/
+    /// product-type metadata, so it stays correct regardless of *why* a particular target's
+    /// response didn't match (a tvOS/macOS/watchOS app target under an iOS-requested run, or vice
+    /// versa) without needing to enumerate every case. Confirmed real on two independent corpora:
+    /// Project Iris (iOS) and Swiftfin (tvOS) -- issue #124.
+    static func matchesSimulatorPlatform(_ args: [String], sdkFamily: SimulatorSDKFamily) -> Bool {
         guard let sdkIndex = args.firstIndex(of: "-sdk"), sdkIndex + 1 < args.count else { return false }
-        return args[sdkIndex + 1].lowercased().contains("iphonesimulator")
+        return args[sdkIndex + 1].lowercased().contains(sdkFamily.rawValue)
     }
 
     /// Pure: picks which target's arguments answer for a file that more than one target compiles --
@@ -397,17 +447,17 @@ public final class SwiftBuildCompilerArgumentsProvider: CompilerArgumentsProvidi
         )
     }
 
-    private static func simulatorSDKVersion() throws -> String {
+    private static func simulatorSDKVersion(sdkFamily: SimulatorSDKFamily) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["--sdk", "iphonesimulator", "--show-sdk-version"]
+        process.arguments = ["--sdk", sdkFamily.rawValue, "--show-sdk-version"]
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()
         process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let version = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !version.isEmpty else {
-            throw CompilerArgumentsError.buildLogParseFailed(reason: "could not determine iphonesimulator SDK version")
+            throw CompilerArgumentsError.buildLogParseFailed(reason: "could not determine \(sdkFamily.rawValue) SDK version")
         }
         return version
     }

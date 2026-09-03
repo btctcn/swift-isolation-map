@@ -270,9 +270,10 @@ struct SwiftIsolationMap: ParsableCommand {
         // (`IndexStoreLocator.explicitIndexStorePath`, `.build/swift-isolation-map-index-store`) and
         // never touches `-derivedDataPath` (an Xcode-only flag) at all.
         var privateDerivedDataPath: URL?
+        var destination: String?
         switch container {
         case .xcodeproj, .xcworkspace:
-            let destination = resolveDeterministicSimulatorDestination(
+            destination = resolveDeterministicSimulatorDestination(
                 container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: bootstrapDerivedDataPath
             )
             privateDerivedDataPath = PrivateDerivedData.path(for: container, scheme: scheme, destination: destination)
@@ -290,7 +291,8 @@ struct SwiftIsolationMap: ParsableCommand {
         logVerbose("Found \(sourceFiles.count) Swift source file(s) under \(projectRoot.path)")
 
         let compilerArguments = makeCompilerArgumentsProvider(
-            container: container, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: privateDerivedDataPath
+            container: container, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: privateDerivedDataPath,
+            destination: destination
         )
         let defaultIsolation = detectConfiguredDefaultIsolation(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
         logVerbose("Configured default isolation: \(defaultIsolation)")
@@ -567,7 +569,8 @@ struct SwiftIsolationMap: ParsableCommand {
     /// lifetime (see `LiveSwiftPMCompilerArgumentsProvider`'s own doc comment), so sharing one
     /// instance means that real build runs at most once per invocation, not once per consumer.
     private func makeCompilerArgumentsProvider(
-        container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying, derivedDataPath: URL?
+        container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying, derivedDataPath: URL?,
+        destination: String?
     ) -> CompilerArgumentsProviding {
         switch container {
         case .swiftPackage(let packageURL):
@@ -589,7 +592,9 @@ struct SwiftIsolationMap: ParsableCommand {
             // kept for a while afterward as an unreachable-from-any-CLI-flag fallback for a
             // `derivedDataPath == nil` state this project's own invariants already said couldn't
             // happen) has since been removed from the tree entirely, not just made unreachable.
-            return SwiftBuildCompilerArgumentsProvider(container: container, scheme: scheme, derivedDataPath: derivedDataPath!)
+            return SwiftBuildCompilerArgumentsProvider(
+                container: container, scheme: scheme, derivedDataPath: derivedDataPath!, destination: destination
+            )
         }
     }
 
