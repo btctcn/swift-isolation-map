@@ -369,3 +369,15 @@ identical `try`-and-propagate construction a few lines above it in `run()` — g
 "sourcekitd's path resolves but real construction still fails" would mean breaking this session's
 own real toolchain to test it, not something a unit test can cheaply fake without deeper test-double
 surgery this scope doesn't warrant.
+
+## 11. Issue #142 (this section's own §9 loose end): a real, independent SPM-path mechanism found and fixed -- the original Xcode-path (Swiftfin) finding stays open
+
+A later session picked issue #142 back up and found a genuinely different, real, root-caused
+contribution to the same symptom (oracle-query resolved/unknown counts varying between otherwise-
+identical runs) -- but specific to `LiveSwiftPMCompilerArgumentsProvider` (SwiftPM containers), not
+`SwiftBuildCompilerArgumentsProvider` (the Xcode-container path this section's own §9's own
+self-analysis evidence, and the original Swiftfin finding, both actually went through). Full
+investigation and fix: `docs/task-swiftpm-compiler-args-retry-threshold.md`. Issue #142 itself stays
+open -- this closes the SPM-path mechanism specifically, confirmed by 4 consecutive, byte-identical
+self-analysis runs, but does not explain or touch the original Xcode-path Swiftfin variance, which
+still needs its own live-sample investigation (§7's avenue (a), never attempted for that path).

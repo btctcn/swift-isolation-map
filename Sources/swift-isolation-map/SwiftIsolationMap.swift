@@ -327,7 +327,7 @@ struct SwiftIsolationMap: ParsableCommand {
 
         let compilerArguments = makeCompilerArgumentsProvider(
             container: container, processRunning: processRunning, fileSystem: fileSystem, derivedDataPath: privateDerivedDataPath,
-            destination: destination
+            destination: destination, expectedFileCount: sourceFiles.count
         )
         let defaultIsolation = detectConfiguredDefaultIsolation(compilerArguments: compilerArguments, sourceFiles: sourceFiles)
         logVerbose("Configured default isolation: \(defaultIsolation)")
@@ -606,12 +606,13 @@ struct SwiftIsolationMap: ParsableCommand {
     /// instance means that real build runs at most once per invocation, not once per consumer.
     private func makeCompilerArgumentsProvider(
         container: ProjectContainer, processRunning: ProcessRunning, fileSystem: FileSystemQuerying, derivedDataPath: URL?,
-        destination: String?
+        destination: String?, expectedFileCount: Int? = nil
     ) -> CompilerArgumentsProviding {
         switch container {
         case .swiftPackage(let packageURL):
             return LiveSwiftPMCompilerArgumentsProvider(
-                packageDirectory: packageURL.deletingLastPathComponent(), processRunning: processRunning
+                packageDirectory: packageURL.deletingLastPathComponent(), processRunning: processRunning,
+                expectedFileCount: expectedFileCount
             )
         case .xcodeproj, .xcworkspace:
             // The main path since docs/task-swift-build-prepare-for-indexing-spike.md's Steps 1-26:
