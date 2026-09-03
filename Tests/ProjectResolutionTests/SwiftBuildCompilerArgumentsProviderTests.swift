@@ -101,26 +101,59 @@ func moduleNamesUnionAcrossResponses() {
     #expect(moduleNames == ["ModuleA", "ModuleB"])
 }
 
-@Test("matchesSimulatorPlatform accepts real iPhoneSimulator SDK args")
+@Test("matchesSimulatorPlatform accepts real iPhoneSimulator SDK args when iphonesimulator was requested")
 func matchesSimulatorPlatformAcceptsRealIPhoneSimulatorArgs() {
     let args = ["-target", "arm64-apple-ios18.6-simulator", "-sdk", "/Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator26.4.sdk"]
 
-    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args))
+    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args, sdkFamily: .iphonesimulator))
 }
 
-@Test("matchesSimulatorPlatform rejects a real AppleTVSimulator SDK -- a platform-incompatible target silently returning its own native platform, not an error")
-func matchesSimulatorPlatformRejectsRealAppleTVSimulatorArgs() {
-    // Real shape captured this session: forcing `platform: "iphonesimulator"` on Swiftfin's own
-    // `Swiftfin tvOS` target didn't error -- `generateIndexingFileSettings` silently returned this
-    // target's own real, natively-appropriate tvOS Simulator args instead.
+@Test("matchesSimulatorPlatform rejects a real AppleTVSimulator SDK when iphonesimulator was requested -- a platform-incompatible target silently returning its own native platform, not an error")
+func matchesSimulatorPlatformRejectsRealAppleTVSimulatorArgsUnderIOSRequest() {
+    // Real shape captured this session (issue #124): forcing `platform: "iphonesimulator"` on
+    // Swiftfin's own `Swiftfin tvOS` target didn't error -- `generateIndexingFileSettings` silently
+    // returned this target's own real, natively-appropriate tvOS Simulator args instead.
     let args = ["-target", "x86_64-apple-tvos26.1-simulator", "-sdk", "/Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/AppleTVSimulator.platform/Developer/SDKs/AppleTVSimulator26.4.sdk"]
 
-    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args))
+    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args, sdkFamily: .iphonesimulator))
+}
+
+@Test("matchesSimulatorPlatform accepts the same real AppleTVSimulator SDK args when appletvsimulator was requested -- issue #124's own real fix")
+func matchesSimulatorPlatformAcceptsRealAppleTVSimulatorArgsUnderTVOSRequest() {
+    let args = ["-target", "x86_64-apple-tvos26.1-simulator", "-sdk", "/Applications/Xcode-26.4.0.app/Contents/Developer/Platforms/AppleTVSimulator.platform/Developer/SDKs/AppleTVSimulator26.4.sdk"]
+
+    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(args, sdkFamily: .appletvsimulator))
+}
+
+@Test("matchesSimulatorPlatform accepts real watchOS/visionOS Simulator SDK args when the matching family was requested")
+func matchesSimulatorPlatformAcceptsWatchOSAndVisionOSArgs() {
+    let watchArgs = ["-sdk", "/Applications/Xcode-26.4.0.app/.../WatchSimulator26.4.sdk"]
+    let visionArgs = ["-sdk", "/Applications/Xcode-26.4.0.app/.../XRSimulator26.4.sdk"]
+
+    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(watchArgs, sdkFamily: .watchsimulator))
+    #expect(SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(visionArgs, sdkFamily: .xrsimulator))
 }
 
 @Test("matchesSimulatorPlatform rejects args with no -sdk flag at all, rather than crashing or defaulting to true")
 func matchesSimulatorPlatformRejectsMissingSDKFlag() {
-    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(["-module-name", "M"]))
+    #expect(!SwiftBuildCompilerArgumentsProvider.matchesSimulatorPlatform(["-module-name", "M"], sdkFamily: .iphonesimulator))
+}
+
+// MARK: - SimulatorSDKFamily.parsing (issue #124)
+
+@Test("SimulatorSDKFamily.parsing recognizes every real resolveDeterministicSimulatorDestination() platform name")
+func simulatorSDKFamilyParsingRecognizesEveryRealPlatformName() {
+    #expect(SimulatorSDKFamily.parsing(destination: "generic/platform=iOS Simulator") == .iphonesimulator)
+    #expect(SimulatorSDKFamily.parsing(destination: "generic/platform=tvOS Simulator") == .appletvsimulator)
+    #expect(SimulatorSDKFamily.parsing(destination: "generic/platform=watchOS Simulator") == .watchsimulator)
+    #expect(SimulatorSDKFamily.parsing(destination: "generic/platform=visionOS Simulator") == .xrsimulator)
+}
+
+@Test("SimulatorSDKFamily.parsing returns nil for a nil destination (a pure macOS/host scheme) or an unrecognized platform name")
+func simulatorSDKFamilyParsingReturnsNilForNilOrUnrecognized() {
+    #expect(SimulatorSDKFamily.parsing(destination: nil) == nil)
+    #expect(SimulatorSDKFamily.parsing(destination: "generic/platform=macOS") == nil)
+    #expect(SimulatorSDKFamily.parsing(destination: "not a real destination string") == nil)
 }
 
 @Test("preferredArguments picks the single candidate whose target name is a path component of the file -- the real WordPress-iOS shape (WordPressShareExtension vs WordPressDraftActionExtension)")
