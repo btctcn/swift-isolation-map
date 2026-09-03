@@ -7,11 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-114 PRs exist in total as of PR #144 (PR numbers up to #144, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 30 issues exist in total, 4 open (#127, #139-140,
-#142) as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue
-numbers in their own title or body as of the original pass through this log -- not recomputed
-against the newer open issues.
+115 PRs exist in total as of PR #145 (PR numbers up to #145, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 30 issues exist in total, 3 open (#139-140, #142)
+as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers
+in their own title or body as of the original pass through this log -- not recomputed against the
+newer open issues.
 
 ---
 
@@ -586,6 +586,11 @@ Done: Shared one `SourceKitDClient`, constructed once early in `run()` -- the "c
 Issue: #126
 Question: Issue #126 tracked a real call-graph edge (`dictionary[key]`/`dictionary[key] = value`, `Pods/Signals/Signals/ios/UIControl+Signals.swift:110,114`, `dictionary: NSMutableDictionary`, `key: String`) carrying a subscript accessor USR parameterized by `NSCopying`, not the generic `Any`-keyed form issue #94's `SubscriptAccessorDeclarationMatching` already resolves -- its own original search of Foundation's `symbolgraph-extract` output for text mentioning "NSCopying" found nothing, left open rather than guessed at.
 Done: Re-extracting Foundation's own symbolgraph and searching *structurally* (by `pathComponents`, not text) found what the original text search missed: the getter's underlying Clang method (`objectForKeyedSubscript:`) is genuinely present, keying the *whole* get(+set) pair by one fixed Clang USR, emitted once per container (`NSDictionary` get-only, `NSMutableDictionary` get+set) -- `symbolgraph-extract` never independently serializes this ClangImporter-synthesized overload as a Swift-mangled declaration at all. Added `BridgedKeyedSubscriptMatching`, narrow by construction to the two real, confirmed containers, wired into `ExternalIsolationBackfill.collectEdgeLevelWorkItems` right after `SubscriptAccessorDeclarationMatching`'s own check (which already fires for this USR shape but silently misses it, computing a declaration-form USR never actually in the bulk cache). Confirmed via a from-scratch minimal repro producing all three predicted real accessor USRs in a real index store. Real-corpus A/B on Project Iris (`git stash`, identical index store): exactly 2 node diffs (`unspecified` → `nonisolated`), external oracle unknown -2, `unspecifiedIsolation` -2, `highRiskBoundaries` unchanged.
+
+## PR #145 — Resolve MKCoordinateRegion.center's typealias-wrapped setter (2026-09-03)
+Issue: #127
+Question: Issue #127 tracked a real call-graph edge (`coordinateRegion?.center = center`, `MapViewController.swift:165`) whose USR is structurally identical to `DemangledStructMemberMatching`'s own accepted raw-struct-field shape except the container's mangled marker is `"a"` (typealias) instead of `"V"` (struct) -- genuinely ambiguous on its own (the same marker a real, class-rooted case, `NSAttributedString.Key.font`, also uses), so widening that bulk-cache gate unconditionally was left undone, filed as an issue instead of guessed at.
+Done: A temporary, USR-gated debug probe (reverted before this fix) found the real blocker was never isolation-attribute detection -- a live query already resolves inherited isolation safely regardless of struct/class (`SymbolGraphIsolationParser`'s own doc comment already establishes this) -- only candidate *selection*: the live query's own Clang-form USR (`c:@SA@MKCoordinateRegion@FI@center`) can never strictly equal the call graph's Swift-mangled `targetUSR`, and none of the six existing fallback matchers were shaped for this case either. Added `TypealiasWrappedStructMemberMatching`, mirroring `ObjCProtocolPropertyWitnessMatching`'s own container-type-USR-based design, plus an extra (not load-bearing, but cheap and real) confirmation that the candidate's own USR is a genuine Clang struct-field form, never a class. Real-corpus A/B on Project Iris: exactly 1 node diff (`unspecified` → `nonisolated`), `highRiskBoundaries` unchanged.
 
 ---
 
