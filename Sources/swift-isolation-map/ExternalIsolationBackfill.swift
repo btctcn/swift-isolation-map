@@ -1225,7 +1225,8 @@ enum ExternalIsolationBackfill {
                 ?? BridgedExternConstantOptionalContainerMatching.select(from: result, targetUSR: targetUSR)
                 ?? BridgedExternClassConstantMatching.select(from: result, targetUSR: targetUSR)
                 ?? ObjCProtocolPropertyWitnessMatching.select(from: result, targetUSR: targetUSR)
-                ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
+                ?? BridgedExternFunctionPropertyMatching.select(from: result, targetUSR: targetUSR)
+                ?? TypealiasWrappedStructMemberMatching.select(from: result, targetUSR: targetUSR) else { return .unknown }
             let moduleName = symbol.moduleName.map(topLevelModuleName(from:))
             if let symbolGraphJSON = symbol.symbolGraphJSON,
                let isolation = SymbolGraphIsolationParser.isolation(fromSymbolGraphJSON: symbolGraphJSON, knownGlobalActorNames: knownGlobalActorNames) {
