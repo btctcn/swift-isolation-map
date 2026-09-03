@@ -7,10 +7,10 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-115 PRs exist in total as of PR #145 (PR numbers up to #145, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 30 issues exist in total, 3 open (#139-140, #142)
-as of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers
-in their own title or body as of the original pass through this log -- not recomputed against the
+116 PRs exist in total as of PR #146 (PR numbers up to #146, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 30 issues exist in total, 2 open (#140, #142) as
+of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+their own title or body as of the original pass through this log -- not recomputed against the
 newer open issues.
 
 ---
@@ -591,6 +591,11 @@ Done: Re-extracting Foundation's own symbolgraph and searching *structurally* (b
 Issue: #127
 Question: Issue #127 tracked a real call-graph edge (`coordinateRegion?.center = center`, `MapViewController.swift:165`) whose USR is structurally identical to `DemangledStructMemberMatching`'s own accepted raw-struct-field shape except the container's mangled marker is `"a"` (typealias) instead of `"V"` (struct) -- genuinely ambiguous on its own (the same marker a real, class-rooted case, `NSAttributedString.Key.font`, also uses), so widening that bulk-cache gate unconditionally was left undone, filed as an issue instead of guessed at.
 Done: A temporary, USR-gated debug probe (reverted before this fix) found the real blocker was never isolation-attribute detection -- a live query already resolves inherited isolation safely regardless of struct/class (`SymbolGraphIsolationParser`'s own doc comment already establishes this) -- only candidate *selection*: the live query's own Clang-form USR (`c:@SA@MKCoordinateRegion@FI@center`) can never strictly equal the call graph's Swift-mangled `targetUSR`, and none of the six existing fallback matchers were shaped for this case either. Added `TypealiasWrappedStructMemberMatching`, mirroring `ObjCProtocolPropertyWitnessMatching`'s own container-type-USR-based design, plus an extra (not load-bearing, but cheap and real) confirmation that the candidate's own USR is a genuine Clang struct-field form, never a class. Real-corpus A/B on Project Iris: exactly 1 node diff (`unspecified` → `nonisolated`), `highRiskBoundaries` unchanged.
+
+## PR #146 — Resolve macCatalyst always answering active for #if targetEnvironment (2026-09-03)
+Issue: #139
+Question: Issue #139 tracked `isActiveTargetEnvironment` unconditionally answering `true` for any name -- permissive by this file's own deliberate design, unconfirmed against any real corpus at the time (a 2026-08-30 sweep of Project Iris/SQLumen, excluding `Pods/`, found only one statement-level occurrence).
+Done: Re-swept every corpus available to this project, this time including CocoaPods dependencies -- `IceCubesApp`/`home-assistant-iOS` both gate whole real files (`LiveActivitySettingsView.swift`, `YAMLSyntaxHighlighter.swift`, `HealthSensorListViewModel.swift`, `HealthSensorListView.swift`) on `#if os(iOS) && !targetEnvironment(macCatalyst)`, which the old unconditional `true` answered backwards (`!true == false`), silently excluding them. Fixed with an architecture-confirmed answer rather than a corpus-inferred one: `resolveDeterministicSimulatorDestination` structurally never selects a Mac Catalyst destination (only `nil` or a Simulator-flavored one), and `SwiftBuildCompilerArgumentsProvider`'s own `nil`-destination fallback is Simulator-flavored too -- so `"macCatalyst"` is confirmed always inactive for `.iOS`/`.tvOS`/`.watchOS`, documented with an acknowledged residual gap for a hypothetical iOS-cross-compiling SPM package (never observed in any real corpus). Real-corpus A/B on Project Iris: a real Kingfisher `CPListItem+Kingfisher.swift` file (`#if canImport(CarPlay) && !targetEnvironment(macCatalyst)`) was silently excluded entirely before this fix -- 14 real declarations recovered, all correctly `globalActor(MainActor)`, `highRiskBoundaries` unchanged.
 
 ---
 
