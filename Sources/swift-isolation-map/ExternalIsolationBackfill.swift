@@ -455,6 +455,22 @@ enum ExternalIsolationBackfill {
                 )
                 continue
             }
+            // `NSDictionary`/`NSMutableDictionary["key" as NSCopying]` -- a subscript accessor USR
+            // the check just above also recognizes (it matches any `"...cig"`/`"...cis"` suffix),
+            // but whose computed `"cip"`-suffixed declaration form has no bulk-cache entry at all,
+            // so that check's own `bulkCache[declarationUSR]` lookup misses and falls through to
+            // here without matching. `symbolgraph-extract` never independently serializes this
+            // ClangImporter-synthesized overload as a Swift-mangled declaration in the first place
+            // (see `BridgedKeyedSubscriptMatching`'s own doc comment, issue #126) -- it keys the
+            // whole get(+set) pair by the getter's own Clang method USR instead.
+            if let bridgedUSR = BridgedKeyedSubscriptMatching.bulkCacheUSR(forAccessorUSR: targetUSR),
+               let cachedIsolation = bulkCache[bridgedUSR] {
+                backfilled[targetUSR] = DeclarationInfo(
+                    usr: targetUSR, name: targetUSR, explicitIsolation: cachedIsolation, isEligibleForModuleDefaultIsolation: false,
+                    moduleName: bulkModuleNameByUSR[bridgedUSR]
+                )
+                continue
+            }
             // A pure-Swift static member's own accessor USR (`"...vgZ"`/`"...vsZ"`) never matches
             // the bulk cache directly either -- same "accessor form vs. declaration form" gap as the
             // subscript case just above, for a static var instead (see
