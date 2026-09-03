@@ -5,7 +5,7 @@ import SwiftSyntax
 /// build for exactly one platform per invocation, never several at once, so a flat enum (not a
 /// full target-triple model) is all `#if os(...)`/`canImport(...)` evaluation below needs.
 public enum TargetPlatform: Sendable, Equatable {
-    case iOS, macOS, tvOS, watchOS
+    case iOS, macOS, tvOS, watchOS, visionOS
     /// The platform couldn't be determined (a `CompilerArgumentsProviding` failure, an unsupported
     /// container, or a caller -- a test fixture, say -- that never had one to give). Every
     /// `PlatformBuildConfiguration` query below answers `true`/"active" for this case -- but that
@@ -80,7 +80,8 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
         .iOS: ["iOS"],
         .macOS: ["macOS", "OSX"],
         .tvOS: ["tvOS"],
-        .watchOS: ["watchOS"]
+        .watchOS: ["watchOS"],
+        .visionOS: ["visionOS"]
     ]
 
     public func isActiveTargetOS(name: String) throws -> Bool {
@@ -150,8 +151,11 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
     /// platform string contains `"Simulator"` -- it structurally can never select a Mac Catalyst
     /// destination -- and `SwiftBuildCompilerArgumentsProvider`'s own `nil`-destination fallback is
     /// `.iphonesimulator` (docs/task-multi-platform-target-support.md), Simulator-flavored either
-    /// way. So, for an Xcode container targeting `.iOS`/`.tvOS`/`.watchOS`, `"macCatalyst"` is
-    /// confirmed always inactive and `"simulator"` confirmed always active. **Acknowledged residual
+    /// way. So, for an Xcode container targeting `.iOS`/`.tvOS`/`.watchOS`/`.visionOS`,
+    /// `"macCatalyst"` is confirmed always inactive and `"simulator"` confirmed always active
+    /// (`.visionOS` added alongside issue #140's own `--platform` flag -- `resolveDeterministic
+    /// SimulatorDestination` never selects a Mac Catalyst destination for it either, same
+    /// architecture, no separate evidence needed). **Acknowledged residual
     /// gap, not assumed equivalent** (same honesty this file's own `isCustomConditionSet` follow-up
     /// discipline expects): this reasoning is specifically about the Xcode-container destination
     /// path; a `Package.swift` container cross-compiled for iOS via a custom SPM destination bundle
@@ -164,7 +168,7 @@ public struct PlatformBuildConfiguration: BuildConfiguration, Sendable {
     /// axis this type's own doc comment lists.
     public func isActiveTargetEnvironment(name: String) throws -> Bool {
         switch platform {
-        case .iOS, .tvOS, .watchOS:
+        case .iOS, .tvOS, .watchOS, .visionOS:
             if name.caseInsensitiveCompare("macCatalyst") == .orderedSame { return false }
             return true
         case .macOS, .unknown:

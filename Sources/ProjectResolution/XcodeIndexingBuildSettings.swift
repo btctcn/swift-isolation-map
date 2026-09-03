@@ -19,6 +19,26 @@ public let xcodeIndexingBuildSettings = [
     "COMPILER_INDEX_STORE_ENABLE=YES", "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO",
 ]
 
+/// Thrown when `--platform` names a platform this scheme's own real `-showdestinations` output
+/// simply doesn't offer a Simulator destination for -- confirmed real (issue #140): a modern
+/// multiplatform SwiftUI scheme (`IceCubesApp`) lists several genuinely simultaneous Simulator
+/// platforms for one scheme (`iOS Simulator`, `visionOS Simulator`), and picking the wrong one
+/// silently, the way `resolveDeterministicSimulatorDestination` always did before `--platform`
+/// existed, is exactly the kind of surprise this project's own guiding principle exists to prevent.
+/// A request naming a platform this scheme can't offer must fail loudly, not fall back to some
+/// other platform the user didn't ask for.
+public enum DestinationResolutionError: Error, CustomStringConvertible, Equatable {
+    case requestedPlatformNotAvailable(requested: String, available: [String])
+
+    public var description: String {
+        switch self {
+        case .requestedPlatformNotAvailable(let requested, let available):
+            let availableList = available.isEmpty ? "none" : available.joined(separator: ", ")
+            return "--platform \(requested) is not a valid Simulator destination for this scheme. Available: \(availableList)."
+        }
+    }
+}
+
 /// Picks a deterministic Simulator destination for schemes that have one, so `xcodebuild`'s own
 /// destination auto-selection -- which silently picks whichever destination `-showdestinations`
 /// happens to list *first* -- never decides which SDK a build (and everything downstream: every
@@ -53,9 +73,20 @@ public let xcodeIndexingBuildSettings = [
 /// nothing to pass; that caller uses `PrivateDerivedData.path(destination: nil)` instead (a real,
 /// private, still-never-shared location, just keyed on a fixed placeholder segment rather than the
 /// real destination) -- see `SwiftIsolationMap.swift`'s own call site for why.
+/// `preferredPlatform` (issue #140, the `--platform` CLI flag): when a scheme's own real
+/// destinations include more than one simultaneously-valid Simulator platform (a modern
+/// multiplatform SwiftUI target adding visionOS as an *additional destination on the same scheme*,
+/// not a separate one -- confirmed real on `IceCubesApp`), the old unconditional "first Simulator
+/// line wins" behavior could never reach any platform but whichever `xcodebuild` happened to list
+/// first. `nil` (every existing caller before `--platform` existed) preserves that exact original
+/// behavior. A non-`nil` value matches case-insensitively, by substring, against each real
+/// candidate's own platform string (`"visionOS"` matches `"visionOS Simulator"`) -- and throws
+/// `DestinationResolutionError` rather than silently falling back to a platform the user didn't
+/// request, when the scheme genuinely doesn't offer a Simulator destination for that name at all.
 public func resolveDeterministicSimulatorDestination(
-    container: ProjectContainer, scheme: String, processRunning: ProcessRunning, derivedDataPath: URL? = nil
-) -> String? {
+    container: ProjectContainer, scheme: String, processRunning: ProcessRunning, derivedDataPath: URL? = nil,
+    preferredPlatform: String? = nil
+) throws -> String? {
     var arguments = ["-showdestinations", "-scheme", scheme]
     switch container {
     case .xcodeproj(let url): arguments += ["-project", url.path]
@@ -68,12 +99,22 @@ public func resolveDeterministicSimulatorDestination(
     guard let result = try? processRunning.run(executable: "xcodebuild", arguments: arguments, workingDirectory: nil) else {
         return nil
     }
+    var simulatorPlatforms: [Substring] = []
     for line in result.standardOutput.split(separator: "\n") {
         guard let platformRange = line.range(of: "platform:") else { continue }
         let platform = line[platformRange.upperBound...].prefix { $0 != "," && $0 != "}" }
         if platform.contains("Simulator") {
-            return "generic/platform=\(platform)"
+            simulatorPlatforms.append(platform)
         }
     }
-    return nil
+    guard let preferredPlatform else {
+        guard let first = simulatorPlatforms.first else { return nil }
+        return "generic/platform=\(first)"
+    }
+    guard let matched = simulatorPlatforms.first(where: { $0.localizedCaseInsensitiveContains(preferredPlatform) }) else {
+        throw DestinationResolutionError.requestedPlatformNotAvailable(
+            requested: preferredPlatform, available: simulatorPlatforms.map(String.init)
+        )
+    }
+    return "generic/platform=\(matched)"
 }

@@ -110,6 +110,15 @@ struct SwiftIsolationMap: ParsableCommand {
     @Option(help: "Build scheme (Xcode) or product/target (SPM). Required.")
     var scheme: String = ""
 
+    // Only needed when one scheme's own real destinations include more than one simultaneously-
+    // valid Simulator platform (issue #140) -- a modern multiplatform SwiftUI target adding
+    // visionOS as an *additional destination on the same scheme*, not a separate one (confirmed
+    // real on IceCubesApp: one scheme, both iOS Simulator and visionOS Simulator destinations).
+    // `nil` (default) preserves this tool's original behavior -- whichever Simulator destination
+    // `xcodebuild -showdestinations` happens to list first for the scheme.
+    @Option(help: "For a scheme offering more than one simultaneous Simulator destination (e.g. visionOS added alongside iOS on the same scheme), the platform to analyze: iOS | tvOS | watchOS | visionOS. Matched case-insensitively against the real destination platform name. Fails with a clear error (listing what's actually available) rather than silently picking a platform you didn't ask for. Default: whichever Simulator destination xcodebuild lists first for the scheme -- unchanged from before this flag existed.")
+    var platform: String?
+
     @Option(help: "Parallelize the external-oracle live-query phase across N worker processes (docs/task-process-tree-optimization.md). Default 1: today's exact sequential behavior.")
     var oracleWorkers: Int = 1
 
@@ -298,8 +307,9 @@ struct SwiftIsolationMap: ParsableCommand {
         var destination: String?
         switch container {
         case .xcodeproj, .xcworkspace:
-            destination = resolveDeterministicSimulatorDestination(
-                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: bootstrapDerivedDataPath
+            destination = try resolveDeterministicSimulatorDestination(
+                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: bootstrapDerivedDataPath,
+                preferredPlatform: platform
             )
             privateDerivedDataPath = PrivateDerivedData.path(for: container, scheme: scheme, destination: destination)
             logVerbose("Using private DerivedData at \(privateDerivedDataPath!.path)")
@@ -681,6 +691,12 @@ struct SwiftIsolationMap: ParsableCommand {
     /// version number (`arm64-apple-ios15.6-simulator`, `arm64-apple-macosx13.0`,
     /// confirmed against this project's own real captured build logs this session) -- matching the
     /// leading run of letters after that marker is enough, no need for a full triple grammar.
+    /// `"xros"` (issue #140's own `--platform visionOS` follow-up): visionOS's real target-triple
+    /// OS component is `"xros"`, not `"visionos"` -- confirmed via a real, from-scratch `swiftc
+    /// -target arm64-apple-xros1.0-simulator` compile against the real visionOS Simulator SDK,
+    /// Apple's own long-standing internal platform name persisting in triples even though the
+    /// public OS name (and the real `#if os(visionOS)` spelling `PlatformBuildConfiguration.
+    /// osAliases` matches against) is `"visionOS"`.
     static func platform(fromTargetTriple triple: String) -> TargetPlatform {
         guard let appleRange = triple.range(of: "-apple-") else { return .unknown }
         let osComponent = triple[appleRange.upperBound...].prefix { $0.isLetter }
@@ -689,6 +705,7 @@ struct SwiftIsolationMap: ParsableCommand {
         case "macosx", "macos": return .macOS
         case "tvos": return .tvOS
         case "watchos": return .watchOS
+        case "xros": return .visionOS
         default: return .unknown
         }
     }
@@ -831,8 +848,9 @@ struct SwiftIsolationMap: ParsableCommand {
             // particular, why code signing must be disabled), and
             // `resolveDeterministicSimulatorDestination`'s for why the destination itself must
             // also be pinned down explicitly.
-            if let destination = resolveDeterministicSimulatorDestination(
-                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath
+            if let destination = try resolveDeterministicSimulatorDestination(
+                container: container, scheme: scheme, processRunning: processRunning, derivedDataPath: derivedDataPath,
+                preferredPlatform: platform
             ) {
                 arguments += ["-destination", destination]
             }
@@ -935,7 +953,7 @@ struct SwiftIsolationMap: ParsableCommand {
         case .xcodeproj, .xcworkspace:
             return LiveXcodeBulkExtractionEnvironmentProvider(
                 container: container, scheme: scheme, processRunning: processRunning, fileSystem: fileSystem,
-                derivedDataPath: derivedDataPath
+                derivedDataPath: derivedDataPath, preferredPlatform: platform
             )
         }
     }
