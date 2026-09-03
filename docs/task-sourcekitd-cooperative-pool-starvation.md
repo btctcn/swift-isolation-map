@@ -6,7 +6,11 @@ depending on the sample). The `sourcekitd`/cooperative-pool investigation in §1
 genuine, well-evidenced, but ultimately wrong trail — kept in full since the disproof technique
 (a minimal C reproducer) and the real, independent `SourceKitDClient` fix it produced are both
 still worth keeping. Read §8 first if you just want the actual answer; §1-7 are the record of how
-it was ruled out.** Written up per this project's standing "durable write-up for real
+it was ruled out. §9 closes out the two loose ends §7/§8 left open ([issue #125](https://github.com/btctcn/swift-isolation-map/issues/125)): the double-`sourcekitd_initialize()` hygiene item is now
+fixed; the smaller, separate non-determinism is not, and now has a third real reproduction (split
+out into [issue #142](https://github.com/btctcn/swift-isolation-map/issues/142) so it survives #125's own closure). §10 is a follow-up product decision made
+auditing §9's own fix: total sourcekitd unavailability is now a hard failure (`exit(2)`), not a
+silent fail-soft degrade.** Written up per this project's standing "durable write-up for real
 investigations" convention (`docs/motivation.md`, `docs/priority-2-phase-0-spike.md`, etc.).
 
 ## 1. The symptom
@@ -269,3 +273,99 @@ either. The real lesson for next time: when a symptom shows up in one specific p
 (`local-declaration-fallback`'s `0 of 6804`), check whether a *shared* upstream dependency
 (here, one memoized `compilerArguments` provider instance feeding both phases) is the actual
 common cause before chasing theories specific to that one phase's own code.
+
+## 9. Closing out issue #125's two loose ends
+
+[Issue #125](https://github.com/btctcn/swift-isolation-map/issues/125) was filed to track §7's two
+remaining loose ends so neither got lost. One is now fixed; the other still isn't, for the same
+reason §7 already gave — no new evidence changes that.
+
+**Loose end 1 (double `sourcekitd_initialize()`) — fixed.** `SwiftIsolationMap.run()` now
+constructs one `SourceKitDClient` and threads it through both `resolveLocalDeclarationFallback`
+and `resolveExternalIsolation`, instead of each constructing its own. Exactly the "cheap, obvious
+fix" §7 already named — done now purely as hygiene (closing a documented-UB contract violation
+that §4's own C reproducer found harmless in practice), not because any bug was traced to it.
+`--oracle-workers > 1` is unaffected: both phases' real query volume already runs in fresh
+per-worker subprocesses then, so this shared main-process client goes largely unused either way.
+
+**Real-corpus verification, Project Iris.** A controlled A/B (`git stash`, identical corpus state,
+identical cached index store, `--oracle-workers 8` both sides) between the pre-fix and post-fix
+binaries: `summary` byte-identical (`crossActorBoundaries`/`highRiskBoundaries`/`unspecifiedIsolation`
+1555/1486/113 both sides, matching the `task-multi-platform-target-support.md` baseline), all 41669
+`nodes` byte-identical, and all 1555 `edges` byte-identical once sorted by
+`(callerUSR, calleeUSR, location.file, location.line)` — the raw (unsorted) edge lists differed only
+in list order, the same pre-existing, order-only non-determinism this section already documents
+elsewhere, not a content difference. Swiftfin A/B was attempted but blocked by the pre-existing,
+code-independent `ComputeTargetDependencyGraph` environment failure
+(`docs/task-multi-platform-target-support.md`, "A separate, confirmed-independent real
+Swiftfin/environment issue") — reconfirmed still reproducing today with a plain manual `xcodebuild
+build -scheme Swiftfin` invocation, no involvement of this tool.
+
+**Loose end 2 (the smaller, separate non-determinism) — still open, now reproduced a third time.**
+While verifying loose end 1's fix didn't change behavior, a real self-analysis run (this project
+analyzing its own `swift-isolation-map` executable target, `swift-isolation-map ./Package.swift
+--scheme swift-isolation-map`) turned out to be a *more* volatile corpus than Swiftfin for this
+exact phenomenon: run-to-run, the external-oracle phase alone swung between `304 resolved / 391
+unknown` and `473 resolved / 185 unknown` — with **zero code changes and the identical cached
+index store** between runs. Confirmed on both sides of loose end 1's own fix (pre-fix: 2 runs, one
+each outcome; post-fix: 3 runs, same two outcomes, same split) — the variance is identical whether
+loose end 1 is fixed or not, positively confirming this fix doesn't touch it either way, exactly as
+predicted. (This corpus separately logs `sourcekit: ... error creating ASTInvocation: error:
+unknown argument: '-entry-point-function-name'` and a `-debug-info-format=dwarf ... missing -g`
+error for some queries — an executable-target-specific compiler-argument quirk, not investigated
+here, plausibly related to why this corpus swings harder than Swiftfin did.) No new hypothesis was
+tested; this is additional real-world evidence the same open question (§7's avenue (a): a live
+`sample`/`spindump` during an actual failing run) would still need to explain, not an attempt at
+one.
+
+## 10. Total sourcekitd unavailability: hard failure, not fail-soft (product decision, follow-up to §9)
+
+§9's own shared-client fix kept the pre-existing fail-soft contract: if `SourceKitDClient()`
+construction itself failed, `run()` set the client to `nil`, printed a warning, and both live-query
+phases silently disabled themselves for the rest of that run. Auditing that path directly (in
+response to a direct question about it) surfaced a real correctness problem with that contract,
+independent of anything above: `resolveExternalIsolation` returning early on a `nil` client means
+even the run's own already-computed bulk-symbolgraph cache (`precomputedBulkResolution` — free,
+needs no live query at all) never gets applied, since it's only ever folded in *through*
+`ExternalIsolationBackfill.resolve`, which that early return skips entirely. A total sourcekitd
+outage therefore doesn't just lose the live-query tier -- it silently loses *all* external-
+dependency isolation data, live-query and bulk-cache alike, while still printing a normal-looking,
+complete report. Per this project's own guiding principle (README: "the tool refuses to run rather
+than silently produce a result it isn't confident in"), that's the wrong contract for *total*
+unavailability specifically -- categorically different from a single query legitimately failing
+(`isUnknown` exists precisely for that per-item case and is unaffected by this section).
+
+**Fix**: `SourceKitDClient()` is now constructed once, early in `run()`, immediately after
+`PrerequisiteChecking`'s own gate and before any real analysis work -- a construction failure there
+prints the same "swift-isolation-map can't run in this environment" message shape and
+`throw`s the same `ExitCode(2)` every other prerequisite failure already uses (a deliberate choice,
+made explicitly so a total-sourcekitd-outage exit code is never confusable with `1`, this tool's own
+"found real high-risk boundaries" exit code — a CI gate scripted on exit code must be able to tell
+"the analysis ran and found risk" apart from "the analysis couldn't run at all"). Both
+`resolveLocalDeclarationFallback` and `resolveExternalIsolation` now take a non-optional
+`SourceKitDClient` parameter — the `nil`-handling branches in both are gone; there is no code path
+left that treats "sourcekitd is unusable" as a normal, silently-degraded outcome.
+
+**Deliberately not touched, same audit:** `BulkSymbolGraphExtractor.extract`'s own per-module
+`xcrun swift symbolgraph-extract` failures (currently silent, no `eprint` at all) were considered
+for the same treatment and rejected. Two independent reasons: (1) the systemic failure mode this
+section cares about — the whole toolchain being unusable — is already caught up front by the
+*existing* `xcrun --find swift` check both dylib locators already run inside `PrerequisiteChecking`
+(the identical resolution `xcrun swift symbolgraph-extract` itself depends on), so there is no
+comparable silent-total-loss gap left to close there; and (2) `BulkSymbolGraphExtractor
+.defaultModules` unconditionally includes `["UIKit", "AppKit", "SwiftUI", "Foundation",
+"ObjectiveC", "CoreGraphics", "Dispatch", "Swift", "CoreFoundation"]` regardless of target platform
+— `AppKit` extraction against an iOS SDK (or `UIKit` against a macOS one) is expected, normal, every
+single run for that platform, not a failure. A first attempt at adding an `eprint` warning on any
+per-module extraction failure was written, then reverted before landing specifically because of
+this: it would have fired unconditionally on every iOS (or macOS) run, exactly the guaranteed-noise
+shape this project has already fought to eliminate elsewhere (issues #113/#120/#133/#135). Per-
+module failures here stay exactly as fail-soft and exactly as silent as before this section.
+
+**Verification**: `swift build`/`swift test -c release` (600/600 passing) confirm the new gate
+compiles and doesn't regress the happy path; no dedicated unit test was added for the throw-
+propagation itself, matching this project's own existing precedent for `RawIndexStoreClient`'s
+identical `try`-and-propagate construction a few lines above it in `run()` — genuinely simulating
+"sourcekitd's path resolves but real construction still fails" would mean breaking this session's
+own real toolchain to test it, not something a unit test can cheaply fake without deeper test-double
+surgery this scope doesn't warrant.
