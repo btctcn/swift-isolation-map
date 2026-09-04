@@ -7,11 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-119 PRs exist in total as of PR #150 (PR numbers up to #150, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 31 issues exist in total, 1 open (#148) as of
-this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
-their own title or body as of the original pass through this log -- not recomputed against the
-newer open issues.
+120 PRs exist in total as of PR #151 (PR numbers up to #151, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 31 issues exist in total, 0 open as of this
+writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their
+own title or body as of the original pass through this log -- not recomputed against the newer
+closed issues.
 
 ---
 
@@ -611,6 +611,11 @@ Done: A new, permanent, opt-in categorized diagnostic (`SWIFT_ISOLATION_MAP_QUER
 Issue: #142
 Question: Issue #142's own original evidence (`docs/task-sourcekitd-cooperative-pool-starvation.md` §6: 7 repeated Swiftfin runs, 6 landing on one resolved/unknown count, 1 on a different one) was still open after PR #149 fixed a real but different, independent SwiftPM-path mechanism -- did the original Xcode-path variance still reproduce, now that mechanism was fixed and several later, unrelated compiler-argument fixes had shipped?
 Done: Corrected a stale claim first: `docs/task-multi-platform-target-support.md`'s own "confirmed independent Swiftfin/environment issue" turned out not to be an environment blocker at all -- the real reason was a plain missing `-skipMacroValidation` (the same real Xcode macro-security gate that flag already exists to bypass for Swiftfin's own `swift-case-paths`/`StatefulMacros` dependencies); the original PR #141 investigation's own "plain manual" repro simply never passed it either. With that corrected, ran `swift-isolation-map` against Swiftfin 7 times (matching the original finding's own sample size) -- one fresh index, six reusing it -- all byte-identical, confirmed at both the summary level and a full node-level set diff. No new hypothesis chased for why the original ~1-in-7 rate no longer reproduces, matching this project's own established precedent for a finding that stops reproducing on a real, actively-changing corpus (`task-remaining-matcher-batch.md` §8's own Mindbox finding). Issue #142 closed as "not currently reproducible."
+
+## PR #151 — Fix DeclarationLinkerTests/RawIndexStoreClientModuleScopingTests race on shared cross-file-witness fixture (2026-09-04)
+Issue: #148
+Question: Issue #148 (found as a side effect of investigating issue #142, confirmed pre-existing on unmodified `main` via `git stash`) tracked a real, reproducible race: `Tests/Fixtures/cross-file-witness` is shared, on disk, by multiple test files, and three of `DeclarationLinkerTests.swift`'s six tests still built directly into its shared `.build`, unguarded against Swift Testing's default parallel execution racing any other test building the same directory.
+Done: `DeclarationLinkerTests.swift` already had *part* of the fix -- three of its own six tests, plus `RawIndexStoreClientModuleScopingTests.swift`/`ExternalIsolationBackfillTests.swift` (both since PR #128), already built into a private, per-test, `realpath(3)`-resolved temp copy via an existing `copiedCrossFileWitnessFixture()` helper rather than the shared fixture root. Converted the three remaining unsafe tests to that same helper, removing their own `try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)` calls against the shared directory. Confirmed `ConcurrentIssuanceSpike.swift` (reads fixture source only, no build) and `CapstoneCLITests.swift` (a different, unshared fixture) needed no change. No production code touched. Verified with the issue's own exact repro command, 3 consecutive runs, 10/10 tests passing every time, zero flakes.
 
 ---
 
