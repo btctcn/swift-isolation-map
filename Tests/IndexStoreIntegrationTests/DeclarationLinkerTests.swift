@@ -19,19 +19,13 @@ import ProjectResolution
 /// merged `protocolGlobalActorNames`) can.
 @Test("A cross-file protocol-witness call resolves correctly end to end, through the unmodified IsolationInferenceEngine")
 func crossFileProtocolWitnessResolvesCorrectly() throws {
-    let fixtureRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent() // DeclarationLinkerTests.swift -> IndexStoreIntegrationTests
-        .deletingLastPathComponent() // IndexStoreIntegrationTests -> Tests
-        .appendingPathComponent("Fixtures/cross-file-witness")
+    // Builds into a private, per-test copy of the fixture, not the shared `Fixtures/cross-file-witness`
+    // directory itself -- see `copiedCrossFileWitnessFixture()`'s own doc comment for why (issue #148:
+    // a real, reproducible SwiftPM build-database race when multiple tests build the same shared
+    // `.build` concurrently under Swift Testing's default parallel execution).
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
-    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-cross-file-witness-store"
-    try? FileManager.default.removeItem(atPath: indexStorePath)
-    // Found the hard way (flaky on repeated runs): SwiftPM's incremental build sees unchanged
-    // sources and skips recompilation entirely on a second run, which means it never actually
-    // invokes the compiler to (re)populate the *new* -index-store-path -- silently leaving the
-    // freshly-deleted store empty and every USR unresolved. Force a real rebuild every time by
-    // clearing the fixture's own .build first, not just the destination index store path.
-    try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-cross-file-witness-store-\(UUID().uuidString)"
 
     // 1. Build the real fixture for real, indexing it to a throwaway path -- same command form
     // verified in the Phase 0 spike and used by Phase 2's IndexStoreLocator.
@@ -97,14 +91,9 @@ func crossFileProtocolWitnessResolvesCorrectly() throws {
 /// plain stored property added specifically for this test.
 @Test("owningPropertyUSR(forUSR:) maps a real synthesized getter/setter USR back to the property's own real USR")
 func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
-    let fixtureRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Fixtures/cross-file-witness")
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
-    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-store"
-    try? FileManager.default.removeItem(atPath: indexStorePath)
-    try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-accessor-usr-store-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
@@ -141,14 +130,9 @@ func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
 /// without validating the shape that actually produced the 28134-trigger real-world problem.
 @Test("baseTypeUSRs(forUSR:) resolves a real supertype/conformance, including one declared via an extension")
 func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
-    let fixtureRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Fixtures/cross-file-witness")
+    let fixtureRoot = try copiedCrossFileWitnessFixture()
     let sourcesDirectory = fixtureRoot.appendingPathComponent("Sources/CrossFileWitness")
-    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-store"
-    try? FileManager.default.removeItem(atPath: indexStorePath)
-    try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)
+    let indexStorePath = NSTemporaryDirectory() + "swift-isolation-map-test-baseof-store-\(UUID().uuidString)"
 
     let processRunner = LiveProcessRunner()
     let buildResult = try processRunner.run(
