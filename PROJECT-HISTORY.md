@@ -7,9 +7,9 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-118 PRs exist in total as of PR #149 (PR numbers up to #149, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 31 issues exist in total, 2 open (#142, #148) as
-of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+119 PRs exist in total as of PR #150 (PR numbers up to #150, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 31 issues exist in total, 1 open (#148) as of
+this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
 their own title or body as of the original pass through this log -- not recomputed against the
 newer open issues.
 
@@ -606,6 +606,11 @@ Done: Added `--platform <name>`, threaded consistently as `preferredPlatform` th
 Issue: #142
 Question: Issue #142 (docs/task-sourcekitd-cooperative-pool-starvation.md §9's own loose end 2) tracked oracle-query resolved/unknown counts varying between otherwise-identical runs -- original evidence was Swiftfin (an Xcode container), later reproduced a third time on this project's own self-analysis (an SPM container) during issue #125's investigation, with no root cause identified at the time.
 Done: A new, permanent, opt-in categorized diagnostic (`SWIFT_ISOLATION_MAP_QUERY_DIAGNOSTICS`) found the dominant swinging factor was `no-compiler-args` (288 vs. 33 across two real self-analysis runs). Root-caused directly: `LiveSwiftPMCompilerArgumentsProvider`'s single `swift build -v` parse is not stable across repeated invocations with zero source changes -- an incremental build silently omits compile lines for already-up-to-date targets (confirmed: four consecutive invocations parsed to 10 real lines each, a from-scratch build of the identical source parsed to 1244). Fixed the same way this project's own now-removed `LiveXcodeCompilerArgumentsProvider` once did (PR #71): retry with `swift package clean` + a full rebuild when the parse looks suspiciously incomplete -- but scaled the threshold to the analyzed project's own real file count rather than a fixed number, after a fixed floor's own first version regressed a real, tiny test fixture (`Tests/Fixtures/simple-actor`, doubling its build cost and racing a different concurrently-running test's build of the same shared fixture directory). Does **not** explain or touch the original Xcode-path (Swiftfin) finding -- `SwiftBuildCompilerArgumentsProvider` is a different, non-log-parsing implementation with no equivalent vulnerability -- so issue #142 stays open for that. A genuinely pre-existing, unrelated test-suite race (two test files sharing one fixture's `.build`, confirmed on unmodified `main`) was found along the way and filed separately as issue #148. Real-corpus verified: this project's own self-analysis, 4 consecutive runs from a stable binary copy, byte-identical summary every time (was swinging between ~304-391 and ~473-192 before).
+
+## PR #150 — Reconfirm issue #142's Xcode-path finding: not currently reproducible (2026-09-04)
+Issue: #142
+Question: Issue #142's own original evidence (`docs/task-sourcekitd-cooperative-pool-starvation.md` §6: 7 repeated Swiftfin runs, 6 landing on one resolved/unknown count, 1 on a different one) was still open after PR #149 fixed a real but different, independent SwiftPM-path mechanism -- did the original Xcode-path variance still reproduce, now that mechanism was fixed and several later, unrelated compiler-argument fixes had shipped?
+Done: Corrected a stale claim first: `docs/task-multi-platform-target-support.md`'s own "confirmed independent Swiftfin/environment issue" turned out not to be an environment blocker at all -- the real reason was a plain missing `-skipMacroValidation` (the same real Xcode macro-security gate that flag already exists to bypass for Swiftfin's own `swift-case-paths`/`StatefulMacros` dependencies); the original PR #141 investigation's own "plain manual" repro simply never passed it either. With that corrected, ran `swift-isolation-map` against Swiftfin 7 times (matching the original finding's own sample size) -- one fresh index, six reusing it -- all byte-identical, confirmed at both the summary level and a full node-level set diff. No new hypothesis chased for why the original ~1-in-7 rate no longer reproduces, matching this project's own established precedent for a finding that stops reproducing on a real, actively-changing corpus (`task-remaining-matcher-batch.md` §8's own Mindbox finding). Issue #142 closed as "not currently reproducible."
 
 ---
 
