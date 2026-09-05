@@ -116,8 +116,15 @@ Without a location, neither the bulk `usrRewriteMap` (needs `declaration.locatio
 `location == nil`) can ever resolve it. This looks like a third, related-but-distinct consequence of
 the same "protocols aren't a type scope" gap #53 partially addressed (for protocol *members*, not
 protocol *declarations themselves*) — worth its own follow-up issue if a fix is found to be
-tractable, rather than folding it into this document's "can't be fixed" conclusion. Not yet
-resolved as of this writing.
+tractable, rather than folding it into this document's "can't be fixed" conclusion.
+
+**Resolved.** Filed as issue #57, fixed in PR #58 (see `docs/task-protocol-own-declaration-location.md`
+for the full account): `visit(_ node: ProtocolDeclSyntax)` now also calls `recordPrimaryDeclaration`,
+mirroring the struct/enum/class/actor handlers, giving every protocol's own declaration a real
+location instead of `nil`. Confirmed against the current codebase (`Sources/SyntaxAnalysis/
+DeclarationExtractor.swift`, `TypeIndexBuilder.Visitor.visit(_:ProtocolDeclSyntax)`), whose own
+comment now cites this exact Step 6 as the gap it closes. Real-corpus verified on Project Iris at
+the time: 26 additional declarations recovered, `highRiskBoundaries` 933 → 1167.
 
 ## Step 7 — PR
 

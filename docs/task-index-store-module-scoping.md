@@ -5,10 +5,17 @@ this file actually existed -- the feature shipped far enough to leave comments p
 was reverted before the doc itself was ever written. Backfilled now, covering the whole
 investigation from the original hypothesis through the regression and its real fix.
 
-**Status: shipped.** Root cause of the regression fully explained; the `is_system_unit`-based
-exemption fix verified against the real Project Iris corpus, including the reason it beats even
-the unfiltered baseline (Step 6); test coverage added for both the original allow-list behavior
-and the new system-unit exemption specifically.
+**Status: shipped, but superseded as the default path.** Root cause of the regression fully
+explained; the `is_system_unit`-based exemption fix verified against the real Project Iris corpus,
+including the reason it beats even the unfiltered baseline (Step 6); test coverage added for both
+the original allow-list behavior and the new system-unit exemption specifically. Since
+`docs/task-private-derived-data-hypothesis.md` shipped, this whole filtering approach (allow-list +
+`is_system_unit`) is no longer the default for Xcode projects -- a private, never-shared
+DerivedData structurally avoids the cross-build pollution problem this fix filters out after the
+fact, so filtering isn't needed at all in the common case. This fix's code is kept, gated behind
+`--experimental-index-store-module-filter` (off by default, explicitly liable to removal), as a
+narrower fallback. Step 10 below (never started) is now moot for that reason -- see its own updated
+note.
 
 ## Step 1 — Hypothesis
 
@@ -257,6 +264,16 @@ in scope (whole fabricated edges from an uncompiled target, not only unresolved-
 first understood. The 27-edge non-modular-ObjC gap remains open but is small, pre-existing, and
 orthogonal to this fix.
 
+**Scope note, added after `docs/task-private-derived-data-hypothesis.md` shipped:** this 27-edge
+gap is a property of the module-name-based allow-list/`is_system_unit` filter itself (an empty
+module-name string can never match a positive allow-list) -- it only manifests when that filter is
+active. Since that filter is now off by default (gated behind
+`--experimental-index-store-module-filter`), the gap does not affect the tool's default behavior
+against Xcode projects today; it only affects that narrower, explicitly-experimental fallback path.
+Confirmed to reproduce identically on a private store too, per
+`docs/task-private-derived-data-hypothesis.md` Step 5 -- tracked as
+[issue #155](https://github.com/btctcn/swift-isolation-map/issues/155), scoped accordingly.
+
 ## Step 7 — Shipped
 
 The throwaway `is_system_unit` diagnostics (`debugModuleSystemCounts()`,
@@ -293,7 +310,17 @@ source or inferred by analogy -- they were inferred first, then verified for rea
 Also confirmed empirically via 220-module per-module tallying (Step 4(b), unchanged) and a fast,
 standalone probe reusing the already-fresh index store directly (no re-running xcodebuild).
 
-## Step 10 — Open follow-up: output-path-based filtering (not started)
+## Step 10 — Superseded, never started: output-path-based filtering
+
+**Not pursued.** Investigated as its own hypothesis and found not viable: Xcode's new build system
+prints one driver-level line per target in its `-verbose` log (`builtin-Swift-Compilation --`), not
+one per-file `swift-frontend` invocation with its own `-o <path>` -- confirmed on a real, fixed
+compile line this project's own tests already capture. There is no per-file output path to parse
+from the log this tool reads, so the plan below could never have worked as designed. Superseded,
+not just abandoned: `docs/task-private-derived-data-hypothesis.md` solves the same underlying
+problem structurally instead (a private, never-shared DerivedData can't accumulate another build's
+units at all, by construction -- no filtering of any kind needed) and has since shipped as the
+default for Xcode projects. Left below verbatim as the original, now-historical plan.
 
 While researching Step 9, found the closest thing to official documentation of how the index store
 itself is built: `swiftlang/indexstore-db`'s own `Sources/IndexStore/Index Store.md` (written by

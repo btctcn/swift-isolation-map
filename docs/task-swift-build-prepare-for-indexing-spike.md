@@ -1572,3 +1572,7 @@ path ever needs a fallback). Its own test suite (`XcodeCompilerArgsTests.swift`)
 still exercises it directly.
 
 **Full test suite**: 538 tests, all passing.
+
+Making both providers agree on fallback candidate ordering for this specific shape (files with no
+home-directory signal at all) is tracked as
+[issue #154](https://github.com/btctcn/swift-isolation-map/issues/154).

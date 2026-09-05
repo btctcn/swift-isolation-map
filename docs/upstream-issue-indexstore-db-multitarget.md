@@ -1,9 +1,14 @@
 # Upstream report: `IndexStoreDB` drops occurrences for files shared across multiple targets
 
-Prepared for filing against [`swiftlang/indexstore-db`](https://github.com/swiftlang/indexstore-db).
-**Not yet filed** — this document is the complete, ready-to-submit content plus the surrounding
-investigation context, kept together so the decision to file (and where) can be made with full
-information. See `docs/task-raw-indexstore-spike.md` for how this was found.
+Filed against [`swiftlang/indexstore-db`](https://github.com/swiftlang/indexstore-db) as
+[issue #292](https://github.com/swiftlang/indexstore-db/issues/292) (body matches this document,
+confirmed by direct comparison), with a fix submitted as
+[PR #293](https://github.com/swiftlang/indexstore-db/pull/293) ("Fixes #292" — a new
+`SharedFileMultiTarget` tibs fixture plus regression tests, full `swift test` run confirmed green).
+**Status as of 2026-09-05: PR #293 still open, unreviewed** — opened 2026-08-10, no maintainer
+activity since (one comment, one review recorded, but no update since the day it was opened). This
+document is kept as the original investigation record; the content below reflects the state at the
+time of filing, not a live draft. See `docs/task-raw-indexstore-spike.md` for how this was found.
 
 ---
 

@@ -149,12 +149,15 @@ touched these matchers):
   wasn't at the time of the original finding). Most likely the Mindbox pod version installed in the
   corpus has since changed the exact call shape that produced the original 2 edges -- not something
   this project fixed. Not re-opened as an issue since there's nothing current to point at.
-- `NSMutableDictionary["key" as NSCopying]` -- **still open**, reconfirmed byte-for-byte
-  (`UIControl+Signals.swift:110,114`). Filed as
-  [issue #126](https://github.com/btctcn/swift-isolation-map/issues/126).
-- `MKCoordinateRegion.center`'s setter -- **still open**, reconfirmed
-  (`MapViewController.swift:165`). Filed as
-  [issue #127](https://github.com/btctcn/swift-isolation-map/issues/127).
+- `NSMutableDictionary["key" as NSCopying]` -- was open, reconfirmed byte-for-byte
+  (`UIControl+Signals.swift:110,114`), filed as
+  [issue #126](https://github.com/btctcn/swift-isolation-map/issues/126). **Closed, shipped** --
+  see `docs/task-nscopying-keyed-subscript-matching.md` (`BridgedKeyedSubscriptMatching`).
+- `MKCoordinateRegion.center`'s setter -- was open, reconfirmed
+  (`MapViewController.swift:165`), filed as
+  [issue #127](https://github.com/btctcn/swift-isolation-map/issues/127). **Closed, shipped** --
+  see `docs/task-typealias-wrapped-struct-member-matching.md`
+  (`TypealiasWrappedStructMemberMatching`).
 - 8 `_Release`-module-qualified USRs (issue #55 shape) -- **still present as a category** (18 such
   edges in the fresh run, not 8 -- expected drift, this is a corpus-size-dependent count, not a
   fixed constant). No new issue; already covered by issue #55's own accepted-limitation scope.
