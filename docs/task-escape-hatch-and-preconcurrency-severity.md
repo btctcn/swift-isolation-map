@@ -1,6 +1,10 @@
 # Unsafe escape hatches, `@preconcurrency`, and severity diagnostics — scope
 
-Tracks [issue #117](https://github.com/btctcn/swift-isolation-map/issues/117).
+Tracks [issue #117](https://github.com/btctcn/swift-isolation-map/issues/117). Four items deferred
+in this document (`.uncheckedSendable.isMutable` always `nil`, `@preconcurrency` propagation through
+class inheritance, `severityRationale` wording for a dual-trigger edge, and a possible
+`.medium` → `.low` downgrade) are tracked as
+[issue #153](https://github.com/btctcn/swift-isolation-map/issues/153).
 
 **Status: PR1 merged as [#118](https://github.com/btctcn/swift-isolation-map/pull/118) (shapes 1-3:
 `@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` declaration-trigger with
@@ -27,8 +31,8 @@ own 6 `@preconcurrency` declarations checked individually against its real edge 
 correct end to end with a minimal but genuinely real, full-pipeline run (not a unit test) built
 specifically to exercise it — see Step 6.
 
-**PR2 (shape 4, `@preconcurrency import`) is code-complete, not yet opened as a PR — design
-substantially revised from what PR1's own text below originally planned.** See the dedicated
+**PR2 (shape 4, `@preconcurrency import`) merged as [#119](https://github.com/btctcn/swift-isolation-map/pull/119) —
+design substantially revised from what PR1's own text below originally planned.** See the dedicated
 `## PR2` section after Step 7: the two spikes PR1 left open (index-store-unit module-name matching,
 `@CM@`-qualifier lookup direction) turned out to target the wrong data source entirely — real
 testing found a far simpler mechanism (`sourcekitd` cursor-info's own `key.modulename` field,

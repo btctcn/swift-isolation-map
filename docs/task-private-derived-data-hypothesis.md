@@ -4,10 +4,16 @@ Tracks the same underlying problem as `docs/task-index-store-module-scoping.md` 
 `Index.noindex/DataStore` accumulating units from unrelated builds), but proposes structurally
 avoiding the pollution instead of filtering it out after the fact.
 
-**Status: implemented (EXPERIMENTAL) and verified end-to-end against Project Iris.** New default
-behavior for Xcode projects; the old `allowedModuleNames`/`is_system_unit` filtering stays in the
-code, off by default, re-enabled by `--experimental-index-store-module-filter` (explicitly marked
-in its own `--help` text as liable to change or be removed without notice).
+**Status: shipped as the default behavior for Xcode projects, verified end-to-end against Project
+Iris.** The private-DerivedData mechanism itself is not experimental or gated behind any flag --
+it's simply how the tool now works for `.xcodeproj`/`.xcworkspace` containers. Only the *old*
+`allowedModuleNames`/`is_system_unit` filtering it superseded stays in the code, off by default,
+re-enabled by `--experimental-index-store-module-filter` (explicitly marked in its own `--help`
+text as liable to change or be removed without notice) -- that flag's own name is the only
+"experimental" thing left here. Three items from Step 5/7 remain genuinely open, tracked as
+[issue #156](https://github.com/btctcn/swift-isolation-map/issues/156): the 32-edge unexplained
+residual, a second real corpus never re-run against this specific wired-up code path, and a
+once-observed, unreproduced `BUILD FAILED` on first use of a fresh private-DerivedData key.
 
 ## Step 1 — Hypothesis
 

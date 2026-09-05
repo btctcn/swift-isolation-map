@@ -317,3 +317,17 @@ question. If a future corpus (or a deeper look at these three) turns up a single
 accessor specifically, extending the stripping logic to handle both shapes is the obvious next step —
 not attempted here, since no real case motivating it has been found yet, and this project's own
 discipline is to fix confirmed gaps, not speculative ones.
+
+**Follow-up search (2026-09-05), re-checked against Project Iris.** Found real, concrete single-`@`
+property-shaped USRs this time — `c:@CM@Mindbox@objc(cs)CDEvent(py)body`/`retryTimestamp`/
+`timestamp`/`transactionId`/`type` and `c:@CM@MindboxLogger@objc(cs)CDLogMessage(py)message`/
+`timestamp`, real `@NSManaged` Core Data properties from the `Mindbox`/`MindboxLogger` Pods
+(`CDEvent+CoreDataProperties.swift`, `CDLogMessage+CoreDataClass.swift`). Confirms the single-`@`
+form does occur on real properties, not just class methods — new information. But **still not a
+live case for this gap**: these are primary, project-linked declarations (Pods compiled as part of
+the project, real `location`, resolved `nonisolated` directly through the local `DeclarationLinker`)
+that never appear as a `callerUSR`/`calleeUSR` on any cross-isolation edge in the report at all — no
+edge ever reaches them, so the oracle/`owningPropertyUSR` path this gap actually lives in is never
+exercised for them either way. Only Project Iris was re-checked this pass (a full run took most of
+the available time); Swiftfin/WordPress-iOS not re-verified. Conclusion unchanged: no real case
+found where this shape blocks accessor resolution, so no fix attempted.

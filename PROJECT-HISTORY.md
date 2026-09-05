@@ -7,11 +7,11 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-120 PRs exist in total as of PR #151 (PR numbers up to #151, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 31 issues exist in total, 0 open as of this
-writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their
-own title or body as of the original pass through this log -- not recomputed against the newer
-closed issues.
+122 PRs exist in total as of PR #157 (PR numbers up to #157, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 35 issues exist in total, 4 open (#153-#156) as
+of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+their own title or body as of the original pass through this log -- not recomputed against the
+newer closed issues.
 
 ---
 
@@ -616,6 +616,11 @@ Done: Corrected a stale claim first: `docs/task-multi-platform-target-support.md
 Issue: #148
 Question: Issue #148 (found as a side effect of investigating issue #142, confirmed pre-existing on unmodified `main` via `git stash`) tracked a real, reproducible race: `Tests/Fixtures/cross-file-witness` is shared, on disk, by multiple test files, and three of `DeclarationLinkerTests.swift`'s six tests still built directly into its shared `.build`, unguarded against Swift Testing's default parallel execution racing any other test building the same directory.
 Done: `DeclarationLinkerTests.swift` already had *part* of the fix -- three of its own six tests, plus `RawIndexStoreClientModuleScopingTests.swift`/`ExternalIsolationBackfillTests.swift` (both since PR #128), already built into a private, per-test, `realpath(3)`-resolved temp copy via an existing `copiedCrossFileWitnessFixture()` helper rather than the shared fixture root. Converted the three remaining unsafe tests to that same helper, removing their own `try? FileManager.default.removeItem(atPath: fixtureRoot.appendingPathComponent(".build").path)` calls against the shared directory. Confirmed `ConcurrentIssuanceSpike.swift` (reads fixture source only, no build) and `CapstoneCLITests.swift` (a different, unshared fixture) needed no change. No production code touched. Verified with the issue's own exact repro command, 3 consecutive runs, 10/10 tests passing every time, zero flakes.
+
+## PR #157 — Docs inventory: close status-table gap, resolve/track deferred items across docs/ (2026-09-05)
+Issue: none
+Question: With all filed issues closed, a full audit of `docs/*.md`, `README.md`, and `PROJECT-HISTORY.md` was requested to find every unclosed bug/loose end/deferred question left in the documentation itself, regardless of whether it was left open intentionally or by accident.
+Done: Docs-only change, no code touched. Corrected `task-pods-in-scope-research.md`'s status to Closed; fixed two stale "still open"/"(EXPERIMENTAL)" headers (`task-escape-hatch-and-preconcurrency-severity.md`'s PR2, `task-private-derived-data-hypothesis.md`); confirmed `upstream-issue-indexstore-db-multitarget.md` was in fact already filed (swiftlang/indexstore-db#292, fix PR #293 open and unreviewed since 2026-08-10) and updated its status; re-scoped `task-index-store-module-scoping.md`'s Step 6 gap to note it only affects the now-superseded `--experimental-index-store-module-filter` fallback, and marked its Step 10 plan superseded (found separately, in an earlier session, to be non-viable) by the shipped private-DerivedData approach; verified `task-implicit-synthesized-declarations.md` §6's "not yet resolved" claim against current code and found it already fixed by PR #58/issue #57; found `task-baseof-duplicate-occurrence-collision.md`'s Finding 2 was already marked resolved in-doc (a prior automated inventory pass had missed that update note); found `task-remaining-matcher-batch.md`'s two open items (issues #126/#127) were both already closed this same session; re-searched Project Iris for a real single-`@`-qualified property-accessor case for `task-external-property-accessor-usr-mismatch.md` §9 (found the shape does occur on real properties -- Mindbox Core Data fields -- but confirmed none reach the affected oracle path, so still no live case, no fix attempted); added the 25 existing docs `docs/README.md`'s own status table never mentioned. Filed four new issues for genuinely open items found along the way: #153 (four deferred escape-hatch/`@preconcurrency` design questions), #154 (compiler-args providers disagreeing on fallback candidate ordering), #155 (non-modular ObjC `.m` units dropped by the experimental module filter), #156 (three open private-DerivedData items: an unexplained 32-edge residual, missing second-corpus re-verification, an unreproduced first-use `BUILD FAILED`).
 
 ---
 
