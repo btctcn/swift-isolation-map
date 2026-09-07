@@ -679,7 +679,8 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
         attributes: AttributeListSyntax,
         modifiers: DeclModifierListSyntax,
         kind: SyntacticDeclarationKind,
-        isImmutableStoredProperty: Bool = false
+        isImmutableStoredProperty: Bool = false,
+        isMutableStoredProperty: Bool = false
     ) {
         // Issue #109: a declaration reached while inside a function/closure body is local to that
         // body, not a member of whatever type happens to be innermost on `path` -- see
@@ -754,7 +755,8 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
             // Only a stored property can legally carry `nonisolated(unsafe)`, but no `kind`
             // guard is needed here -- the modifier simply never appears on any other member kind
             // in real, compiling source, so this is `false` there by construction.
-            isNonisolatedUnsafe: modifiers.contains { $0.name.text == "nonisolated" && $0.detail?.detail.text == "unsafe" }
+            isNonisolatedUnsafe: modifiers.contains { $0.name.text == "nonisolated" && $0.detail?.detail.text == "unsafe" },
+            isMutableStoredProperty: isMutableStoredProperty
         ))
     }
 
@@ -927,6 +929,30 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
         // identifies "immutable stored property," no accessor-block check needed.
         let isImmutableStoredProperty = node.bindingSpecifier.tokenKind == .keyword(.let)
         for binding in node.bindings {
+            // A `let` can never carry an accessor block (`isImmutableStoredProperty` above already
+            // establishes it's always stored, hence never a *mutable* stored property either) --
+            // only a `var` binding's own `accessorBlock` needs checking. `nil` means plain stored
+            // (with or without an initializer). `.getter(_)` is the get-only shorthand
+            // (`var x: Int { 42 }`) -- always computed, no storage. A real `.accessors(list)` block
+            // is computed only if it contains a read/write accessor of its own (`get`/`set`/
+            // `_read`/`_modify`/`unsafeAddress`/`unsafeMutableAddress`) -- `willSet`/`didSet`-only
+            // observers still back real storage, confirmed via `swiftc -dump-ast`:
+            // `readImpl=stored writeImpl=stored_with_observers`, not `getter`.
+            let isMutableStoredProperty: Bool
+            if isImmutableStoredProperty {
+                isMutableStoredProperty = false
+            } else if let accessorBlock = binding.accessorBlock {
+                switch accessorBlock.accessors {
+                case .getter:
+                    isMutableStoredProperty = false
+                case .accessors(let accessorList):
+                    isMutableStoredProperty = !accessorList.contains { accessor in
+                        accessor.accessorSpecifier.tokenKind != .keyword(.willSet) && accessor.accessorSpecifier.tokenKind != .keyword(.didSet)
+                    }
+                }
+            } else {
+                isMutableStoredProperty = true
+            }
             // A stored property's pattern is always a bare identifier -- Swift has no syntax for a
             // tuple-destructuring stored property declaration, only for a *local* `let`/`var`
             // (`let (a, b) = ...`), which `functionBodyDepth` above already excludes from ever
@@ -939,7 +965,7 @@ private final class DeclarationVisitor: PlatformAwareSyntaxVisitor {
             emitMember(
                 name: name, node: binding, namePosition: identifierPattern.identifier.positionAfterSkippingLeadingTrivia,
                 attributes: node.attributes, modifiers: node.modifiers, kind: .variableProperty,
-                isImmutableStoredProperty: isImmutableStoredProperty
+                isImmutableStoredProperty: isImmutableStoredProperty, isMutableStoredProperty: isMutableStoredProperty
             )
         }
         return .visitChildren

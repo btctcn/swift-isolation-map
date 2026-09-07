@@ -340,7 +340,8 @@ public struct DeclarationLinker {
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
                 isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
-                moduleName: declaration.moduleName
+                moduleName: declaration.moduleName,
+                isMutableStoredProperty: declaration.isMutableStoredProperty
             )
             if let existing = byUSR[linked.usr] {
                 byUSR[linked.usr] = Self.merged(existing, linked, filesWithIndexedSymbols: filesWithIndexedSymbols)
@@ -520,7 +521,8 @@ public struct DeclarationLinker {
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
                 isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
-                moduleName: declaration.moduleName
+                moduleName: declaration.moduleName,
+                isMutableStoredProperty: declaration.isMutableStoredProperty
             )
         }
     }
@@ -588,7 +590,8 @@ public struct DeclarationLinker {
                 isActorInitializer: declaration.isActorInitializer,
                 hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
                 isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
-                moduleName: declaration.moduleName
+                moduleName: declaration.moduleName,
+                isMutableStoredProperty: declaration.isMutableStoredProperty
             )
         }
     }
@@ -749,7 +752,8 @@ public struct DeclarationLinker {
             isActorInitializer: existing.isActorInitializer || incoming.isActorInitializer,
             hasPreconcurrencyAttribute: existing.hasPreconcurrencyAttribute || incoming.hasPreconcurrencyAttribute,
             isNonisolatedUnsafe: existing.isNonisolatedUnsafe || incoming.isNonisolatedUnsafe,
-            moduleName: existing.moduleName ?? incoming.moduleName
+            moduleName: existing.moduleName ?? incoming.moduleName,
+            isMutableStoredProperty: existing.isMutableStoredProperty || incoming.isMutableStoredProperty
         )
     }
 

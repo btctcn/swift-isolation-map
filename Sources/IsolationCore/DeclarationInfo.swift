@@ -81,6 +81,25 @@ public struct DeclarationInfo: Equatable, Sendable {
     /// ever needs this for a callee outside the analyzed project, which is the only place a real
     /// `@preconcurrency import Foo` could plausibly apply to in the first place.
     public let moduleName: String?
+    /// True only for a `.variableProperty`-kind member that is both mutable (`var`, not `let` --
+    /// `isImmutableStoredProperty` already covers `let`) and backed by real storage -- i.e. its
+    /// binding carries no `get`/`set`/`_read`/`_modify`/address-family accessor. A stored `var`
+    /// with only `willSet`/`didSet` observers still counts (real storage; confirmed via `swiftc
+    /// -dump-ast`: `readImpl=stored writeImpl=stored_with_observers`, vs. a computed property's
+    /// `readImpl=getter`). `false` (the default) for every non-property declaration kind (a
+    /// function/initializer/subscript/etc. is never "stored" in this sense) -- deliberately a
+    /// single, self-contained fact rather than something a consumer derives by combining two
+    /// separate flags, since `!isImmutableStoredProperty` alone can't distinguish a genuine
+    /// mutable stored property from a non-property member (both default `false`).
+    /// Deliberately requires no property-wrapper special-casing: `@Wrapper var x: Int` has no
+    /// accessor block of its own in the *syntax* tree `DeclarationExtractor` reads (the compiler
+    /// synthesizes the getter/setter and a separate, implicit backing-storage property later, at
+    /// semantic analysis time, which this project's SwiftSyntax-based extractor never sees) -- so
+    /// it's indistinguishable, at this level, from a plain stored `var`, which is also the
+    /// semantically correct classification for this field's purpose (real mutable storage exists
+    /// either way, just wrapped). Used by `AnalysisReportBuilder`'s `.uncheckedSendable.isMutable`
+    /// computation (docs/task-escape-hatch-and-preconcurrency-severity.md, issue #153 item 1).
+    public let isMutableStoredProperty: Bool
 
     public init(
         usr: String,
@@ -99,7 +118,8 @@ public struct DeclarationInfo: Equatable, Sendable {
         isActorInitializer: Bool = false,
         hasPreconcurrencyAttribute: Bool = false,
         isNonisolatedUnsafe: Bool = false,
-        moduleName: String? = nil
+        moduleName: String? = nil,
+        isMutableStoredProperty: Bool = false
     ) {
         self.usr = usr
         self.name = name
@@ -118,6 +138,7 @@ public struct DeclarationInfo: Equatable, Sendable {
         self.isActorInitializer = isActorInitializer
         self.hasPreconcurrencyAttribute = hasPreconcurrencyAttribute
         self.isNonisolatedUnsafe = isNonisolatedUnsafe
+        self.isMutableStoredProperty = isMutableStoredProperty
     }
 }
 

@@ -381,7 +381,7 @@ enum ExternalIsolationBackfill {
                     location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
                     isActorInitializer: sibling.isActorInitializer,
                     hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe,
-                    moduleName: sibling.moduleName
+                    moduleName: sibling.moduleName, isMutableStoredProperty: sibling.isMutableStoredProperty
                 )
                 continue
             }
@@ -549,7 +549,7 @@ enum ExternalIsolationBackfill {
                         location: sibling.location, isImmutableStoredProperty: sibling.isImmutableStoredProperty,
                         isActorInitializer: sibling.isActorInitializer,
                         hasPreconcurrencyAttribute: sibling.hasPreconcurrencyAttribute, isNonisolatedUnsafe: sibling.isNonisolatedUnsafe,
-                        moduleName: sibling.moduleName
+                        moduleName: sibling.moduleName, isMutableStoredProperty: sibling.isMutableStoredProperty
                     )
                     bestLocationByUSR.removeValue(forKey: targetUSR)
                 }
@@ -1160,7 +1160,8 @@ enum ExternalIsolationBackfill {
             isActorInitializer: declaration.isActorInitializer,
             hasPreconcurrencyAttribute: declaration.hasPreconcurrencyAttribute,
             isNonisolatedUnsafe: declaration.isNonisolatedUnsafe,
-            moduleName: declaration.moduleName
+            moduleName: declaration.moduleName,
+            isMutableStoredProperty: declaration.isMutableStoredProperty
         )
     }
 

@@ -830,3 +830,106 @@ already proved the mechanism itself end to end on a real pipeline).
 ## Step 7 — PR
 
 Merged as [#119](https://github.com/btctcn/swift-isolation-map/pull/119).
+
+# PR3 — Four deferred design questions (issue #153)
+
+Tracks [issue #153](https://github.com/btctcn/swift-isolation-map/issues/153), filed after a
+2026-09-05 documentation-inventory pass surfaced these four items as still open.
+
+## Item 1 — `.uncheckedSendable.isMutable`, implemented
+
+**Spike (real `swiftc -dump-ast`).** The blocker PR1 flagged -- distinguishing a mutable *stored*
+property from a computed one -- has an unambiguous, purely syntactic answer: a `var` binding with no
+`accessorBlock`, or one with only `willSet`/`didSet` observers, has real backing storage
+(`readImpl=stored`, confirmed via `swiftc -dump-ast` on five representative shapes); one with a
+`get`/`set`/shorthand-getter accessor block does not (`readImpl=getter`). A property-wrapper-
+annotated `var` (`@Wrapper var x: Int`) needs no special case at all: the wrapper's own synthesized
+accessors/backing storage are a *semantic* transform the compiler applies later, invisible to the
+raw syntax tree `DeclarationExtractor` reads -- from that tree's own perspective it has no
+accessor block either, so it's already classified the same (correct) way as a plain stored `var`.
+
+**Code.** `DeclarationInfo` gains `isMutableStoredProperty: Bool` (a single, self-contained fact --
+deliberately not something a consumer derives by combining `isImmutableStoredProperty` with a
+second flag, since a genuine mutable stored property and a non-property member like a function both
+default to the same `false` on the existing field, making that combination ambiguous).
+`DeclarationExtractor`'s `VariableDeclSyntax` visitor computes it directly from `binding
+.accessorBlock`. `AnalysisReportBuilder.hasKnownMutableStoredProperty(typeUSR:...)` walks a type's
+own members (a `[String: [DeclarationInfo]]` index built once, not per-conformance) and, if none is
+found, its `superclassUSR` chain -- an inherited mutable stored property is exactly as real a race
+risk as one declared directly. Three-valued: `true` (found), `false` (every member of a *fully
+known* chain confirmed non-mutable-stored), or `nil` (the chain reached a type with no known members
+at all -- `location == nil`, the same "genuinely resolved project-local declaration" gate
+`ExternalIsolationBackfill.isGenuinelyResolvedProjectLocalDeclaration` already uses -- an external/
+SDK ancestor this project's own extraction never saw the members of; claiming `false` there would be
+an unverified safety claim).
+
+**The new field threaded through every reconstruction site** (`DeclarationLinker`'s three rewrite/
+extension-resolution passes plus `merged(_:_:)`'s OR-semantics, `ExternalIsolationBackfill`'s two
+sibling-aliasing sites and `rebuilt(_:conformances:)`) -- checked against PR1's own real-corpus bug
+(7 sites silently dropped new fields the first time) proactively this time, not found missing by a
+second corpus run.
+
+**Tests.** 6 new `DeclarationExtractorTests` (the five storage shapes, cross-checked against
+`swiftc -dump-ast`'s own classification, plus a non-property control), 4 new
+`AnalysisReportBuilderTests` (own mutable property, computed-only, known-superclass inheritance,
+unknown/external-superclass `nil`). Real end-to-end verification: a genuine SPM package with `class
+UncheckedContainer: @unchecked Sendable { var mutableCounter: Int = 0 }`, run through the actual CLI
+(`--force-reindex`, real build, real index store, real `DeclarationLinker`/`AnalysisReportBuilder`) --
+real output: `{"kind": "uncheckedSendable", "name": "UncheckedContainer", "isMutable": true}`.
+
+## Item 2 — `@preconcurrency` propagation through class inheritance, implemented
+
+**Spike (real `swiftc -swift-version 6`).** Confirmed transitively, two levels deep: a
+`@preconcurrency @MainActor class LegacyBase`, an intermediate `class Middle: LegacyBase {}` with no
+attribute of its own, and `class Grandchild: Middle { func grandchildMethod() {} }` -- calling
+`Grandchild().grandchildMethod()` from `nonisolated` code produces the softened **warning**, not an
+error (control: the identical shape with no `@preconcurrency` on `LegacyBase` produces a real
+**error**). The softening is inherited down an arbitrary-depth class hierarchy, not just one level.
+
+**Code.** `preconcurrencyDowngradeReason`'s single-level `containingType.hasPreconcurrencyAttribute`
+check replaced with `preconcurrencyAttributedAncestor(typeUSR:...)`, walking `typeUSR` then its
+`superclassUSR` chain (cycle-guarded the same way `hasKnownMutableStoredProperty` above is) and
+returning the first `@preconcurrency`-attributed ancestor found, if any.
+
+**Tests.** 1 new `AnalysisReportBuilderTests` case (three-class chain, declaration-trigger
+unreachable, only the chain walk can find it). Real end-to-end verification, same CLI run as item 1:
+a `nonisolated` caller reaching `Grandchild.grandchildMethod()` (two levels below the
+`@preconcurrency`-attributed `LegacyBase`) produced real output `{"risk": "medium", "structuralRisk":
+"high", "severityRationale": "structurally high (nonisolated -> globalActor(MainActor)); downgraded
+to medium: LegacyBase is @preconcurrency-attributed"}`.
+
+## Item 3 — `severityRationale` wording for a dual-trigger edge, decided
+
+**Decision: first-match-wins, no exhaustive dual-cause message.** `preconcurrencyDowngradeReason`'s
+existing `else if` chain (declaration/ancestor trigger checked before the import trigger) already
+answers this: if a callee is *both* `@preconcurrency`-declared (directly or via an ancestor) *and*
+its module is separately `@preconcurrency import`-ed by the caller's file, only the first reason is
+reported. Kept deliberately, not treated as a gap to close: either reason alone is a true, sufficient
+explanation for the real downgrade (SE-0337 softens the diagnostic either way), so reporting only one
+doesn't misrepresent anything -- and no real corpus checked across this whole investigation (five
+corpora across PR1/PR2, plus this pass's own searches) has ever produced a real dual-trigger edge, so
+there's no real-world evidence motivating a more complex, exhaustive message over this simpler one.
+Regression-tested (`buildDowngradesOnceWhenBothDeclarationAndImportTriggersApply`) so a future change
+that reorders the chain and silently drops this behavior would fail a test.
+
+## Item 4 — `.medium` → `.low` downgrade, answered: no
+
+**Analytically resolved, then confirmed with a real compiler check.** `riskLevel(caller:callee:)`'s
+three cases: `.high` (nonisolated caller, isolated callee), `.low` (both isolated), `.medium`
+(everything else). The *only* `.medium` sub-shape with a fully-known (non-`.unspecified`) isolation
+kind on *both* sides is isolated-caller-calling-nonisolated-callee -- and that shape is never a
+compiler diagnostic in the first place: confirmed via a real `swiftc -swift-version 6 -typecheck`
+(a `@MainActor` function and an `actor`'s own method, each calling a plain top-level `nonisolated`
+function) -- **zero diagnostics, exit 0**. Every *other* `.medium` sub-shape has `.unspecified` on at
+least one side, where whether it's a real compiler error can't be confirmed either way. Since
+`@preconcurrency` only ever softens a real error to a warning, and the one fully-knowable `.medium`
+shape was never an error to begin with, there is no real, verifiable basis for a `.medium` -> `.low`
+downgrade anywhere in this mechanism's scope. No code change -- this closes the question PR1 left
+"deliberately deferred, not assumed symmetric, not assumed inapplicable" with a real answer instead
+of leaving it open indefinitely.
+
+## Status
+
+All four items closed. Full suite passing (see PR for the exact count). No regressions -- every
+change is additive (a new `DeclarationInfo` field, defaulted `false`, or a chain walk replacing a
+single-level check with a strict superset of what it already matched).

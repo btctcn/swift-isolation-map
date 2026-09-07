@@ -700,6 +700,85 @@ struct AnalysisReportBuilderTests {
         #expect(report.escapeHatches.contains { $0.kind == .nonisolatedUnsafe && $0.isMutable == false })
     }
 
+    // MARK: - `.uncheckedSendable.isMutable` (docs/task-escape-hatch-and-preconcurrency-severity.md, issue #153 item 1)
+
+    @Test("build(): an @unchecked Sendable class with a real mutable stored property of its own is flagged isMutable true")
+    func buildFlagsUncheckedSendableAsMutableWhenItHasItsOwnMutableStoredProperty() {
+        let widget = DeclarationInfo(
+            usr: "usr:widget", name: "Widget",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:Sendable", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isUnchecked: true
+            )],
+            location: SymbolLocation(file: "T.swift", line: 1, column: 1)
+        )
+        let mutableStored = DeclarationInfo(usr: "usr:widget.count", name: "count", containingTypeUSR: "usr:widget", isMutableStoredProperty: true)
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:widget": widget, "usr:widget.count": mutableStored], callGraph: [], ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+        #expect(report.escapeHatches.contains { $0.kind == .uncheckedSendable && $0.isMutable == true })
+    }
+
+    @Test("build(): an @unchecked Sendable class whose only members are computed properties is flagged isMutable false")
+    func buildFlagsUncheckedSendableAsNotMutableWhenOnlyComputedPropertiesExist() {
+        let widget = DeclarationInfo(
+            usr: "usr:widget", name: "Widget",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:Sendable", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isUnchecked: true
+            )],
+            location: SymbolLocation(file: "T.swift", line: 1, column: 1)
+        )
+        let computed = DeclarationInfo(usr: "usr:widget.value", name: "value", containingTypeUSR: "usr:widget", isMutableStoredProperty: false)
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:widget": widget, "usr:widget.value": computed], callGraph: [], ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+        #expect(report.escapeHatches.contains { $0.kind == .uncheckedSendable && $0.isMutable == false })
+    }
+
+    @Test("build(): an @unchecked Sendable subclass with no mutable property of its own, but a real, known superclass that has one, is flagged isMutable true -- an inherited mutable stored property is just as real a race risk")
+    func buildFlagsUncheckedSendableAsMutableViaAKnownSuperclassMutableProperty() {
+        let base = DeclarationInfo(usr: "usr:base", name: "Base", location: SymbolLocation(file: "T.swift", line: 1, column: 1))
+        let baseCount = DeclarationInfo(usr: "usr:base.count", name: "count", containingTypeUSR: "usr:base", isMutableStoredProperty: true)
+        let sub = DeclarationInfo(
+            usr: "usr:sub", name: "Sub", superclassUSR: "usr:base",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:Sendable", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isUnchecked: true
+            )],
+            location: SymbolLocation(file: "T.swift", line: 5, column: 1)
+        )
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:base": base, "usr:base.count": baseCount, "usr:sub": sub], callGraph: [], ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+        let uncheckedFinding = report.escapeHatches.first { $0.kind == .uncheckedSendable && $0.declarationUSR == "usr:sub" }
+        #expect(uncheckedFinding?.isMutable == true)
+    }
+
+    @Test("build(): an @unchecked Sendable class whose superclass chain reaches an external/unknown type (no location, e.g. NSObject) with no own mutable property found is flagged isMutable nil -- can't confirm false, since the external ancestor's own members are unknown")
+    func buildFlagsUncheckedSendableAsNilWhenSuperclassChainReachesAnUnknownType() {
+        // No `location` -- exactly how an external/SDK superclass's placeholder entry looks (see
+        // `ExternalIsolationBackfill.isGenuinelyResolvedProjectLocalDeclaration`'s own `location !=
+        // nil` gate, the same convention `hasKnownMutableStoredProperty` reuses here).
+        let externalBase = DeclarationInfo(usr: "usr:NSObject", name: "NSObject")
+        let sub = DeclarationInfo(
+            usr: "usr:sub", name: "Sub", superclassUSR: "usr:NSObject",
+            conformances: [ProtocolConformance(
+                protocolUSR: "syntactic:Sendable", protocolGlobalActorName: nil,
+                declaredInSameFileAsPrimaryDefinition: true, declaredInSameContextAsWitness: false, isUnchecked: true
+            )],
+            location: SymbolLocation(file: "T.swift", line: 1, column: 1)
+        )
+        let engine = IsolationInferenceEngine(
+            declarations: ["usr:NSObject": externalBase, "usr:sub": sub], callGraph: [], ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+        #expect(report.escapeHatches.contains { $0.kind == .uncheckedSendable && $0.isMutable == nil })
+    }
+
     @Test("build(): a @preconcurrency-attributed declaration produces a .preconcurrencyDeclaration finding; an @preconcurrency-attributed conformance produces a separate .preconcurrencyConformance finding")
     func buildProducesPreconcurrencyFindingsForBothDeclarationAndConformance() {
         let annotatedFunc = DeclarationInfo(usr: "usr:f", name: "annotatedFunc", hasPreconcurrencyAttribute: true)
@@ -772,6 +851,30 @@ struct AnalysisReportBuilderTests {
         #expect(edge.severityRationale == nil)
     }
 
+    @Test("build(): the downgrade propagates through a class's superclass chain, not just its immediate containing type -- a callee declared on a subclass of an @preconcurrency-attributed grandparent is still downgraded (issue #153 item 2, confirmed against a real two-level swiftc test)")
+    func buildDowngradesHighEdgeViaTransitiveSuperclassChain() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let legacyBase = DeclarationInfo(usr: "usr:LegacyBase", name: "LegacyBase", hasPreconcurrencyAttribute: true)
+        let middle = DeclarationInfo(usr: "usr:Middle", name: "Middle", superclassUSR: "usr:LegacyBase")
+        let grandchild = DeclarationInfo(usr: "usr:Grandchild", name: "Grandchild", superclassUSR: "usr:Middle")
+        let callee = DeclarationInfo(
+            usr: "usr:callee", name: "grandchildMethod", explicitIsolation: .globalActor(name: "MainActor"), containingTypeUSR: "usr:Grandchild"
+        )
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "T.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(
+            declarations: [
+                "usr:caller": caller, "usr:LegacyBase": legacyBase, "usr:Middle": middle, "usr:Grandchild": grandchild, "usr:callee": callee
+            ],
+            callGraph: callGraph, ruleSet: Swift60RuleSet()
+        )
+        let report = AnalysisReportBuilder.build(engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0")
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == .high)
+        #expect(edge.severityRationale?.contains("LegacyBase") == true)
+    }
+
     @Test("build(): the downgrade never applies to a structurally-medium edge, even when the callee is @preconcurrency-attributed -- scoped deliberately to high -> medium only")
     func buildDoesNotDowngradeMediumEdgeEvenWithPreconcurrencyCallee() throws {
         let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .unspecified)
@@ -819,6 +922,26 @@ struct AnalysisReportBuilderTests {
         #expect(edge.risk == .medium)
         #expect(edge.structuralRisk == .high)
         #expect(edge.severityRationale?.contains("WebKit") == true)
+    }
+
+    @Test("build(): when a callee is BOTH @preconcurrency-declared AND its module is separately @preconcurrency-imported by the caller's file, the downgrade still fires exactly once, reporting the declaration-trigger reason (decided, issue #153 item 3: first-match-wins, not an exhaustive dual-cause message)")
+    func buildDowngradesOnceWhenBothDeclarationAndImportTriggersApply() throws {
+        let caller = DeclarationInfo(usr: "usr:caller", name: "caller", explicitIsolation: .nonisolated)
+        let callee = DeclarationInfo(
+            usr: "usr:callee", name: "legacyEntryPoint", explicitIsolation: .globalActor(name: "MainActor"),
+            hasPreconcurrencyAttribute: true, moduleName: "WebKit"
+        )
+        let callGraph = [CallGraphEdge(callerUSR: "usr:caller", calleeUSR: "usr:callee", location: SymbolLocation(file: "Caller.swift", line: 1, column: 1))]
+        let engine = IsolationInferenceEngine(declarations: ["usr:caller": caller, "usr:callee": callee], callGraph: callGraph, ruleSet: Swift60RuleSet())
+        let report = AnalysisReportBuilder.build(
+            engine: engine, swiftVersion: "6.0", ruleSetUsed: "Swift60RuleSet", toolVersion: "0.1.0",
+            preconcurrencyImportedModulesByFile: ["Caller.swift": ["WebKit"]]
+        )
+
+        let edge = try #require(report.edges.first)
+        #expect(edge.risk == .medium)
+        #expect(edge.structuralRisk == .high)
+        #expect(edge.severityRationale?.contains("legacyEntryPoint is @preconcurrency-attributed") == true)
     }
 
     @Test("build(): the import trigger does not fire when the caller's file imports a DIFFERENT module than the callee's own, even if some other file in the project imports the right one -- the import set is scoped per caller file, not project-wide")
