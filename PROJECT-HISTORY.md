@@ -7,8 +7,8 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-123 PRs exist in total as of PR #158 (PR numbers up to #158, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 35 issues exist in total, 3 open (#154-#156) as
+124 PRs exist in total as of PR #159 (PR numbers up to #159, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 35 issues exist in total, 2 open (#155-#156) as
 of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
 their own title or body as of the original pass through this log -- not recomputed against the
 newer closed issues.
@@ -628,6 +628,13 @@ Done: Docs-only change, no code touched. Corrected `task-pods-in-scope-research.
 Issue: #153
 Question: `docs/task-escape-hatch-and-preconcurrency-severity.md` (PR #118/#119) shipped with four items deliberately deferred rather than fixed -- `.uncheckedSendable.isMutable` always `nil`, whether `@preconcurrency`'s softening propagates through class inheritance, what `severityRationale` should say when two downgrade triggers fire at once, and whether a `.medium`-severity edge could ever have a real basis for a `.medium` -> `.low` downgrade.
 Done: Two items implemented, two answered with no code change needed. `DeclarationInfo` gains `isMutableStoredProperty`, computed from real accessor-block syntax (cross-checked against `swiftc -dump-ast` on five shapes; no property-wrapper special-casing needed, since the wrapper's own synthesized storage is invisible to the raw syntax tree either way) and threaded through every reconstruction site proactively (checked against PR1's own real-corpus bug rather than waiting for a second corpus run to catch a miss). `AnalysisReportBuilder.hasKnownMutableStoredProperty` walks a type's own members plus its superclass chain, three-valued (confirmed/confirmed-none/unknown-external-ancestor). `preconcurrencyDowngradeReason`'s single-level containing-type check became a full superclass-chain walk, confirmed transitively two levels deep via a real `swiftc -swift-version 6` test (a grandchild class calling its own method still got the softened warning, not an error). The dual-trigger wording question was decided (first-match-wins, regression-tested, no real corpus has ever hit the case) and the `.medium` -> `.low` question was answered no (the only `.medium` sub-shape with fully-known isolation on both sides -- isolated caller calling nonisolated callee -- is never a compiler diagnostic in the first place, confirmed via a real `swiftc -typecheck`, zero diagnostics; every other `.medium` sub-shape is unverifiable either way). Both implemented mechanisms verified end-to-end against a real SPM package through the actual CLI, not just synthetic-fixture unit tests. 645/645 tests passing (11 new), no regressions.
+
+---
+
+## PR #159 — Close issue #154 as not applicable: the second provider it referenced was already removed (2026-09-07)
+Issue: #154
+Question: Issue #154 tracked making `LiveXcodeCompilerArgumentsProvider` and `SwiftBuildCompilerArgumentsProvider` agree on fallback candidate ordering for files with no target-named home directory -- filed based on `docs/task-swift-build-prepare-for-indexing-spike.md`'s own historical two-provider framing.
+Done: Found, before starting real work, that `LiveXcodeCompilerArgumentsProvider`/`XcodeBuildLogCompilerArgumentsProvider` had already been removed from the codebase entirely in PR #128 (2026-08-29), six days before this issue was even filed -- an unreachable-from-any-CLI-flag fallback deleted along with its own test file. Only `SwiftBuildCompilerArgumentsProvider` remains, so there is no second provider left to disagree with it; the issue's own premise no longer holds. Closed issue #154 as not applicable with a full explanation (a filing error -- the current codebase should have been checked before filing based on historical doc content). Docs-only fix: corrected the two docs (`task-swift-build-prepare-for-indexing-spike.md`, `docs/README.md`) that still referenced the now-closed issue's original two-provider framing. No code change.
 
 ---
 
