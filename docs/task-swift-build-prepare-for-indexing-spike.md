@@ -1573,6 +1573,15 @@ still exercises it directly.
 
 **Full test suite**: 538 tests, all passing.
 
-Making both providers agree on fallback candidate ordering for this specific shape (files with no
-home-directory signal at all) is tracked as
-[issue #154](https://github.com/btctcn/swift-isolation-map/issues/154).
+**Update (2026-09-07): the "two providers disagree" framing is now moot.**
+`LiveXcodeCompilerArgumentsProvider`/`XcodeBuildLogCompilerArgumentsProvider` (the `xcodebuild
+-verbose` path this section calls "honest") was removed from the tree entirely in PR #128
+(2026-08-29) -- unreachable from any CLI flag, kept only as a defensive fallback for a state the
+surrounding code's own invariants already said couldn't happen. `SwiftBuildCompilerArgumentsProvider`
+is now the only Xcode compiler-args provider in the codebase, so there's no second provider left for
+it to disagree with. [Issue #154](https://github.com/btctcn/swift-isolation-map/issues/154), filed
+after this section based on the historical two-provider framing without checking the current
+codebase first, was closed as not applicable for exactly this reason.
+`preferredArguments`'s own fallback (`candidates[0].args`, whichever target's response came first in
+`workspaceInfo.targetInfos`'s own enumeration) is unchanged and still real, but is now a
+single-provider, internally-consistent-per-run behavior, not a cross-provider inconsistency.
