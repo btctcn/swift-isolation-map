@@ -961,6 +961,75 @@ func nonisolatedUnsafeLetIsFlagged() {
     #expect(property?.isImmutableStoredProperty == true)
 }
 
+// MARK: - isMutableStoredProperty (docs/task-escape-hatch-and-preconcurrency-severity.md, issue #153 item 1)
+// Ground truth cross-checked directly against `swiftc -dump-ast`'s own real `readImpl`/`writeImpl`
+// classification for the identical five shapes (`stored`/`stored_with_observers` vs. `getter`).
+
+@Test("isMutableStoredProperty is true for a plain mutable stored var")
+func mutableStoredVarIsFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        var storedMutable: Int = 0
+    }
+    """)
+    #expect(find(decls, name: "storedMutable")?.isMutableStoredProperty == true)
+}
+
+@Test("isMutableStoredProperty is false for a let (isImmutableStoredProperty already covers it)")
+func letIsNotFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        let storedImmutable: Int = 0
+    }
+    """)
+    let property = find(decls, name: "storedImmutable")
+    #expect(property?.isMutableStoredProperty == false)
+    #expect(property?.isImmutableStoredProperty == true)
+}
+
+@Test("isMutableStoredProperty is true for a var with only willSet/didSet observers -- confirmed via swiftc -dump-ast this still has real backing storage (readImpl=stored writeImpl=stored_with_observers), not computed")
+func storedVarWithObserversIsFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        var storedWithObserver: Int = 0 { willSet {} didSet {} }
+    }
+    """)
+    #expect(find(decls, name: "storedWithObserver")?.isMutableStoredProperty == true)
+}
+
+@Test("isMutableStoredProperty is false for a get-only computed var (shorthand form, no backing storage)")
+func computedGetOnlyVarIsNotFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        var computedGetOnly: Int { 42 }
+    }
+    """)
+    #expect(find(decls, name: "computedGetOnly")?.isMutableStoredProperty == false)
+}
+
+@Test("isMutableStoredProperty is false for a get/set computed var (no backing storage)")
+func computedGetSetVarIsNotFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        var computedGetSet: Int {
+            get { 42 }
+            set { }
+        }
+    }
+    """)
+    #expect(find(decls, name: "computedGetSet")?.isMutableStoredProperty == false)
+}
+
+@Test("isMutableStoredProperty is false for a non-property member (a function is never storage, even though it defaults isImmutableStoredProperty/isMutableStoredProperty the same way an untouched property would)")
+func functionIsNotFlaggedMutableStoredProperty() {
+    let decls = declarations("""
+    final class Probe {
+        func notAProperty() {}
+    }
+    """)
+    #expect(find(decls, name: "notAProperty")?.isMutableStoredProperty == false)
+}
+
 @Test("A plain nonisolated var (no (unsafe) detail) leaves isNonisolatedUnsafe false")
 func plainNonisolatedVarLeavesIsNonisolatedUnsafeFalse() {
     let decls = declarations("""

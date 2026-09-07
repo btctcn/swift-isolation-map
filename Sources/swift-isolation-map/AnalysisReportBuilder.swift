@@ -242,6 +242,16 @@ enum AnalysisReportBuilder {
     private static func escapeHatchFindings(
         from declarations: [String: DeclarationInfo], preconcurrencyImportedModulesByFile: [String: Set<String>]
     ) -> [EscapeHatchFinding] {
+        // Built once, O(n) -- `hasKnownMutableStoredProperty` below is called once per
+        // `.uncheckedSendable` conformance found and needs "every member of type X" repeatedly;
+        // a fresh `declarations.values.filter { ... }` per call would make this O(types × members).
+        var membersByContainingType: [String: [DeclarationInfo]] = [:]
+        for declaration in declarations.values {
+            if let containingTypeUSR = declaration.containingTypeUSR {
+                membersByContainingType[containingTypeUSR, default: []].append(declaration)
+            }
+        }
+
         let declarationFindings = declarations.values.flatMap { declaration -> [EscapeHatchFinding] in
             let location = declaration.location.map { AnalysisLocation(file: $0.file, line: $0.line) }
             var findings: [EscapeHatchFinding] = []
@@ -261,10 +271,10 @@ enum AnalysisReportBuilder {
                 if conformance.isUnchecked {
                     findings.append(EscapeHatchFinding(
                         kind: .uncheckedSendable, declarationUSR: declaration.usr, name: declaration.name,
-                        // Deferred (design doc Step 3): whether this type actually has a mutable
-                        // stored property is an unscoped member-list/property-wrapper/inheritance
-                        // walk, not computed in v1.
-                        isMutable: nil, location: location
+                        isMutable: hasKnownMutableStoredProperty(
+                            typeUSR: declaration.usr, declarations: declarations, membersByContainingType: membersByContainingType
+                        ),
+                        location: location
                     ))
                 }
                 if conformance.isPreconcurrency {
@@ -304,18 +314,65 @@ enum AnalysisReportBuilder {
         }
     }
 
-    /// `@preconcurrency` on the callee's own declaration -- or on its *containing type*, since a
-    /// type-level attribute softens diagnostics for its own unannotated members too, including
-    /// extension members (confirmed by a real `swiftc -swift-version 6` test,
-    /// `docs/task-escape-hatch-and-preconcurrency-severity.md` Step 2) -- downgrades a
-    /// structurally-`.high` edge's reported severity to `.medium`, matching SE-0337's own
-    /// error-to-warning downgrade. Deliberately does **not** consult
+    /// `.uncheckedSendable.isMutable` (docs/task-escape-hatch-and-preconcurrency-severity.md,
+    /// issue #153 item 1): does the conforming type have a real mutable stored property, checked
+    /// across its own members and its superclass chain (an inherited mutable stored property is
+    /// just as real a race risk as one declared directly). Three-valued, not a plain `Bool`:
+    /// - `true` -- a real mutable stored property was found, on this type or a known ancestor.
+    /// - `false` -- every member of this type *and* every ancestor up to a fully-known root is
+    ///   confirmed to have no mutable stored property.
+    /// - `nil` -- the walk hit a type with no known members at all (`location == nil`, the same
+    ///   "genuinely resolved project-local declaration" gate `ExternalIsolationBackfill`'s own
+    ///   `isGenuinelyResolvedProjectLocalDeclaration` uses) -- an external/SDK superclass this
+    ///   project's own `SyntaxAnalysis` extraction never saw the member list of. Claiming `false`
+    ///   here would be an unverified safety claim this project's Guiding Principle rules out
+    ///   making; `nil` honestly reports "can't confirm either way," the same convention `isMutable`
+    ///   already used for every `.uncheckedSendable` finding before this fix.
+    private static func hasKnownMutableStoredProperty(
+        typeUSR: String, declarations: [String: DeclarationInfo], membersByContainingType: [String: [DeclarationInfo]],
+        visitedTypeUSRs: Set<String> = []
+    ) -> Bool? {
+        // Cycle guard, mirroring `IsolationInferenceEngine.resolveIsolation`'s own `visiting` set --
+        // a real superclass cycle can't happen in compiling Swift, but a malformed/placeholder USR
+        // chain shouldn't infinite-loop even so. Terminates the walk at the repeat, contributing no
+        // new information rather than crashing or hanging.
+        guard !visitedTypeUSRs.contains(typeUSR) else { return false }
+        var visitedTypeUSRs = visitedTypeUSRs
+        visitedTypeUSRs.insert(typeUSR)
+        guard let type = declarations[typeUSR], type.location != nil else { return nil }
+        if (membersByContainingType[typeUSR] ?? []).contains(where: { $0.isMutableStoredProperty }) {
+            return true
+        }
+        guard let superclassUSR = type.superclassUSR else { return false }
+        return hasKnownMutableStoredProperty(
+            typeUSR: superclassUSR, declarations: declarations, membersByContainingType: membersByContainingType,
+            visitedTypeUSRs: visitedTypeUSRs
+        )
+    }
+
+    /// `@preconcurrency` on the callee's own declaration -- or on its *containing type*, or on any
+    /// ancestor of that type up its superclass chain, since a type-level attribute softens
+    /// diagnostics for its own unannotated members too, including ones only reached via
+    /// inheritance (confirmed by a real `swiftc -swift-version 6` test, two levels deep:
+    /// `docs/task-escape-hatch-and-preconcurrency-severity.md` Step 2, and issue #153 item 2's own
+    /// follow-up spike) -- downgrades a structurally-`.high` edge's reported severity to `.medium`,
+    /// matching SE-0337's own error-to-warning downgrade. Deliberately does **not** consult
     /// `ProtocolConformance.isPreconcurrency` -- SE-0423 confirms a `@preconcurrency` conformance
     /// only softens a one-time witness-checker diagnostic at the conformance site itself, never
     /// diagnostics for arbitrary calls to the conforming type's methods (the design doc's own
     /// correction, made after an earlier draft of this function got that wrong). Only ever called
     /// for a structurally-`.high` edge -- see that call site's own comment for why `.medium` isn't
     /// scoped the same way.
+    ///
+    /// **Dual-trigger wording, decided (issue #153 item 3):** the declaration/containing-type-chain
+    /// trigger is checked before the import trigger, `else if`-chained -- if a callee is *both*
+    /// `@preconcurrency`-declared (or inherits the attribute) *and* its module is separately
+    /// `@preconcurrency import`-ed by the caller's file, only the first reason is ever reported.
+    /// Deliberate, not an oversight: either reason alone is a true, sufficient explanation for the
+    /// real downgrade (SE-0337 softens the diagnostic either way), so under-reporting *which*
+    /// mechanism fired doesn't misrepresent anything -- and no real corpus checked across this
+    /// whole investigation has ever hit the dual-trigger case, so there's no real-world evidence to
+    /// prefer a more exhaustive (and more complex) message over this simpler one.
     private static func preconcurrencyDowngradeReason(
         calleeUSR: String, callerFile: String, caller: IsolationKind, callee: IsolationKind,
         declarations: [String: DeclarationInfo], preconcurrencyImportedModulesByFile: [String: Set<String>]
@@ -325,9 +382,8 @@ enum AnalysisReportBuilder {
         if declaration.hasPreconcurrencyAttribute {
             reason = "\(declaration.name) is @preconcurrency-attributed"
         } else if let containingTypeUSR = declaration.containingTypeUSR,
-                  let containingType = declarations[containingTypeUSR],
-                  containingType.hasPreconcurrencyAttribute {
-            reason = "\(containingType.name) is @preconcurrency-attributed"
+                  let ancestor = preconcurrencyAttributedAncestor(typeUSR: containingTypeUSR, declarations: declarations) {
+            reason = "\(ancestor.name) is @preconcurrency-attributed"
         } else if let moduleName = declaration.moduleName,
                   preconcurrencyImportedModulesByFile[callerFile]?.contains(moduleName) == true {
             // Second, independent trigger (PR2, shape 4): the callee's own defining module (only
@@ -340,6 +396,24 @@ enum AnalysisReportBuilder {
             return nil
         }
         return "structurally high (\(describe(caller)) -> \(describe(callee))); downgraded to medium: \(reason)"
+    }
+
+    /// Walks `typeUSR` then its `superclassUSR` chain, returning the first `DeclarationInfo`
+    /// (starting with `typeUSR` itself) that carries `hasPreconcurrencyAttribute` -- confirmed via a
+    /// real `swiftc` spike (issue #153 item 2) that `@preconcurrency` on a class softens diagnostics
+    /// for every subclass's own unannotated methods too, transitively, not just one level (a
+    /// grandchild class reaching two levels up still got the softened warning, not an error).
+    /// Cycle-guarded the same way `hasKnownMutableStoredProperty` above is -- a real superclass
+    /// cycle can't happen in compiling Swift, but a malformed/placeholder USR chain shouldn't hang.
+    private static func preconcurrencyAttributedAncestor(
+        typeUSR: String, declarations: [String: DeclarationInfo], visitedTypeUSRs: Set<String> = []
+    ) -> DeclarationInfo? {
+        guard !visitedTypeUSRs.contains(typeUSR), let type = declarations[typeUSR] else { return nil }
+        if type.hasPreconcurrencyAttribute { return type }
+        guard let superclassUSR = type.superclassUSR else { return nil }
+        var visitedTypeUSRs = visitedTypeUSRs
+        visitedTypeUSRs.insert(typeUSR)
+        return preconcurrencyAttributedAncestor(typeUSR: superclassUSR, declarations: declarations, visitedTypeUSRs: visitedTypeUSRs)
     }
 
     /// Presentation-only filter applied after `build()`, driven by the CLI's `--severity` option --
