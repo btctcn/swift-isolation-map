@@ -267,12 +267,25 @@ orthogonal to this fix.
 **Scope note, added after `docs/task-private-derived-data-hypothesis.md` shipped:** this 27-edge
 gap is a property of the module-name-based allow-list/`is_system_unit` filter itself (an empty
 module-name string can never match a positive allow-list) -- it only manifests when that filter is
-active. Since that filter is now off by default (gated behind
-`--experimental-index-store-module-filter`), the gap does not affect the tool's default behavior
-against Xcode projects today; it only affects that narrower, explicitly-experimental fallback path.
-Confirmed to reproduce identically on a private store too, per
-`docs/task-private-derived-data-hypothesis.md` Step 5 -- tracked as
-[issue #155](https://github.com/btctcn/swift-isolation-map/issues/155), scoped accordingly.
+active. Since that filter is now off by default (gated behind `--index-store-module-filter`, its
+own permanent, non-experimental name as of PR #128), the gap does not affect the tool's default
+behavior against Xcode projects today; it only affects that narrower, explicitly-defensive fallback
+path. Confirmed to reproduce identically on a private store too, per
+`docs/task-private-derived-data-hypothesis.md` Step 5.
+
+**Closed as will-not-implement (issue #155, 2026-09-07).** The obvious-looking fix -- always exempt
+units with an empty module name, the same way `is_system_unit` is already exempted -- turns out
+unsafe: a plain, non-modular `.m` compile has an empty module name *regardless of which target
+produced it*, so the exemption can't tell "a legitimate Pod/SPM dependency's own `.m` file,
+compiled as part of this run's own scheme" from "an unrelated target/scheme's own `.m` file, left
+in a shared store from a different build" (the exact `lsboutiqueTests`-shaped pollution this whole
+filter exists to catch). `is_system_unit` has no such problem -- it's a real, independent signal
+(a compiled Clang module, never something a first-party target produces) -- but empty-module-name
+has no equivalent independent signal available from the three real facts this scan callback has
+(`get_module_name`/`get_main_file`/`is_system_unit`). Given this flag is already a narrow,
+off-by-default, explicitly-defensive fallback (the default path needs no filtering at all), the
+naive fix's risk of reintroducing the filter's own original bug outweighs closing an already-small,
+already-documented gap.
 
 ## Step 7 — Shipped
 
