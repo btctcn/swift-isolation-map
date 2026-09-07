@@ -7,9 +7,9 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-124 PRs exist in total as of PR #159 (PR numbers up to #159, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 35 issues exist in total, 2 open (#155-#156) as
-of this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
+125 PRs exist in total as of PR #160 (PR numbers up to #160, with gaps where a number belongs to
+an issue instead — see the repo's issue tracker). 35 issues exist in total, 1 open (#156) as of
+this writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in
 their own title or body as of the original pass through this log -- not recomputed against the
 newer closed issues.
 
@@ -635,6 +635,13 @@ Done: Two items implemented, two answered with no code change needed. `Declarati
 Issue: #154
 Question: Issue #154 tracked making `LiveXcodeCompilerArgumentsProvider` and `SwiftBuildCompilerArgumentsProvider` agree on fallback candidate ordering for files with no target-named home directory -- filed based on `docs/task-swift-build-prepare-for-indexing-spike.md`'s own historical two-provider framing.
 Done: Found, before starting real work, that `LiveXcodeCompilerArgumentsProvider`/`XcodeBuildLogCompilerArgumentsProvider` had already been removed from the codebase entirely in PR #128 (2026-08-29), six days before this issue was even filed -- an unreachable-from-any-CLI-flag fallback deleted along with its own test file. Only `SwiftBuildCompilerArgumentsProvider` remains, so there is no second provider left to disagree with it; the issue's own premise no longer holds. Closed issue #154 as not applicable with a full explanation (a filing error -- the current codebase should have been checked before filing based on historical doc content). Docs-only fix: corrected the two docs (`task-swift-build-prepare-for-indexing-spike.md`, `docs/README.md`) that still referenced the now-closed issue's original two-provider framing. No code change.
+
+---
+
+## PR #160 — Close issue #155 as will-not-implement: the naive fix risks reintroducing the filter's own original bug (2026-09-07)
+Issue: #155
+Question: Issue #155 tracked a 27-edge gap where `--index-store-module-filter` drops non-modular ObjC `.m` compile units (empty module name), proposing to exempt them the same way `is_system_unit` units already are.
+Done: Investigated before writing any code and found the proposed fix unsafe: a plain, non-modular `.m` compile has an empty module name regardless of which target produced it, so the exemption can't distinguish a legitimate Pod/SPM dependency's own file (compiled as part of this run's own scheme) from an unrelated target/scheme's own file left in a shared index store from a different build -- the exact cross-build pollution this filter exists to catch in the first place. `is_system_unit`'s own exemption is safe because it's a real, independent signal (a compiled Clang module, never something a first-party target produces); empty-module-name has no equivalent. Since this flag is already a narrow, off-by-default, explicitly-defensive fallback (the tool's actual default, private-DerivedData, needs no filtering at all), the risk of reintroducing the original bug outweighs closing an already-small, already-documented gap. Closed as will-not-implement; docs updated with the full reasoning. No code change.
 
 ---
 
