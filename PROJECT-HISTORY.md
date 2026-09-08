@@ -7,7 +7,7 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-126 PRs exist in total as of PR #161 (PR numbers up to #161, with gaps where a number belongs to
+127 PRs exist in total as of PR #162 (PR numbers up to #162, with gaps where a number belongs to
 an issue instead — see the repo's issue tracker). 35 issues exist in total, 0 open as of this
 writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their
 own title or body as of the original pass through this log -- not recomputed against the newer
@@ -649,6 +649,13 @@ Done: Investigated before writing any code and found the proposed fix unsafe: a 
 Issue: #156
 Question: Three items were left open at the end of `docs/task-private-derived-data-hypothesis.md`'s own implementation pass -- a 32-edge unexplained residual comparing filtered vs. unfiltered runs on Project Iris, no re-verification of the private-DerivedData mechanism against a second real corpus, and a once-observed, unreproduced `BUILD FAILED` on first use of a fresh private-DerivedData key.
 Done: Item 1 root-caused directly via `SWIFT_ISOLATION_MAP_DEBUG_UNIT_MODULES` -- the same mechanism as issue #155 (non-modular ObjC `.m` units with an empty module name), here producing spurious `isUnknown: true` edges rather than missing declarations; closed will-not-fix for the same reason (the naive fix is unsafe). Item 2: ran the actual wired-up tool against WordPress-iOS (497 targets, 5553 files) through the real default private-DerivedData path -- completed end to end with real output (`crossActorBoundaries: 4987, highRiskBoundaries: 2795`), confirming the mechanism works on a second, structurally different real corpus; a real, checkout-specific test-target compile issue (missing `OHHTTPStubs` module map) was found and left undiagnosed as unrelated to the mechanism under test. Item 3 not chased further -- three real attempts this session hit genuine disk-space exhaustion on this machine before completing (a different failure mode, confirmed not a clean test of the original issue either way), and deliberately burning more of this machine's own fragile disk headroom for a low-probability reproduction of an already-documented rare risk wasn't judged worthwhile. Docs-only change, no code touched. All 35 issues filed to date are now closed.
+
+---
+
+## PR #162 — Correct issue #156's own closing write-up: BUILD FAILED severity, real target count (2026-09-08)
+Issue: #156
+Question: PR #161's own closing write-up for issue #156 contained two real inaccuracies -- both surfaced by the user pushing back rather than caught by verification before writing.
+Done: Item 3's "known, unexplained risk" framing understated `BUILD FAILED`'s actual severity (a total run failure -- no index store, no report at all -- not a lesser accuracy risk); corrected to state this plainly while noting it's self-healing on retry. Item 2's "two test targets" claim was itself wrong -- an initial pass over-counted "seven test targets" by grouping errors from raw file paths rather than the real project structure; re-checked against `WordPress.xcodeproj`'s own `PBXNativeTarget` list and `Modules/Package.swift` instead of directory-name guessing, finding the true count: four distinct real targets (`WordPressTest`, `WordPressKitTests`, `AsyncImageKitTests`, `JetpackStatsWidgets`) -- `Tests/KeystoneTests/` is a folder inside `WordPressTest`, not its own target, confirmed directly by the pbxproj's own comment naming it as such. Docs-only change, no code touched.
 
 ---
 
