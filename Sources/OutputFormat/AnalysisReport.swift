@@ -208,10 +208,13 @@ public struct EscapeHatchFinding: Codable, Equatable, Sendable {
     /// the module name instead. Present for every other kind.
     public let declarationUSR: String?
     public let name: String
-    /// `var` (`true`) vs `let` (`false`) for `.nonisolatedUnsafe`. `nil` for every other kind --
-    /// in particular, `.uncheckedSendable`'s own mutable-stored-property analysis (does this type
-    /// have a mutable stored property at all) is unscoped/deferred, not merely omitted by
-    /// oversight -- see the design doc's own Step 3 correction.
+    /// `var` (`true`) vs `let` (`false`) for `.nonisolatedUnsafe`. For `.uncheckedSendable`,
+    /// three-valued: `true`/`false` when the conforming type's own mutable-stored-property status
+    /// is known (walking its members and superclass chain -- see
+    /// `AnalysisReportBuilder.hasKnownMutableStoredProperty`), `nil` when the chain reaches an
+    /// external/unresolved ancestor whose members aren't known (issue #153 item 1; the design doc's
+    /// own Step 3 correction describes the original, now-resolved deferral). `nil` unconditionally
+    /// for every other kind.
     public let isMutable: Bool?
     /// `nil` when the underlying declaration itself has no known location (mirrors
     /// `DeclarationInfo.location`'s own optionality, not a decode-compatibility default).
