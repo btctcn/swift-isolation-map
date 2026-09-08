@@ -362,26 +362,62 @@ mainActorTypes: 15891, typesAnalyzed: 39041, unspecifiedIsolation: 792
 **The mechanism itself is confirmed working on a second, much larger, structurally different real
 corpus** (SPM/local-packages, not CocoaPods; 497 targets vs. Project Iris's much smaller target
 count) -- the run completed end to end (compiler-args resolution, index-store build, oracle
-resolution, report generation), with no crash and a real, non-empty report.
+resolution, report generation), with no crash and a real, non-empty report. Confirmed directly, not
+just inferred from the summary counts: the **primary `WordPress` app target itself compiled and
+indexed successfully** -- 35,285 real nodes extracted from `WordPress/Classes/` alone, with real
+resolved USRs and isolation, including from `AccountService+Swift.swift` specifically (the same
+file a *different* target's own error, below, name-checks).
 
-**A real, confirmed environment issue in this specific checkout, unrelated to the mechanism under
-test:** the run logged real compile errors for two test targets (`WordPressKitTests`,
-`KeystoneTests`) -- `no such module 'OHHTTPStubs'` and `'AccountService.h' file not found` --
-confirmed via direct inspection: `OHHTTPStubs` *is* present as a real SPM checkout
-(`.build/checkouts/OHHTTPStubs`) in this corpus, but its module map wasn't available to this
-specific build, a checkout-state issue (not diagnosed further -- out of scope for this item; this
-project's own `SwiftBuildCompilerArgumentsProvider` already queries every target and merges what
-succeeds, matching its own documented behavior). This explains the elevated 41%
-unresolved-isolation warning on this run -- a real, checkout-specific condition, not a defect in
-the private-DerivedData mechanism itself, which is what this item exists to verify. Historical
-WordPress-iOS numbers from `task-swift-build-prepare-for-indexing-spike.md` (~6617 total edges) are
-not directly comparable to this run's 4987 -- both real corpus drift (WordPress-iOS is actively
-maintained, per this project's own established precedent for why absolute numbers shift over time
-across unrelated investigations) and this run's own partial test-target compile failures are
-plausible, unverified contributing factors; not chased further since the mechanism's own success
-was the actual question this item asks.
+**A real, confirmed environment issue in this specific checkout, scoped against the real project
+structure, not against directory names.** The run's own log carries 180 real `error:` lines. An
+initial pass grouped these by raw file path and over-counted to "seven test targets" -- wrong,
+caught by checking the *actual* build-target boundaries in
+`WordPress/WordPress.xcodeproj/project.pbxproj` (the real `PBXNativeTarget` list) and
+`Modules/Package.swift` instead of inferring targets from directory names. `Tests/KeystoneTests/`
+is not its own target at all -- the pbxproj's own comment names it explicitly: `/* Exceptions for
+"KeystoneTests" folder in "WordPressTest" target */` -- it's a folder *inside* the real
+`WordPressTest` native target, and every file under `Tests/Features/`, `Tests/Services/`,
+`Tests/Helpers/` etc. that appeared to be a separate target is actually a subdirectory of that same
+one target. The real, verified count is **four distinct real targets**:
+- **`WordPressTest`** (real native target; the `KeystoneTests/` folder inside it) -- `no such module
+  'OHHTTPStubs'` (62 occurrences) and `'AccountService.h' file not found` (40 occurrences, present
+  only in *this* target's own build context -- the primary `WordPress` target's own build of the
+  identical bridging header succeeded, per the 35,285 nodes above).
+- **`WordPressKitTests`** (confirmed a real, separate native target in the same pbxproj) -- the same
+  two error shapes, plus `no such module 'WordPressTesting'` (2 occurrences).
+- **`AsyncImageKitTests`** (confirmed a real SPM test target, `Modules/Package.swift:372`) -- 1 file,
+  same `OHHTTPStubs`/`WordPressTesting` shape.
+- **`JetpackStatsWidgets`** (real native target) -- two missing generated source files
+  (`Secrets-JetpackStatsWidgets.swift`, `GeneratedAssetSymbols.swift`, 6 occurrences each) that a
+  build-time codegen/secrets-injection step apparently never produced for this checkout.
+
+None of this reaches the primary `WordPress` target's own build. Root cause of *why* these four
+secondary targets fail in this checkout (a missing codegen/secrets-injection step, most likely, but
+not traced further -- out of scope for this item) is not diagnosed; this project's own
+`SwiftBuildCompilerArgumentsProvider` already queries every target and merges what succeeds,
+matching its own documented behavior, which is exactly why the primary target's own data came
+through clean despite these failures elsewhere. This explains the elevated 41%
+unresolved-isolation warning on this run -- a real, checkout-specific condition affecting a bounded,
+precisely-identified set of four secondary targets, not a defect in the private-DerivedData
+mechanism itself, which is what this item exists to verify. Historical WordPress-iOS numbers from
+`task-swift-build-prepare-for-indexing-spike.md` (~6617 total edges) are not directly comparable to
+this run's 4987 -- both real corpus drift (WordPress-iOS is actively maintained, per this project's
+own established precedent for why absolute numbers shift over time across unrelated investigations)
+and this run's own partial secondary-target compile failures are plausible, unverified contributing
+factors; not chased further since the mechanism's own success was the actual question this item
+asks.
 
 ### Item 3 — the once-observed BUILD FAILED: not chased further
+
+**Precisely what this is, stated without softening:** `BUILD FAILED` on the index-store-populating
+build means the build genuinely didn't produce an index store -- the tool's entire invocation
+produces **no report at all**, not a degraded or partial one. This is a total failure of that one
+run, not a subtle accuracy risk; calling it a "risk" undersells it. The one thing that keeps it from
+being worse is that it's self-healing on retry -- the original investigation confirmed both a
+byte-for-byte manual reproduction of the identical final command and two subsequent full re-runs
+from a clean cache all succeeded immediately after the one failure -- so a user who hits it gets a
+hard, unambiguous failure (never a silently wrong report) and a plain re-run of the same command is
+already the known, working fix, even without understanding the underlying cause.
 
 Not re-attempted this pass. This session's own repeated real WordPress-iOS attempts (three, on a
 fresh private-DerivedData key each time) hit real disk-space exhaustion (`ENOSPC`) on this specific
@@ -389,11 +425,12 @@ machine before completing, twice, which is a confirmed, real, but *different* fa
 one this item describes, and doesn't constitute a clean test of it either way (a disk-space crash
 mid-build isn't evidence for or against the original once-observed `BUILD FAILED`). Given this
 machine's own disk headroom is fragile enough that routine corpus work here repeatedly threatens
-`ENOSPC`, deliberately trying to reproduce a rare, already-once-observed, already-documented "known,
-unexplained risk on first use of a new key" by burning through several more fresh multi-gigabyte
-DerivedData keys isn't a good use of that scarce, fragile resource for a low-probability
-reproduction. Left exactly as originally documented: a known, unexplained, low-frequency risk, not
-fixed or further understood.
+`ENOSPC`, deliberately trying to reproduce a rare, already-once-observed, already-documented total
+run failure by burning through several more fresh multi-gigabyte DerivedData keys wasn't judged a
+good use of that scarce, fragile resource for a low-probability reproduction. Left exactly as
+originally documented: a known, unexplained, low-frequency *total-failure* mode (not a lesser
+"risk"), not fixed or further understood -- mitigated in practice only by its own self-healing
+behavior on retry, not by anything this project did.
 
 ## Status
 
