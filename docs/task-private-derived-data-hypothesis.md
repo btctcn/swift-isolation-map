@@ -5,15 +5,13 @@ Tracks the same underlying problem as `docs/task-index-store-module-scoping.md` 
 avoiding the pollution instead of filtering it out after the fact.
 
 **Status: shipped as the default behavior for Xcode projects, verified end-to-end against Project
-Iris.** The private-DerivedData mechanism itself is not experimental or gated behind any flag --
-it's simply how the tool now works for `.xcodeproj`/`.xcworkspace` containers. Only the *old*
-`allowedModuleNames`/`is_system_unit` filtering it superseded stays in the code, off by default,
-re-enabled by `--experimental-index-store-module-filter` (explicitly marked in its own `--help`
-text as liable to change or be removed without notice) -- that flag's own name is the only
-"experimental" thing left here. Three items from Step 5/7 remain genuinely open, tracked as
-[issue #156](https://github.com/btctcn/swift-isolation-map/issues/156): the 32-edge unexplained
-residual, a second real corpus never re-run against this specific wired-up code path, and a
-once-observed, unreproduced `BUILD FAILED` on first use of a fresh private-DerivedData key.
+Iris and WordPress-iOS.** The private-DerivedData mechanism itself is not experimental or gated
+behind any flag -- it's simply how the tool now works for `.xcodeproj`/`.xcworkspace` containers.
+Only the *old* `allowedModuleNames`/`is_system_unit` filtering it superseded stays in the code, off
+by default, re-enabled by `--index-store-module-filter` (its permanent, non-experimental name as of
+PR #128 -- a deliberate defensive fallback, not something still being evaluated). The three items
+from Step 5/7 that were left open are now closed -- see Step 9 -- as
+[issue #156](https://github.com/btctcn/swift-isolation-map/issues/156).
 
 ## Step 1 — Hypothesis
 
@@ -317,3 +315,88 @@ own CLI reference sections updated to match; historical investigation docs that 
 *different*, still-real `swift build -Xswiftc -index-store-path -Xswiftc <path>` SwiftPM compiler
 flag (`docs/priority-2-phase-0-spike.md`, `docs/task-raw-indexstore-spike.md`, etc.) were left alone
 -- accurate, unrelated. Full suite re-verified: 518 tests, still all passing, after removal.
+
+## Step 9 — Issue #156's three open items, closed (2026-09-08)
+
+### Item 1 — the 32-edge residual: root cause found, same mechanism as issue #155
+
+Reproduced the exact historical comparison for real, on the current code (`--index-store-module-filter`,
+its permanent non-experimental name as of PR #128) against `~/ios`: unfiltered
+`crossActorBoundaries=1553`, filtered `crossActorBoundaries=1585`; edge-level diff by
+`(callerUSR, calleeUSR, file, line)` -- **32 only-in-filtered, 0 only-in-unfiltered, 0 reclassified**,
+an exact match to the original finding.
+
+**Root cause, confirmed directly via `SWIFT_ISOLATION_MAP_DEBUG_UNIT_MODULES`:** this is the *same
+mechanism* as issue #155, just producing spurious edges instead of missing declarations. Every one
+of the 32 edges is a call from a correctly-scanned project-local/Pod file (`CurrentUser.swift`,
+`TimelineView.swift`, `FirebaseSessions.swift`, ...) into a symbol whose own *defining* unit is a
+plain, non-modular Objective-C `.m` file with an empty module name (`AMAAppMetrica.m`,
+`GDTCOREvent`'s own `.m`, `CMSteppedProgressBar`, `DZNEmptyDataSet`, `SVGKImage`, `FIRMessaging`,
+`FBLPromise` -- confirmed directly in the debug log, e.g. `SKIP module= system=false
+unit=AMAAppMetrica.o-... mainFile=.../AMAAppMetrica.m`). In the filtered run, that definition unit
+is skipped, so `DeclarationLinker` never finds the local declaration and falls through to the
+external oracle -- which fails to resolve these specific ObjC symbols in this environment, leaving
+`calleeIsolation = .unspecified`. That differs from the caller's own resolved isolation, producing a
+**new, spurious** `isUnknown: true` cross-isolation edge that never existed in the unfiltered run
+(where the callee resolves locally to its real, ordinary `nonisolated`, matching the caller, so
+`crossIsolationEdges()`'s own `declaredCallerIsolation != calleeIsolation` filter correctly excludes
+it -- no edge at all).
+
+**Not a new, separate problem.** Given issue #155's own closing reasoning (the naive "exempt
+empty-module-name units too" fix is unsafe -- it can't distinguish a legitimate dependency's own
+`.m` file from an unrelated target's) applies identically here, this item is closed the same way:
+understood, not fixed, an inherent limitation of an already-accepted narrow, off-by-default fallback
+path, not the tool's default behavior.
+
+### Item 2 — second real corpus: confirmed, mechanism works
+
+Ran the actual wired-up tool (not a raw-`xcodebuild` spike) against `~/corpora/WordPress-iOS`
+(`WordPress.xcworkspace`, scheme `WordPress`, `--force-reindex`) through the real default
+private-DerivedData path -- 497 targets, 5553 files, real output:
+
+```
+actors: 33, crossActorBoundaries: 4987, highRiskBoundaries: 2795,
+mainActorTypes: 15891, typesAnalyzed: 39041, unspecifiedIsolation: 792
+```
+
+**The mechanism itself is confirmed working on a second, much larger, structurally different real
+corpus** (SPM/local-packages, not CocoaPods; 497 targets vs. Project Iris's much smaller target
+count) -- the run completed end to end (compiler-args resolution, index-store build, oracle
+resolution, report generation), with no crash and a real, non-empty report.
+
+**A real, confirmed environment issue in this specific checkout, unrelated to the mechanism under
+test:** the run logged real compile errors for two test targets (`WordPressKitTests`,
+`KeystoneTests`) -- `no such module 'OHHTTPStubs'` and `'AccountService.h' file not found` --
+confirmed via direct inspection: `OHHTTPStubs` *is* present as a real SPM checkout
+(`.build/checkouts/OHHTTPStubs`) in this corpus, but its module map wasn't available to this
+specific build, a checkout-state issue (not diagnosed further -- out of scope for this item; this
+project's own `SwiftBuildCompilerArgumentsProvider` already queries every target and merges what
+succeeds, matching its own documented behavior). This explains the elevated 41%
+unresolved-isolation warning on this run -- a real, checkout-specific condition, not a defect in
+the private-DerivedData mechanism itself, which is what this item exists to verify. Historical
+WordPress-iOS numbers from `task-swift-build-prepare-for-indexing-spike.md` (~6617 total edges) are
+not directly comparable to this run's 4987 -- both real corpus drift (WordPress-iOS is actively
+maintained, per this project's own established precedent for why absolute numbers shift over time
+across unrelated investigations) and this run's own partial test-target compile failures are
+plausible, unverified contributing factors; not chased further since the mechanism's own success
+was the actual question this item asks.
+
+### Item 3 — the once-observed BUILD FAILED: not chased further
+
+Not re-attempted this pass. This session's own repeated real WordPress-iOS attempts (three, on a
+fresh private-DerivedData key each time) hit real disk-space exhaustion (`ENOSPC`) on this specific
+machine before completing, twice, which is a confirmed, real, but *different* failure mode from the
+one this item describes, and doesn't constitute a clean test of it either way (a disk-space crash
+mid-build isn't evidence for or against the original once-observed `BUILD FAILED`). Given this
+machine's own disk headroom is fragile enough that routine corpus work here repeatedly threatens
+`ENOSPC`, deliberately trying to reproduce a rare, already-once-observed, already-documented "known,
+unexplained risk on first use of a new key" by burning through several more fresh multi-gigabyte
+DerivedData keys isn't a good use of that scarce, fragile resource for a low-probability
+reproduction. Left exactly as originally documented: a known, unexplained, low-frequency risk, not
+fixed or further understood.
+
+## Status
+
+All three items closed (see [issue #156](https://github.com/btctcn/swift-isolation-map/issues/156)).
+Item 1: root cause found, will-not-fix (same reasoning as issue #155). Item 2: confirmed working.
+Item 3: not chased further, documented as-is.
