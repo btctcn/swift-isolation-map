@@ -906,11 +906,27 @@ answers this: if a callee is *both* `@preconcurrency`-declared (directly or via 
 its module is separately `@preconcurrency import`-ed by the caller's file, only the first reason is
 reported. Kept deliberately, not treated as a gap to close: either reason alone is a true, sufficient
 explanation for the real downgrade (SE-0337 softens the diagnostic either way), so reporting only one
-doesn't misrepresent anything -- and no real corpus checked across this whole investigation (five
-corpora across PR1/PR2, plus this pass's own searches) has ever produced a real dual-trigger edge, so
-there's no real-world evidence motivating a more complex, exhaustive message over this simpler one.
-Regression-tested (`buildDowngradesOnceWhenBothDeclarationAndImportTriggersApply`) so a future change
-that reorders the chain and silently drops this behavior would fail a test.
+doesn't misrepresent anything.
+
+**Real-world basis, checked directly rather than assumed from memory of the original investigation.**
+PR1's own real-corpus check found the declaration/ancestor trigger fires on essentially no real edge
+across Project Iris/Kingfisher/Auth0.swift/RealmSwift/WCDB (`docs/task-escape-hatch-and-preconcurrency-severity.md`'s
+own PR1 Step 6: "Zero edges downgraded across all four corpora"), and PR2's own Kingfisher re-check
+found the import trigger fires but the declaration trigger still didn't, on that same corpus (0
+`.preconcurrencyDeclaration`-caused downgrades). Re-checked against a sixth, fresh real corpus this
+pass (WordPress-iOS, `wordpress156.json`, the same real run item 2 above used): 5 real
+`.preconcurrencyDeclaration` findings and 28 real `.preconcurrencyImport` findings both exist in this
+corpus, but only 3 real edges were actually downgraded, and all 3 fired via the import trigger only
+(`WKWebView`/`WKWebViewConfiguration`/`WKWebsiteDataStore` reached through a `WebKit`
+`@preconcurrency import`) -- none of the 5 declaration-level findings (all plain `init`s) has any
+real cross-isolation edge reaching it in this corpus at all, so the declaration trigger contributes
+zero real downgrades here either, and the dual-trigger case can't arise by construction on this data.
+Given a consistent zero-declaration-trigger-downgrade pattern across six real corpora now (not
+assumed, checked on the sixth directly), there's no real-world evidence motivating a more complex,
+exhaustive dual-cause message over this simpler one -- revisit if a future real corpus ever produces
+one. Regression-tested (`buildDowngradesOnceWhenBothDeclarationAndImportTriggersApply`, a synthetic
+fixture, since no real one exists) so a future change that reorders the chain and silently drops this
+behavior would fail a test.
 
 ## Item 4 — `.medium` → `.low` downgrade, answered: no
 
