@@ -7,7 +7,7 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-127 PRs exist in total as of PR #162 (PR numbers up to #162, with gaps where a number belongs to
+128 PRs exist in total as of PR #163 (PR numbers up to #163, with gaps where a number belongs to
 an issue instead — see the repo's issue tracker). 35 issues exist in total, 0 open as of this
 writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their
 own title or body as of the original pass through this log -- not recomputed against the newer
@@ -656,6 +656,13 @@ Done: Item 1 root-caused directly via `SWIFT_ISOLATION_MAP_DEBUG_UNIT_MODULES` -
 Issue: #156
 Question: PR #161's own closing write-up for issue #156 contained two real inaccuracies, surfaced by the user pushing back; a subsequent full audit of the two days' work (requested explicitly, to catch any other unsubstantiated conclusions) found a third, related gap in issue #153's own write-up.
 Done: Item 3's "known, unexplained risk" framing understated `BUILD FAILED`'s actual severity (a total run failure -- no index store, no report at all -- not a lesser accuracy risk); corrected to state this plainly while noting it's self-healing on retry. Item 2's "two test targets" claim was itself wrong -- an initial pass over-counted "seven test targets" by grouping errors from raw file paths rather than the real project structure; re-checked against `WordPress.xcodeproj`'s own `PBXNativeTarget` list and `Modules/Package.swift` instead of directory-name guessing, finding the true count: four distinct real targets (`WordPressTest`, `WordPressKitTests`, `AsyncImageKitTests`, `JetpackStatsWidgets`) -- `Tests/KeystoneTests/` is a folder inside `WordPressTest`, not its own target, confirmed directly by the pbxproj's own comment naming it as such. Separately, the audit found issue #153 item 3's claim that no real corpus has ever produced a severity-downgrade dual-trigger edge was citing historical corpus checks plus a never-actually-done "this pass's own searches" -- checked directly against the real WordPress-iOS report already on hand (5 real declaration-level findings, 28 real import-level findings, all 3 real downgraded edges via the import trigger only), turning an inherited assumption into a concrete, checked sixth data point. Docs-only change, no code touched.
+
+---
+
+## PR #163 — Release v0.3.0 (2026-09-08)
+Issue: none
+Question: 28 PRs had shipped since 0.2.1 (2026-08-26) -- real escape-hatch detection, the `--platform` flag, generalized SDK-family support, and a dozen reliability/correctness fixes -- with no version bump, no updated release, and a README Roadmap/status blurb that had drifted stale in several places.
+Done: Bumped `toolVersion` to `0.3.0`. Rewrote the Roadmap section following the same pattern PR #114 used for 0.2.0: what actually shipped became the real "v0.3 — shipped" entry, the original v0.3 wishlist (`diff` subcommand, GitHub Action, migration-debt map, packaged distribution) moved to v0.4, and the old v0.4 moved to v0.5. Found and fixed four stale doc spots while preparing the release: the top-of-README status blurb (wrong test count, a "not yet built" claim for work that had shipped), the "An honest caveat about risk" section still describing escape-hatch distinguishing as an untracked gap instead of the real, shipped `escapeHatches`/`structuralRisk`/`severityRationale` fields, a "Known limitations" entry for the `-enable-anonymous-context-mangled-names` stderr noise that PR #133 had already fixed at the root cause (52 → 0 real occurrences), and `EscapeHatchFinding.isMutable`'s own doc comment still describing `.uncheckedSendable`'s mutable-property analysis as unscoped when issue #153 had implemented it. Full suite: 645/645 passing. `swift build -c release` clean.
 
 ---
 

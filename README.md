@@ -3,16 +3,19 @@
 A static analysis CLI for Swift actor isolation and data-race risk — a whole-project isolation
 map, not a single runtime trace.
 
-Latest release: [0.2.1](https://github.com/btctcn/swift-isolation-map/releases/tag/0.2.1).
+Latest release: [0.3.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.3.0).
 
 > **Status: working.** The full pipeline is implemented and tested — project/scheme resolution,
 > index-store discovery and staleness detection, a hybrid `libIndexStore` + `SwiftSyntax`
 > inference engine, and an external-isolation oracle that resolves compiled-dependency symbols
 > (CocoaPods, XCFrameworks, SDK frameworks) via bulk `symbolgraph-extract` and, as a fallback, live
-> `sourcekitd` queries. 246 tests passing (`swift test`), continuously validated against two real,
-> independent projects (one private, ~1450 source files across 42 CocoaPods + 9 SPM dependencies;
-> one public), not just fixtures. `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.2`
-> items below (`diff` subcommand, GitHub Action, migration-debt map).
+> `sourcekitd` queries, including real Swift 6 escape-hatch detection (`@unchecked Sendable`,
+> `nonisolated(unsafe)`, `@preconcurrency`) with a genuine SE-0337 severity downgrade.
+> 645 tests passing (`swift test`), continuously validated against several real,
+> independent projects (one private, ~2200+ source files across dozens of CocoaPods + SPM
+> dependencies; several public, including a 5500+-file, 497-target one), not just fixtures.
+> `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.4` items below (`diff` subcommand,
+> GitHub Action, migration-debt map, packaged distribution).
 
 ## Requirements
 
@@ -31,7 +34,7 @@ failing deep inside the pipeline with a cryptic error.
 
 ## Quick start
 
-No packaged distribution yet (Homebrew/SPM-plugin are `v0.2`+, see Roadmap below) — build from
+No packaged distribution yet (Homebrew/SPM-plugin are `v0.4`+, see Roadmap below) — build from
 source:
 
 ```
@@ -285,6 +288,22 @@ and the two edges — the real output also lists every other analyzed declaratio
 - **`isAwaited`** — `true` when this exact call site is syntactically inside a real `await <expr>`
   expression. Purely informational, and deliberately **never changes `risk`** — see the caveat
   below for why.
+- **`structuralRisk`** / **`severityRationale`** — present on an edge only when a real Swift 6
+  escape hatch actually softens the compiler's own diagnostic at that boundary (SE-0337
+  `@preconcurrency`, on the callee's own declaration, an ancestor up its class hierarchy, or the
+  callee's module being `@preconcurrency import`-ed by the caller's file): `structuralRisk` keeps
+  the un-softened value (`high`), while `risk` itself reports the real, softened one (`medium`),
+  and `severityRationale` names which mechanism fired and why. Never fires for `.medium`/`.low`
+  edges — only a structural `nonisolated → isolated` boundary has a real compiler error to soften
+  in the first place (see the caveat below).
+- **`escapeHatches`** — every declaration in the project carrying an explicit, real Swift
+  concurrency-checking escape hatch (`@unchecked Sendable`, `nonisolated(unsafe)`,
+  `@preconcurrency` on a declaration/conformance, `@preconcurrency import`) — visible on its own
+  even where it never triggers a `structuralRisk` downgrade, so a team can see quietly-accumulating
+  `@unchecked Sendable`/`nonisolated(unsafe)` usage directly. `.uncheckedSendable`'s own `isMutable`
+  is three-valued: `true`/`false` when the conforming type's real stored-property state is known
+  (including inherited from a same-project superclass), `nil` when it depends on an
+  external/unresolved ancestor this tool has no member data for.
 - **`summary`** — the numbers you'd put in a PR description or a migration-tracking spreadsheet
   today, by hand (`highRiskBoundaries` is the CI-gate number — see exit codes above).
 
@@ -303,9 +322,13 @@ classification.md`): downgrading an already-`await`-ed edge to `low` was tried a
 it stopped surfacing exactly the boundaries a migration effort most wants visible. `high` findings
 are best read as **"every place migration debt lives,"** not **"every place there's an active
 bug."** The `isAwaited` field above gives you the `await`-presence signal directly, without the tool
-making an incorrect claim about which shapes are risk-free; distinguishing the `@unchecked Sendable`
-escape hatch specifically is a separate, named, tracked gap — see
-`docs/task-compiled-dependency-isolation-integration.md` §5 — not a silent limitation.
+making an incorrect claim about which shapes are risk-free. Distinguishing a real
+`@preconcurrency`/`@unchecked Sendable` escape hatch specifically now ships (`escapeHatches`,
+`structuralRisk`, `severityRationale` above, `docs/task-escape-hatch-and-preconcurrency-severity.md`)
+-- `@preconcurrency` softens the compiler's own diagnostic (and this tool's `risk`) for a real
+subset of `high` edges; `@unchecked Sendable`/`nonisolated(unsafe)` are surfaced as their own
+findings but deliberately never soften `risk` itself, since neither one is a compiler-verified
+safety guarantee the way `@preconcurrency`'s SE-0337 downgrade is.
 
 In practice, `await`-protected crossings are a small minority of `high` findings, not the bulk of
 them — confirmed against a real, independent corpus (`WordPress-iOS`, `WordPress` scheme, 3208
@@ -330,7 +353,7 @@ touch each file. What it doesn't give you:
   bookkeeping this tool exists to do once, automatically, correctly (see `docs/research/` for how
   much real work went into making that resolution trustworthy).
 - **A CI gate, not just an editor squiggle.** Exit code `1` on any high-risk boundary means this
-  slots into a pipeline today; a `diff`-based gate (v0.2) will let it fail a PR only on *new* risk,
+  slots into a pipeline today; a `diff`-based gate (v0.4) will let it fail a PR only on *new* risk,
   not the whole existing backlog.
 - **A trackable migration-debt number**, not a vague sense of "we should really finish this
   someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
@@ -352,24 +375,13 @@ touch each file. What it doesn't give you:
 
 ## Known limitations
 
-**A real run may print `<unknown>:0: error: unknown argument: '-enable-anonymous-context-mangled-names'` to stderr.**
-This is a real, reproducible `sourcekitd`/Swift-driver toolchain inconsistency (a debug-build flag
-the driver auto-injects, then its own frontend rejects), not something this tool's own argument
-construction introduces — confirmed harmless to the actual analysis: the same query that prints it
-still returns a correct result. Root-caused, but not deterministically reproducible outside a large
-real corpus, so not yet filed upstream or suppressed (deliberately: the only interception point would
-be redirecting stderr around every oracle query, which is unsafe under `--oracle-workers > 1`'s
-concurrent queries). See
-[`docs/task-anonymous-context-mangled-names-noise.md`](docs/task-anonymous-context-mangled-names-noise.md)
-for the full investigation.
-
 **Compiler-synthesized declarations (default `init()`, `deinit`, `rawValue`/`allCases` accessors,
 ...) are structurally invisible to this tool's extraction pass.** Declaration extraction is built
 on `SwiftSyntax`, a lossless parse of exactly the *source text* in a file — nothing more, nothing
 less. A declaration the compiler generates because none was hand-written (a memberwise initializer,
 a default `deinit`, an enum's `rawValue` accessor) has no corresponding node anywhere in the parse
 tree, so there is nothing for the extraction pass to visit in the first place. This is a structural
-limitation (не чинится), not a bug scoped to one code path — a real fix would mean independently
+limitation, not a bug scoped to one code path — a real fix would mean independently
 re-deriving the compiler's own synthesis-eligibility rules (which members get synthesized, and
 under exactly which conditions) inside this tool, which risks introducing new, harder-to-verify
 false positives/negatives for a class of declaration that isn't where undiscovered isolation risk
@@ -433,8 +445,9 @@ as such instead.
 
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
 - **v0.2 — shipped.** A direct `swift-build`/`SWBBuildService` API path promoted to the default compiler-argument resolution for Xcode projects — faster and more correct than the `xcodebuild -verbose` path it replaces, byte-for-byte edge-parity verified against two real 2000+-file corpora (the `xcodebuild -verbose` path was kept for a while afterward as an unreachable-from-the-CLI fallback, then removed from the tree entirely once confirmed genuinely dead). Closure-level isolation attribution completed end to end: a real `@globalActor` declared in a compiled dependency is now recognized, and the full de-isolating mirror direction (`Task.detached`, non-main `DispatchQueue`s, `@concurrent`) is implemented and real-corpus-verified. A real declaration-extraction bug fixed — local `let`/`var`/nested `func`s inside a function or closure body were being misattributed as phantom members of the enclosing type (22% of all declarations on one real ~2200-file corpus). Dozens of further real declaration/USR-matching correctness fixes across Objective-C/Swift interop edge cases (bridged extern constants, protocol witnesses, subscripts, multi-target declaration aliasing, and more), plus index-store scoping and DerivedData isolation hardening for shared/multi-run environments. A `--sort=file|severity` flag was added afterward (0.2.1) to order the output's edges by location or by risk instead of leaving them in whatever order the analysis happened to produce them.
-- **v0.3 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin). (Per-call-site suppression comments were designed — `docs/task-suppression-comments.md` — and then decided against; not planned.)
-- **v0.4 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
+- **v0.3 — shipped.** Real Swift 6 escape hatches (`@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` on a declaration/conformance/import) are now surfaced as their own `escapeHatches` findings, and a real SE-0337 diagnostic softening (`@preconcurrency` on a callee's own declaration, an ancestor up its class hierarchy, or its module being `@preconcurrency import`-ed) downgrades that edge's `risk` for real, with `structuralRisk`/`severityRationale` keeping the "why" traceable — including `.uncheckedSendable`'s own real mutable-stored-property detection, walking a type's members and superclass chain. A new `--platform <name>` flag picks among several simultaneously-valid Simulator destinations on one modern multiplatform scheme (iOS + visionOS on the same scheme, confirmed against a real app); compiler-argument resolution for Xcode projects generalized beyond iOS Simulator to the other three real Simulator SDK families (tvOS/watchOS/visionOS), verified against four independent real corpora. `#if <name>` custom build conditions are now resolved from the real, active compiler arguments instead of a hardcoded `true`, and a real `#if targetEnvironment(macCatalyst)` misclassification (backwards-answered) is fixed. Total `sourcekitd` unavailability is now a hard failure instead of a silent, incomplete report; the SwiftPM compiler-argument path's own run-to-run non-determinism (an incremental `swift build -v` silently omitting compile lines) is fixed with a real-file-count-scaled retry. Several further real declaration/USR-matching and stderr-noise correctness fixes shipped along the way (an `NSDictionary`/`NSMutableDictionary` `NSCopying`-keyed subscript, `MKCoordinateRegion.center`'s typealias-wrapped setter, two distinct compiler-argument stderr-noise root causes, a `DeclarationLinker` merge tie-break for stray duplicate source files).
+- **v0.4 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin). (Per-call-site suppression comments were designed — `docs/task-suppression-comments.md` — and then decided against; not planned.)
+- **v0.5 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
 
 ## Contributing
 

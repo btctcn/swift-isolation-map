@@ -93,7 +93,7 @@ private final class ResultBox<T>: @unchecked Sendable {
 
 @main
 struct SwiftIsolationMap: ParsableCommand {
-    static let toolVersion = "0.2.1"
+    static let toolVersion = "0.3.0"
 
     static let configuration = CommandConfiguration(
         commandName: "swift-isolation-map",
