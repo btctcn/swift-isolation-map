@@ -97,6 +97,39 @@ confidently wrong answers here (claimed no proposals were tagged "6.3" at all) o
 For anything requiring an exact/complete answer against a large structured dataset, download it
 and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize tool's read of it.
 
+## Swift 6.4 proposal review (in progress — tracked in issue #164)
+
+Per the runbook below, step 2 asked proposal-by-proposal before any `Swift64RuleSet` type is
+added. Verdicts so far, each with real evidence (not assumed):
+
+- **SE-0518 (`~Sendable` for explicitly marking non-`Sendable` types) — no change.** This
+  proposal only adds suppression syntax for the *`Sendable`* protocol's inferred conformance; it
+  does not touch the actor-isolation resolution model (explicit attribute → inheritance/
+  conformance → module default → `nonisolated`) at all. Confirmed on the real Swift 6.4 toolchain
+  (Xcode 27.0, `swiftlang-6.4.0.34.1`, now installed — the proposal's own documented interaction
+  reproduces exactly): a class inheriting an `@MainActor` superclass and declaring `~Sendable`
+  fails to compile with `error: cannot both conform to and suppress conformance to 'Sendable'`,
+  because global-actor isolation already implies `Sendable` and this proposal doesn't change that
+  one-directional relationship — it only lets a type opt out of `Sendable` when isolation
+  wouldn't otherwise force it. A plain `nonisolated` type with `~Sendable` compiles with no
+  isolation-related diagnostic at all. Separately checked the one place this project's own code
+  touches `~`-suppressed conformances: `DeclarationExtractor.normalizedInheritedName`
+  (`Sources/SyntaxAnalysis/DeclarationExtractor.swift:157`) already treats any
+  `SuppressedTypeSyntax` generically (the same node SwiftSyntax used for `~Copyable`/`~Escapable`
+  since SE-0427/SE-0499) — `~Sendable` needs no new extractor code.
+- **SE-0493 (support `async` calls in `defer` bodies) — no change.** Purely a syntax-legality
+  change: before 6.4, `await` inside a `defer` body was a hard compile error regardless of the
+  enclosing context; this proposal lifts that restriction when the enclosing scope is already
+  `async`. The proposal's own text is explicit that isolation is unaffected: "The body of a
+  `defer` statement will always inherit the isolation of its enclosing scope." Confirmed on the
+  real 6.4 toolchain: a `@MainActor async` function's `defer { await r.teardown() }` (calling
+  another `@MainActor`-isolated async method) compiles clean; a plain nonisolated `async`
+  function's `defer { await r.teardown() }` (crossing into the `@MainActor` method) also compiles
+  clean, the same as an equivalent `await` call outside a `defer` would — no new isolation
+  boundary or attribution is introduced. `defer` bodies aren't modeled as their own declarations
+  in `DeclarationInfo` at all (they're statements, not declarations), so this has zero surface
+  area in `DeclarationExtractor`/`IsolationInferenceEngine` either way.
+
 ## Runbook: adding support for a new Swift version
 
 Trigger: `.github/workflows/swift-version-watch.yml` opens an issue titled "New Swift release
