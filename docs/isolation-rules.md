@@ -129,6 +129,24 @@ added. Verdicts so far, each with real evidence (not assumed):
   boundary or attribution is introduced. `defer` bodies aren't modeled as their own declarations
   in `DeclarationInfo` at all (they're statements, not declarations), so this has zero surface
   area in `DeclarationExtractor`/`IsolationInferenceEngine` either way.
+- **SE-0504 (Task Cancellation Shields), SE-0520 (discardable result in `Task` initializers),
+  SE-0523 (`Hashable` for `UnownedTaskExecutor`), SE-0528 (`Continuation`), SE-0530 (Async Result
+  Support) — no change, reviewed as a group.** All five are purely-additive stdlib Concurrency
+  APIs (a new `withTaskCancellationShield`/`hasActiveCancellationShield` pair, a new diagnostic
+  warning on discarded throwing-`Task` results, a protocol conformance, a new move-only
+  continuation type, an async `Result.init(catching:)` overload) with no interaction with the
+  4-tier isolation resolution model:
+  - None of them introduce a new declaration *kind* that `DeclarationExtractor`/`DeclarationInfo`
+    would need to represent — they're ordinary global functions, static/instance methods, and
+    protocol conformances, all forms the extractor already handles.
+  - Where an isolation-adjacent attribute appears in a signature (`nonisolated(nonsending)` on
+    `withTaskCancellationShield`'s async overload, `withContinuation`, and
+    `Result.init(catching:)`), it's SE-0461 (Swift 6.2, already shipped and already orthogonal to
+    this engine — it governs *where a nonisolated async function's body executes*, not what
+    `IsolationKind` the declaration itself resolves to, the same "execution vs. declared isolation"
+    distinction already drawn for SE-0449 above), not anything new in 6.4.
+  - `Continuation`'s own `Sendable` conformance is a fixed, unconditional stdlib type declaration,
+    not a pattern this engine resolves for user code.
 
 ## Runbook: adding support for a new Swift version
 
