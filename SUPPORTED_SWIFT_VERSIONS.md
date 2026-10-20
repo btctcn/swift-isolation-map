@@ -4,4 +4,4 @@ This file tracks the Swift language versions that `swift-isolation-map` has a ma
 
 Last known Swift release checked against this tool's isolation rules:
 
-6.3
+6.4

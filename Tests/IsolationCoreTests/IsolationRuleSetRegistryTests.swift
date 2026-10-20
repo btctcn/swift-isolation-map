@@ -8,6 +8,7 @@ func knownVersionsResolveCorrectly() throws {
     #expect(try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.1") is Swift61RuleSet)
     #expect(try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.2") is Swift62RuleSet)
     #expect(try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.3") is Swift63RuleSet)
+    #expect(try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.4") is Swift64RuleSet)
 }
 
 @Test("5.10 is parsed as version 5.10, not 5.1")
@@ -17,8 +18,8 @@ func minorVersionDoubleDigitsAreNotMisparsed() throws {
 
 @Test("An unreviewed future Swift version throws rather than silently reusing the newest known rule set")
 func unsupportedFutureVersionThrows() {
-    #expect(throws: UnsupportedSwiftVersionError(version: "6.4", highestSupportedUpperBound: "6.3")) {
-        try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.4")
+    #expect(throws: UnsupportedSwiftVersionError(version: "6.5", highestSupportedUpperBound: "6.4")) {
+        try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.5")
     }
 }
 
@@ -32,6 +33,13 @@ func defaultIsolationSettingIsThreadedThroughFor62() throws {
 @Test("The configured default-isolation setting is threaded into the resolved Swift 6.3 rule set too, independently of 6.2")
 func defaultIsolationSettingIsThreadedThroughFor63() throws {
     let ruleSet = try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.3", defaultIsolation: .globalActor(name: "MainActor"))
+    let type = DeclarationInfo(usr: "s:type", name: "ViewState")
+    #expect(ruleSet.resolveDefaultIsolation(for: type) == .globalActor(name: "MainActor"))
+}
+
+@Test("The configured default-isolation setting is threaded into the resolved Swift 6.4 rule set too, independently of 6.2/6.3")
+func defaultIsolationSettingIsThreadedThroughFor64() throws {
+    let ruleSet = try IsolationRuleSetRegistry.ruleSet(forSwiftVersion: "6.4", defaultIsolation: .globalActor(name: "MainActor"))
     let type = DeclarationInfo(usr: "s:type", name: "ViewState")
     #expect(ruleSet.resolveDefaultIsolation(for: type) == .globalActor(name: "MainActor"))
 }
