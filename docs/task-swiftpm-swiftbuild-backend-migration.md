@@ -1,6 +1,6 @@
 # SwiftPM's new default `swiftbuild` backend breaks both index-store creation and Phase A compiler-argument extraction for SwiftPM projects
 
-Tracks issue #169 and its investigation. **Analysis and spikes only — no production code changed yet.** Per the user's own instruction for this task ("сначала анализ и спайки"), this document exists to get a go-ahead on a specific fix direction before touching `IndexStoreLocator`/`SwiftPMCompilerArgumentsProvider`.
+Tracks issue #169 and its investigation. **Analysis and spikes only — no production code changed yet.** Per the user's own instruction for this task ("analysis and spikes first"), this document exists to get a go-ahead on a specific fix direction before touching `IndexStoreLocator`/`SwiftPMCompilerArgumentsProvider`.
 
 ## Why this is bigger than issue #169's original scope
 
