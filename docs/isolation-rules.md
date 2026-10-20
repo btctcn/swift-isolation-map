@@ -34,7 +34,7 @@ Verified in `protocolConformanceInferenceBeatsConfiguredDefault`
 ## Rule set version boundaries
 
 **One `IsolationRuleSet` type per Swift version in this tool's actively-reviewed range
-(6.0–6.3), even when its behavior is byte-identical to the previous version.** This was a
+(6.0–6.4), even when its behavior is byte-identical to the previous version.** This was a
 deliberate decision, revised from an earlier range-based design during PR #2's review.
 
 The original design had `SwiftVersionRange.upperBound` silently cover multiple versions (e.g.
@@ -49,15 +49,15 @@ Per-version types also mean each version gets its own git-blameable, reviewable 
 range's `upperBound`, and more in line with this project's "never silently assume" principle
 than the range design actually was.
 
-Concretely: `Swift60RuleSet`, `Swift61RuleSet`, `Swift62RuleSet`, `Swift63RuleSet` are four
-separate types in `Sources/IsolationCore/IsolationRuleSet.swift`. Each one's
+Concretely: `Swift60RuleSet`, `Swift61RuleSet`, `Swift62RuleSet`, `Swift63RuleSet`, `Swift64RuleSet`
+are five separate types in `Sources/IsolationCore/IsolationRuleSet.swift`. Each one's
 `SwiftVersionRange` is a single-point range (`lowerBound == upperBound`) representing exactly
 that version — `SwiftVersionRange` itself wasn't removed, since a degenerate one-point range is
 a natural special case of the same `contains(_:)` matching logic the registry already needed.
 `Swift5RuleSet` is the one deliberate exception: Swift 5.x stays a single bucket (5.0–5.10)
 rather than eleven near-empty types, because it predates this tool's primary audience (Swift 6
 strict-concurrency migrators) and isn't under the same version-by-version review discipline as
-6.0–6.3.
+6.0–6.4.
 
 | Rule set | Version | Why it exists as its own type |
 |---|---|---|
@@ -66,6 +66,7 @@ strict-concurrency migrators) and isn't under the same version-by-version review
 | `Swift61RuleSet` | 6.1 | Identical body to 6.0 — SE-0449 only changes *where* `nonisolated` may be written, not what it resolves to |
 | `Swift62RuleSet` | 6.2 | SE-0466 shipped here, adding the opt-in `-default-isolation` flag |
 | `Swift63RuleSet` | 6.3 | Identical body to 6.2 — SE-0481 (`weak let`) is a Sendable/mutability change, not an isolation-inference one |
+| `Swift64RuleSet` | 6.4 | Identical body to 6.3 — all 28 proposals tagged 6.4 reviewed (issue #164), none change the resolution model; see "Swift 6.4 proposal review" below |
 
 **The "identical to previous" claims are evidence-based, not assumed.** Checked against
 [`download.swift.org/swift-evolution/v1/evolution.json`](https://download.swift.org/swift-evolution/v1/evolution.json)
@@ -84,23 +85,20 @@ strict-concurrency migrators) and isn't under the same version-by-version review
   *mutability* restriction on weak references for Sendable purposes, doesn't touch isolation
   inference, inheritance, or defaulting.
 
-**Forward-looking flag, not yet actioned:** the same dataset shows SE-0518 (`~Sendable` for
-explicitly marking non-`Sendable` types) already implemented and tagged version 6.4 — ahead of
-the local toolchain (6.3). This is why `Swift63RuleSet.swiftVersion.upperBound` stops at
-`"6.3"` rather than being left open-ended: when `swift-version-watch.yml` eventually flags
-Swift 6.4, SE-0518 (and anything else tagged 6.4 by then) needs a real review before adding
-`Swift64RuleSet` — which, per the policy above, must happen as its own new type regardless of
-whether the review concludes "identical to 6.3" or "something changed."
+- **6.4**: all 28 proposals tagged this version (23 core/stdlib/SwiftPM + 5 Swift Testing track)
+  were reviewed against the real Swift 6.4 toolchain (Xcode 27.0, `swiftlang-6.4.0.34.1`) per
+  issue #164 — none change the resolution model. Full per-proposal evidence in "Swift 6.4
+  proposal review" directly below, this bullet is a pointer, not a repeat.
 
 **Methodology note:** `WebFetch`'s summarization of the raw `evolution.json` (800KB+) produced
 confidently wrong answers here (claimed no proposals were tagged "6.3" at all) on a first pass.
 For anything requiring an exact/complete answer against a large structured dataset, download it
 and query directly (`jq`, `grep`) rather than trusting a fetch-and-summarize tool's read of it.
 
-## Swift 6.4 proposal review (in progress — tracked in issue #164)
+## Swift 6.4 proposal review (complete — `Swift64RuleSet` added, issue #164 closed)
 
-Per the runbook below, step 2 asked proposal-by-proposal before any `Swift64RuleSet` type is
-added. Verdicts so far, each with real evidence (not assumed):
+Per the runbook below, step 2 asked proposal-by-proposal before `Swift64RuleSet` was added.
+All 28 proposals tagged Swift 6.4 are reviewed below, each with real evidence (not assumed):
 
 - **SE-0518 (`~Sendable` for explicitly marking non-`Sendable` types) — no change.** This
   proposal only adds suppression syntax for the *`Sendable`* protocol's inferred conformance; it
@@ -187,9 +185,9 @@ added. Verdicts so far, each with real evidence (not assumed):
 
 **Every proposal tagged Swift 6.4 (28 total: 23 core + 5 testing) has now been reviewed. The
 verdict across the board is "no change" — see issue #164 for the full per-proposal checklist.
-Per this file's own policy (one `IsolationRuleSet` type per version, even when identical), a new
-`Swift64RuleSet` type is still required before this review can be considered fully closed per the
-runbook's step 3 — not yet implemented, pending explicit go-ahead per issue #164's standing rule.**
+Per this file's own policy (one `IsolationRuleSet` type per version, even when identical),
+`Swift64RuleSet` has been added with a body copied from `Swift63RuleSet` — this review and
+issue #164 are both closed.**
 
 ## Runbook: adding support for a new Swift version
 
@@ -204,11 +202,14 @@ proposal actually change inference" don't belong in unattended automation.
 ### 1. Research — per the sourcing hierarchy in `docs/architecture.md` §1.5.1
 
 1. Pull the real evolution dataset and filter to the new version, cross-referencing for
-   isolation-relevant keywords — the exact command that worked for 6.0–6.3 above:
+   isolation-relevant keywords — the exact command that worked for 6.0–6.4 above:
    ```
    curl -s https://download.swift.org/swift-evolution/v1/evolution.json -o /tmp/evolution.json
-   jq -r '.proposals[] | select(.status.version == "6.4") | "\(.id) \(.title)"' /tmp/evolution.json
+   jq -r '.proposals[] | select(.status.version == "6.5") | "\(.id) \(.title)"' /tmp/evolution.json
    ```
+   (Swift Testing's own proposals are numbered separately and aren't in this dataset — per the
+   6.4 review above, also check `swiftlang/swift-evolution`'s `proposals/testing/` directory for
+   anything marked `Implemented (Swift 6.5)`.)
    then eyeball each hit's title/summary against `(?i)actor|isolat|concurren|sendable`. **Do not**
    hand this JSON to `WebFetch` for summarization instead — see the methodology note directly
    above; this is the exact failure mode it documents, with a real, confirmed wrong answer as the
@@ -228,25 +229,26 @@ inheritance/conformance → module default → `nonisolated`** — the model
 `IsolationInferenceEngine`/`IsolationRuleSet.resolveDefaultIsolation` actually implements — not
 whether the version changes concurrency checking, syntax legality, or anything else in the
 language. This is exactly the question asked (and answered "no," each time, with a cited reason)
-for SE-0414/0420/0423/0430/0431/0434 (6.0), SE-0449 (6.1), and SE-0481 (6.3) above. "Nothing
-changed" is a fully valid, expected answer — it is not a reason to skip step 3.
+for SE-0414/0420/0423/0430/0431/0434 (6.0), SE-0449 (6.1), SE-0481 (6.3), and all 28 proposals
+tagged 6.4 above. "Nothing changed" is a fully valid, expected answer — it is not a reason to
+skip step 3.
 
 ### 3. Implement — the same shape regardless of step 2's answer
 
-1. Add a new type to `Sources/IsolationCore/IsolationRuleSet.swift` — `Swift64RuleSet` for 6.4,
-   never edit `Swift63RuleSet`'s `upperBound` to cover it. A single-point `SwiftVersionRange`
+1. Add a new type to `Sources/IsolationCore/IsolationRuleSet.swift` — `Swift65RuleSet` for 6.5,
+   never edit `Swift64RuleSet`'s `upperBound` to cover it. A single-point `SwiftVersionRange`
    (`lowerBound == upperBound`), body either copied from the previous version (if step 2 found no
    change) or implementing the new behavior, with a doc comment stating the review verdict and
    citing the proposal(s) checked — matching every existing rule set's own comment style.
 2. Register it in `IsolationRuleSetRegistry.ruleSet(forSwiftVersion:defaultIsolation:)`'s
    `candidates` array (`Sources/IsolationCore/IsolationRuleSetRegistry.swift`).
 3. **Update `IsolationRuleSetRegistryTests.swift`'s `unsupportedFutureVersionThrows` test** — it
-   currently hardcodes `"6.4"` as *the* example of an unsupported future version; once 6.4 is
+   currently hardcodes `"6.5"` as *the* example of an unsupported future version; once 6.5 is
    supported, that literal expectation is wrong and must move to whatever the next unreviewed
    version is (or be dropped if none is known yet). Easy to miss since the test still compiles
    and its *name* stays accurate — only its literal version string goes stale.
 4. Add a row to the "Rule set version boundaries" table above, and a bullet to the evidence list,
-   in the same style as 6.0–6.3.
+   in the same style as 6.0–6.4.
 5. If step 2 found a real behavior change: add new row(s) to the "Rule checklist" table below,
    each backed by a real compiled reproduction (per this file's own "Empirical validation"
    discipline) and a new test in `IsolationRuleSetRegistryTests.swift` or
