@@ -130,3 +130,23 @@ public struct Swift63RuleSet: IsolationRuleSet {
         defaultIsolation
     }
 }
+
+/// Swift 6.4: identical resolution behavior to 6.3. All 28 proposals tagged version 6.4
+/// (23 core/stdlib/SwiftPM + 5 Swift Testing track) were reviewed against the real Swift 6.4
+/// toolchain (Xcode 27.0, `swiftlang-6.4.0.34.1`) per issue #164 — none change the 4-tier
+/// resolution model. Most relevant individually: SE-0518 (`~Sendable`) only suppresses
+/// `Sendable` inference, doesn't touch actor isolation; SE-0493 (async in `defer`) only lifts a
+/// syntax restriction, `defer` bodies still inherit enclosing-scope isolation. See
+/// docs/isolation-rules.md, "Swift 6.4 proposal review," for the full per-proposal evidence.
+public struct Swift64RuleSet: IsolationRuleSet {
+    public let swiftVersion = SwiftVersionRange(lowerBound: "6.4", upperBound: "6.4")
+    public let defaultIsolation: IsolationKind
+
+    public init(defaultIsolation: IsolationKind = .nonisolated) {
+        self.defaultIsolation = defaultIsolation
+    }
+
+    public func resolveDefaultIsolation(for declaration: DeclarationInfo) -> IsolationKind {
+        defaultIsolation
+    }
+}
