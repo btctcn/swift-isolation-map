@@ -147,6 +147,49 @@ added. Verdicts so far, each with real evidence (not assumed):
     distinction already drawn for SE-0449 above), not anything new in 6.4.
   - `Continuation`'s own `Sendable` conformance is a fixed, unconditional stdlib type declaration,
     not a pattern this engine resolves for user code.
+- **Remaining 16 core proposals (SE-0494, 0498, 0499, 0502, 0506-0509, 0511, 0514, 0519, 0521,
+  0522, 0524, 0525, 0527) and all 5 Swift Testing track proposals (0019, 0021-0024) — no change,
+  reviewed as a final sweep.** Unlike the title-only keyword screen used to pick the
+  concurrency-adjacent candidates above, this pass grepped each proposal's **full body text** for
+  `actor|isolat|concurren|sendable` (not just the title) before concluding "irrelevant" — nine of
+  the sixteen core proposals (0494, 0498, 0499, 0502, 0508, 0511, 0514, 0521, 0524) and three of
+  the five testing proposals (0019, 0022, 0024) have zero hits anywhere in their text. The
+  remaining seven core proposals had real hits, each read in context:
+  - **SE-0507** (Borrow/Mutate Accessors): states these accessors **cannot** be used for
+    properties of `class`/`actor` types at all (a runtime-exclusivity-check limitation) — a
+    restriction on applicability, not a change to how actor isolation itself resolves.
+  - **SE-0506** (Advanced Observation Tracking): its `withContinuousObservationTracking` closure
+    parameter uses `@isolated(any)`/`@_inheritActorContext`/`@Sendable` — all pre-existing
+    attributes (the first already reviewed as out-of-scope "closure/call-graph mechanics" in the
+    6.0 review above), composed into a new stdlib function; introduces no new isolation semantics
+    of its own.
+  - **SE-0509** (SwiftPM SBOM generation): the one hit was a false positive — "Extractor"
+    contains "actor" as a substring, matched by the regex, not an actual mention.
+  - **SE-0519** (`Ref`/`MutableRef` types), **SE-0525** (`RawSpan` safe loading), **SE-0527**
+    (`RigidArray`/`UniqueArray`): each hit is an ordinary conditional-`Sendable`-conformance
+    pattern (`extension X: Sendable where Element: Sendable`) or an unrelated `Sendable`-tagged
+    enum — standard stdlib propagation, not a change to the 4-tier model.
+  - **SE-0522** (Source-Level Control Over Compiler Warnings): introduces a new `@diagnose`
+    attribute attachable to any declaration kind, including `actor-declaration`. Checked directly
+    against `DeclarationExtractor.swift`: global-actor/`preconcurrency`/`unchecked` detection all
+    match attributes by an explicit, closed name list
+    (`recognizedGlobalActorAttribute(in:known:)`, `attributes.contains(named: "preconcurrency"/
+    "unchecked")`) — `@diagnose` isn't in that list and can't be confused with an isolation
+    attribute by this engine.
+  - **SE-0021** (Swift Testing/XCTest interop) and **SE-0023** (Transferable Attachments, Swift
+    Testing track): both hits are incidental English usage ("blocking the calling actor",
+    "Swift concurrency") in prose, not isolation semantics. Swift Testing proposals are out of
+    scope for this engine regardless — this project's own test suite only *consumes* Swift
+    Testing, it doesn't implement isolation-inference rules for test declarations.
+  - None of the 21 introduce a new declaration kind, a new isolation-relevant attribute this
+    engine resolves, or any change to **explicit attribute → inheritance/conformance → module
+    default → `nonisolated`**.
+
+**Every proposal tagged Swift 6.4 (28 total: 23 core + 5 testing) has now been reviewed. The
+verdict across the board is "no change" — see issue #164 for the full per-proposal checklist.
+Per this file's own policy (one `IsolationRuleSet` type per version, even when identical), a new
+`Swift64RuleSet` type is still required before this review can be considered fully closed per the
+runbook's step 3 — not yet implemented, pending explicit go-ahead per issue #164's standing rule.**
 
 ## Runbook: adding support for a new Swift version
 
