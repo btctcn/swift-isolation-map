@@ -11,7 +11,7 @@ Latest release: [0.3.0](https://github.com/btctcn/swift-isolation-map/releases/t
 > (CocoaPods, XCFrameworks, SDK frameworks) via bulk `symbolgraph-extract` and, as a fallback, live
 > `sourcekitd` queries, including real Swift 6 escape-hatch detection (`@unchecked Sendable`,
 > `nonisolated(unsafe)`, `@preconcurrency`) with a genuine SE-0337 severity downgrade.
-> 645 tests passing (`swift test`), continuously validated against several real,
+> 651 tests passing (`swift test`), continuously validated against several real,
 > independent projects (one private, ~2200+ source files across dozens of CocoaPods + SPM
 > dependencies; several public, including a 5500+-file, 497-target one), not just fixtures.
 > `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.4` items below (`diff` subcommand,
@@ -422,7 +422,6 @@ inference specifically.
 | [SE-0449](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0449-nonisolated-for-global-actor-cutoff.md) | Allow `nonisolated` to prevent global actor inference | 6.1 |
 | [SE-0466](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0466-control-default-actor-isolation.md) | Control default actor isolation inference | 6.2 |
 | [SE-0478](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0478-default-isolation-typealias.md) | File-level defaults | accepted, not yet shipped — confirmed empirically that its `default:` syntax doesn't compile on the local Swift 6.3 toolchain; review once it lands |
-| [SE-0518](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0518-tilde-sendable.md) | `~Sendable` for explicitly marking non-`Sendable` types | 6.4 — not yet reviewed, see the runbook in [`docs/isolation-rules.md`](docs/isolation-rules.md) |
 
 SE-0411 is worth calling out specifically: whether a class's synthesized zero-argument `init()`
 inherits its type's global-actor isolation depends on the language mode in effect under this
@@ -432,7 +431,11 @@ exists to report correctly, confirmed the hard way against a real project's own 
 
 **Proposals reviewed per Swift version and confirmed not to change isolation inference** (kept as
 the record of what was checked, not assumed — see `docs/isolation-rules.md`, "Rule set version
-boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-0481.
+boundaries"): SE-0337, SE-0338, SE-0414, SE-0423, SE-0430, SE-0431, SE-0434, SE-0481, and, for 6.4
+(issue #164), SE-0518, SE-0493, SE-0504, SE-0520, SE-0523, SE-0528, SE-0530 (the concurrency-adjacent ones;
+16 further core proposals and 5 Swift Testing proposals were also reviewed and found irrelevant —
+see `docs/isolation-rules.md`'s "Swift 6.4 proposal review" for the complete per-proposal
+evidence).
 
 ## Glossary
 
