@@ -46,7 +46,7 @@ func crossFileProtocolWitnessResolvesCorrectly() throws {
     }
 
     // 3. Link via real IndexStoreDB data (Phase 3, this PR).
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link(extractionResults)
 
@@ -103,7 +103,7 @@ func owningPropertyUSRMapsRealAccessorToItsProperty() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
 
     // Real symbols reported by IndexStoreDB at `counter`'s own declaration location -- per
     // `DeclarationLinker.disambiguate`'s own established, already-verified finding, a stored
@@ -142,7 +142,7 @@ func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
 
     let coordinatorFile = sourcesDirectory.appendingPathComponent("SyncCoordinator.swift").path
     let coordinator = try #require(indexStoreClient.definedSymbols(inFile: coordinatorFile).first { $0.name == "SyncCoordinator" })
@@ -195,6 +195,23 @@ func baseTypeUSRsResolvesRealSupertypesIncludingExtensionDeclared() throws {
 /// correctly resolves firmlinks since it asks the OS/VFS directly, not a naive per-component
 /// `readlink` walk -- called on `NSTemporaryDirectory()` itself (which exists) before appending
 /// this fixture copy's own not-yet-existing subdirectory name.
+/// Resolves the real index store path after a real `swift build -Xswiftc -index-store-path
+/// -Xswiftc <requestedPath>` build -- mirrors the production fix in `IndexStoreLocator`/
+/// `SwiftIsolationMap.build()` (issue #169/#172): `swift build`'s new default `swiftbuild` build
+/// system silently ignores that flag and writes real index data to `.build/out` instead
+/// (confirmed via its real `v5` subdirectory), regardless of the requested path. Checks the
+/// requested path first (unchanged behavior on the old `native` backend), then falls back.
+func resolvedIndexStorePath(requestedPath: String, buildDirectory: URL) -> String {
+    if FileManager.default.fileExists(atPath: requestedPath) {
+        return requestedPath
+    }
+    let fallback = buildDirectory.appendingPathComponent(".build/out")
+    if FileManager.default.fileExists(atPath: fallback.appendingPathComponent("v5").path) {
+        return fallback.path
+    }
+    return requestedPath
+}
+
 private func copiedCrossFileWitnessFixture() throws -> URL {
     let originalRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -235,7 +252,7 @@ func extensionChainResolvesExternalNestedAndGenericExtendedTypes() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
     let extensionFile = sourcesDirectory.appendingPathComponent("ExtensionOfExternalType.swift").path
     let symbols = indexStoreClient.definedSymbols(inFile: extensionFile)
 
@@ -283,7 +300,7 @@ func linkRewritesExtensionMemberContainingTypeUSR() throws {
     let source = try String(contentsOf: extensionFile, encoding: .utf8)
     let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link([extractionResult])
 
@@ -314,7 +331,7 @@ func linkMergesRealCrossFileTypeAndExtensionRegardlessOfOrder() throws {
     )
     #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
 
     func extract(_ fileName: String) throws -> ExtractionResult {
         let fileURL = sourcesDirectory.appendingPathComponent(fileName)

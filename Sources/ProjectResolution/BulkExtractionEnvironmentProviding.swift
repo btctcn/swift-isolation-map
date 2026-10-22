@@ -177,21 +177,36 @@ public final class SwiftPMBulkExtractionEnvironmentProvider: BulkExtractionEnvir
             )
         }
         let binPath = URL(fileURLWithPath: binPathResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-        // .build/<triple>/{debug,release}/ -- the triple is the bin directory's own parent, but
-        // SwiftPM's own build-directory naming deliberately omits the OS version component
-        // (confirmed directly: a real `arm64-apple-macosx` folder name, never
-        // `arm64-apple-macosx13.0`) -- using it bare as `-target` leaves the *compiler's own*
-        // default apply instead, which is not "whatever this machine's SDK actually supports," but
-        // a fixed, ancient baseline (confirmed directly: `swift symbolgraph-extract -target
-        // arm64-apple-macosx ...` against a real `.macOS(.v13)`-declared dependency's own
-        // `.swiftmodule` fails outright with "compiling for macOS 10.4, but module 'X' has a
-        // minimum deployment target of macOS 13.0" -- silently discarding that module's isolation
-        // data via this function's own existing fail-soft contract, for every SwiftPM dependency
-        // with any realistic platform minimum, found chasing Issue #40's own real-corpus
-        // verification). The real SDK's own current version is always a safe, valid target here
-        // (symbolgraph-extract only reads declarations, never checks runtime availability against
-        // it) -- appended directly, since the triple's own arch-vendor-os prefix is otherwise
-        // already correct.
+        // The triple's arch-vendor-os prefix used to come from the bin path itself
+        // (`.build/<triple>/{debug,release}/`, the bin directory's own parent) under the old
+        // `native` build system -- SwiftPM's build-directory naming there deliberately omitted the
+        // OS version component (confirmed directly: a real `arm64-apple-macosx` folder name, never
+        // `arm64-apple-macosx13.0`). `swift build`'s new default `swiftbuild` build system (issue
+        // #169/#172) changed the bin path's own shape entirely (`.build/out/Products/<Config>`, no
+        // triple component anywhere in it at all) -- confirmed the hard way: deriving a "triple"
+        // from that path's parent directory name silently produced `"Products<sdkVersion>"`, which
+        // `symbolgraph-extract` rejected outright (`error: unknown target triple 'Products27.0'`),
+        // failing every single discovered-module AND hardcoded-default-module extraction job
+        // (`defaultModules` included) for the whole run, silently (this function's own existing
+        // per-module fail-soft contract swallowed every one). Fixed by asking the compiler itself
+        // for its real, build-system-independent host triple prefix (`swift -print-target-info`'s
+        // `target.unversionedTriple`, e.g. `"arm64-apple-macosx"`) instead of parsing any build
+        // output path -- this doesn't depend on which build system produced `binPath` at all.
+        let targetInfoResult = try processRunning.run(executable: "swift", arguments: ["-print-target-info"], workingDirectory: nil)
+        guard targetInfoResult.exitCode == 0,
+              let targetInfoData = targetInfoResult.standardOutput.data(using: .utf8),
+              let targetInfo = try? JSONDecoder().decode(SwiftTargetInfo.self, from: targetInfoData)
+        else {
+            throw BulkExtractionEnvironmentError.settingsUnavailable(
+                reason: "swift -print-target-info exited \(targetInfoResult.exitCode) or produced unparseable output: \(targetInfoResult.standardOutput)"
+            )
+        }
+        // The real SDK's own current version is always a safe, valid target here (symbolgraph-
+        // extract only reads declarations, never checks runtime availability against it) -- see
+        // the original finding this appending step closes, still accurate: without it,
+        // `swift symbolgraph-extract -target arm64-apple-macosx ...` (no version at all) against a
+        // real `.macOS(.v13)`-declared dependency's own `.swiftmodule` fails outright with
+        // "compiling for macOS 10.4, but module 'X' has a minimum deployment target of macOS 13.0."
         let sdkVersionResult = try processRunning.run(executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-version"], workingDirectory: nil)
         guard sdkVersionResult.exitCode == 0 else {
             throw BulkExtractionEnvironmentError.settingsUnavailable(
@@ -199,7 +214,7 @@ public final class SwiftPMBulkExtractionEnvironmentProvider: BulkExtractionEnvir
             )
         }
         let sdkVersion = sdkVersionResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let target = binPath.deletingLastPathComponent().lastPathComponent + sdkVersion
+        let target = targetInfo.target.unversionedTriple + sdkVersion
 
         let sdkResult = try processRunning.run(executable: "xcrun", arguments: ["--show-sdk-path"], workingDirectory: nil)
         guard sdkResult.exitCode == 0 else {
@@ -209,7 +224,14 @@ public final class SwiftPMBulkExtractionEnvironmentProvider: BulkExtractionEnvir
         }
         let sdkPath = sdkResult.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let modulesDirectory = binPath.appendingPathComponent("Modules")
+        // `swift build`'s new default `swiftbuild` build system (issue #169/#172, same root cause
+        // as this project's other SwiftPM-backend fixes) no longer puts a dependency's own
+        // `.swiftmodule` under a `Modules/` subdirectory of the bin path at all -- confirmed
+        // empirically: every target's `.swiftmodule` (the project's own and every dependency's)
+        // sits flat, directly in the bin path itself, under that backend. Checked `Modules/`
+        // first so this stays unchanged on the old `native` backend.
+        let modulesSubdirectory = binPath.appendingPathComponent("Modules")
+        let modulesDirectory = fileSystem.directoryExists(at: modulesSubdirectory) ? modulesSubdirectory : binPath
         let discoveredModules = discoverSwiftModules(inDirectory: modulesDirectory)
 
         let environment = BulkExtractionEnvironment(sdkPath: sdkPath, target: target, discoveredModules: discoveredModules)
@@ -223,4 +245,14 @@ public final class SwiftPMBulkExtractionEnvironmentProvider: BulkExtractionEnvir
             .filter { $0.pathExtension == "swiftmodule" }
             .map { DiscoveredModule(name: $0.deletingPathExtension().lastPathComponent, extractionFlags: ["-I", modulesDirectory.path]) }
     }
+}
+
+/// Minimal decoding of `swift -print-target-info`'s real JSON output -- only the one field this
+/// file needs. Confirmed real shape (Swift 6.4, Xcode 27.0): `{"target": {"triple":
+/// "arm64-apple-macosx27.0.0", "unversionedTriple": "arm64-apple-macosx", ...}, ...}`.
+struct SwiftTargetInfo: Decodable {
+    struct Target: Decodable {
+        let unversionedTriple: String
+    }
+    let target: Target
 }
