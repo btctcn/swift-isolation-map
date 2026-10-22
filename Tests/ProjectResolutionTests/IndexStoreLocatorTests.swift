@@ -73,6 +73,36 @@ func plainBuildRootIsPreferredOverIndexBuildRoot() {
     #expect(result == .found(plainStore))
 }
 
+@Test("The new swiftbuild-backend's .build/out root is found as a fallback, confirmed by its v5 subdirectory")
+func swiftBuildBackendOutRootIsFoundAsFallback() {
+    let fileSystem = FakeFileSystem()
+    let packageDirectory = URL(fileURLWithPath: "/project")
+    // Real shape confirmed in docs/task-swiftpm-swiftbuild-backend-migration.md: under the new
+    // default `swiftbuild` build system, `--auto-index-store` writes real index data directly
+    // under `.build/out`, ignoring any `-Xswiftc -index-store-path` override.
+    fileSystem.addDirectory(at: packageDirectory.appendingPathComponent(".build/out/v5"))
+
+    let locator = IndexStoreLocator(fileSystem: fileSystem)
+    let result = locator.locate(for: .swiftPackage(packageDirectory.appendingPathComponent("Package.swift")))
+
+    #expect(result == .found(packageDirectory.appendingPathComponent(".build/out")))
+}
+
+@Test("A .build/out directory with no v5 subdirectory (e.g. a release-config build under the new backend) is not mistaken for an index store")
+func swiftBuildBackendOutRootWithoutV5IsNotMistakenForAStore() {
+    let fileSystem = FakeFileSystem()
+    let packageDirectory = URL(fileURLWithPath: "/project")
+    // Confirmed empirically: a release-config build under the new backend produces a real
+    // `.build/out` directory (Products/, Intermediates.noindex/, ...) but no index data at all --
+    // `.build/out`'s own existence must not be enough to report `.found`.
+    fileSystem.addDirectory(at: packageDirectory.appendingPathComponent(".build/out/Products"))
+
+    let locator = IndexStoreLocator(fileSystem: fileSystem)
+    let result = locator.locate(for: .swiftPackage(packageDirectory.appendingPathComponent("Package.swift")))
+
+    #expect(result == .missing)
+}
+
 @Test("An SPM package with no index store anywhere is reported missing")
 func spmMissingWhenNoStoreExists() {
     let fileSystem = FakeFileSystem()

@@ -831,7 +831,21 @@ struct SwiftIsolationMap: ParsableCommand {
             guard result.exitCode == 0 else {
                 throw ProcessFailure(command: "swift build", exitCode: result.exitCode, standardError: result.standardError, standardOutput: result.standardOutput)
             }
-            return storePath
+            // Can no longer assume the requested path is where the data actually landed --
+            // confirmed directly (docs/task-swiftpm-swiftbuild-backend-migration.md, issue #169):
+            // `swift build`'s new default build system (`swiftbuild`) silently ignores
+            // `-Xswiftc -index-store-path` and writes to its own fixed location instead
+            // (`.build/out`, one of `locator.locate`'s own candidates since that same task). Check
+            // the requested path first (unchanged behavior for anyone still on the old `native`
+            // backend), then fall back to a real re-discovery -- same discipline the Xcode branch
+            // below already uses for its own opaque DerivedData naming.
+            if fileSystem.directoryExists(at: storePath) {
+                return storePath
+            }
+            guard case .found(let url) = locator.locate(for: container) else {
+                throw SwiftIsolationMapError.indexStoreMissingAfterRebuild
+            }
+            return url
 
         case .xcodeproj, .xcworkspace:
             var arguments: [String] = []

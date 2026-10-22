@@ -73,6 +73,24 @@ public struct IndexStoreLocator {
                 }
             }
         }
+        // A third real root, found while investigating issue #169: `swift build`'s default build
+        // system changed from `native` (llbuild) to `swiftbuild` (the same SWBBuildService engine
+        // this tool already talks to directly for Xcode projects -- see
+        // docs/task-swiftpm-swiftbuild-backend-migration.md). Under that backend, `--auto-index-store`
+        // (on by default) writes real index data directly under the scratch directory's own `out`
+        // subdirectory -- `.build/out/v5/{records,units}` -- regardless of any `-Xswiftc
+        // -index-store-path` override, which this backend silently ignores. Confirmed empirically
+        // to be the same on-disk shape (`v5/{records,units}` directly under the path passed to
+        // `indexstore_store_create`) as every other candidate above, just at a new location -- so
+        // `.build/out` itself, not `.build/out/v5`, is the path to return. Checking for the `v5`
+        // subdirectory specifically (not just `.build/out`'s own existence) matters because `out`
+        // exists after *any* build, including a release-config one that produces no index data at
+        // all under this backend (confirmed separately, not yet a real case this tool's own code
+        // reaches, documented in the task doc above).
+        let swiftBuildBackendRoot = packageDirectory.appendingPathComponent(".build/out")
+        if fileSystem.directoryExists(at: swiftBuildBackendRoot.appendingPathComponent("v5")) {
+            return .found(swiftBuildBackendRoot)
+        }
         return .missing
     }
 
