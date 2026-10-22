@@ -7,10 +7,9 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-136 PRs exist in total (#165-173 below are merged; #174 is still open as of this writing). 38
-issues exist in total, 0 open as of this writing. At least 23 PRs explicitly reference one of the
-(then-18) closed issue numbers in their own title or body as of the original pass through this
-log -- not recomputed against the newer closed issues.
+136 PRs exist in total as of PR #174. 38 issues exist in total, 0 open as of this writing. At
+least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their own title or
+body as of the original pass through this log -- not recomputed against the newer closed issues.
 
 ---
 
@@ -711,6 +710,13 @@ Done: `IndexStoreLocator` gained `.build/out` as a new SwiftPM candidate path (v
 Issue: #172
 Question: Issue #172 tracked 11 test failures across three `IndexStoreIntegrationTests`-family files that each build their own index store directly, bypassing `IndexStoreLocator`'s PR #171 fix entirely.
 Done: Fixed all 11 via a shared `resolvedIndexStorePath()` helper applied at 8 call sites across the three files. Found two further real bugs while fixing a related test (`ThirdPartyGlobalActorCLITests`) not described in #172's own text: its `modulesDirectory()` assumed a `Modules/` subdirectory that no longer exists under the new backend, and -- the more serious one, a genuine production bug -- `SwiftPMBulkExtractionEnvironmentProvider`'s target-triple derivation silently produced the bogus triple `"Products27.0"` under the new backend, making *every* `swift symbolgraph-extract` invocation fail (hardcoded default SDK modules included, not just discovered dependencies) and silently disabling custom-`@globalActor` discovery in compiled SwiftPM dependencies (issue #40's own feature) project-wide, with no visible error (the extraction failure path is deliberately fail-soft). Fixed by querying `swift -print-target-info` directly instead of parsing any build-system-specific path shape. Root-caused via a temporary diagnostic, reverted after use. Full `swift test -c release`: 0 failures (was 11 before this PR on this toolchain).
+
+---
+
+## PR #174 — Refresh README (SE-0518, test count) and PROJECT-HISTORY.md (PRs #165-173) (2026-10-22)
+Issue: none
+Question: `README.md`'s Normative references table still listed SE-0518 as "6.4 -- not yet reviewed" after issue #164 had closed with all 28 Swift 6.4 proposals reviewed, the stated test count (645) had drifted from the real current count, and this file itself hadn't been updated since PR #163 despite nine further merged PRs.
+Done: Moved SE-0518 out of the main Normative-references table into the "confirmed not to change" list alongside the other concurrency-adjacent 6.4 proposals, with a pointer to `docs/isolation-rules.md` for the remaining 16+5 proposals reviewed. Bumped the stated test count to 651 (confirmed from a real full `swift test -c release` run). Added this file's own entries for PRs #165-173 and bumped its opening paragraph's PR/issue counts. Docs-only.
 
 ---
 
