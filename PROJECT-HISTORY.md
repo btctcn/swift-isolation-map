@@ -7,11 +7,10 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-128 PRs exist in total as of PR #163 (PR numbers up to #163, with gaps where a number belongs to
-an issue instead — see the repo's issue tracker). 35 issues exist in total, 0 open as of this
-writing. At least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their
-own title or body as of the original pass through this log -- not recomputed against the newer
-closed issues.
+136 PRs exist in total (#165-173 below are merged; #174 is still open as of this writing). 38
+issues exist in total, 0 open as of this writing. At least 23 PRs explicitly reference one of the
+(then-18) closed issue numbers in their own title or body as of the original pass through this
+log -- not recomputed against the newer closed issues.
 
 ---
 
@@ -663,6 +662,55 @@ Done: Item 3's "known, unexplained risk" framing understated `BUILD FAILED`'s ac
 Issue: none
 Question: 28 PRs had shipped since 0.2.1 (2026-08-26) -- real escape-hatch detection, the `--platform` flag, generalized SDK-family support, and a dozen reliability/correctness fixes -- with no version bump, no updated release, and a README Roadmap/status blurb that had drifted stale in several places.
 Done: Bumped `toolVersion` to `0.3.0`. Rewrote the Roadmap section following the same pattern PR #114 used for 0.2.0: what actually shipped became the real "v0.3 — shipped" entry, the original v0.3 wishlist (`diff` subcommand, GitHub Action, migration-debt map, packaged distribution) moved to v0.4, and the old v0.4 moved to v0.5. Found and fixed four stale doc spots while preparing the release: the top-of-README status blurb (wrong test count, a "not yet built" claim for work that had shipped), the "An honest caveat about risk" section still describing escape-hatch distinguishing as an untracked gap instead of the real, shipped `escapeHatches`/`structuralRisk`/`severityRationale` fields, a "Known limitations" entry for the `-enable-anonymous-context-mangled-names` stderr noise that PR #133 had already fixed at the root cause (52 → 0 real occurrences), and `EscapeHatchFinding.isMutable`'s own doc comment still describing `.uncheckedSendable`'s mutable-property analysis as unscoped when issue #153 had implemented it. Full suite: 645/645 passing. `swift build -c release` clean.
+
+---
+
+## PR #165 — Review SE-0518 and SE-0493 for issue #164: no isolation-model changes (2026-10-20)
+Issue: #164
+Question: Issue #164 tracked reviewing every Swift 6.4 evolution proposal against the 4-tier isolation resolution model before adding a `Swift64RuleSet` -- SE-0518 (`~Sendable`) and SE-0493 (async calls in `defer` bodies) were the first two concurrency-adjacent candidates, and this machine had just gained Xcode 27/Swift 6.4, unblocking real empirical verification for the first time since the issue was filed.
+Done: Both reviewed with real `swiftc -swift-version 6` compiles on the newly-available toolchain -- neither changes isolation resolution. `~Sendable` only suppresses `Sendable` inference (`DeclarationExtractor` already handles its `SuppressedTypeSyntax` shape generically, shared with `~Copyable`/`~Escapable`, no change needed); `defer` bodies still inherit enclosing-scope isolation regardless of the new async-call permission. Evidence recorded in `docs/isolation-rules.md`'s new "Swift 6.4 proposal review" section. Docs-only, no code changed.
+
+---
+
+## PR #166 — Review SE-0504/0520/0523/0528/0530 for issue #164: no isolation-model changes (2026-10-20)
+Issue: #164
+Question: Five more concurrency-adjacent 6.4 proposals flagged by the keyword screen -- Task Cancellation Shields (SE-0504), a discardable-result warning for throwing `Task` initializers (SE-0520), `Hashable` for `UnownedTaskExecutor` (SE-0523), `Continuation` (SE-0528), and async `Result.init` (SE-0530) -- needed individual review.
+Done: All five confirmed purely-additive stdlib Concurrency APIs; none introduces a new declaration kind or changes the 4-tier resolution model, and every `nonisolated(nonsending)` appearance traces back to the already-shipped SE-0461 (6.2), not anything new in 6.4. Closes out every concurrency-adjacent candidate from the original keyword screen. Docs-only, no code changed.
+
+---
+
+## PR #167 — Review remaining SE-0494..0527 core proposals and Swift Testing track for issue #164 (2026-10-20)
+Issue: #164
+Question: 21 remaining Swift 6.4 proposals (16 core + 5 Swift Testing) hadn't been individually reviewed -- the original keyword screen only checked titles, not full proposal body text.
+Done: Re-screened every proposal's full body text for `actor|isolat|concurren|sendable`; 9 core + 3 testing proposals had zero hits anywhere, the remaining 7 core + 2 testing proposals were read in full context. SE-0522's new `@diagnose` attribute (attachable to any declaration, including `actor`) was specifically checked against `DeclarationExtractor`'s real attribute-matching code to confirm it can't be mistaken for an isolation attribute. All 28 Swift 6.4 proposals are now reviewed; verdict "no change" across the board. `Swift64RuleSet` itself deliberately deferred, pending explicit go-ahead for that specific code change. Docs-only.
+
+---
+
+## PR #168 — Add Swift64RuleSet for issue #164: identical behavior to 6.3 (2026-10-20)
+Issue: #164
+Question: With all 28 Swift 6.4 proposals reviewed as "no change," the runbook's own step 3 (add a new rule-set type regardless of the verdict, per this project's one-type-per-version policy) still needed doing before #164 could close.
+Done: Added `Swift64RuleSet` (body copied from `Swift63RuleSet`), registered it in `IsolationRuleSetRegistry`, bumped `unsupportedFutureVersionThrows` to the next unreviewed version (6.5), moved `SUPPORTED_SWIFT_VERSIONS.md`'s last line to 6.4, added matching registry tests. Flagged, but deliberately didn't fix, a newly-found class of pre-existing test failure (10 tests) traced to `swift build`'s new default `swiftbuild` build system silently ignoring `-Xswiftc -index-store-path` on this machine's just-upgraded toolchain -- confirmed identical on `main` without this change (stash-tested), filed separately as issue #169 rather than scope-creeping into this PR.
+
+---
+
+## PR #170 — Spike: swiftbuild backend breaks Phase A too, not just index-store-path (issue #169) (2026-10-20)
+Issue: #169
+Question: Issue #169 (filed from PR #168's own finding) needed deeper investigation before any fix -- was the index-store-path regression the whole story, or was something bigger going on?
+Done: Analysis-only spike, explicitly no code changes (per direct instruction to investigate before implementing). Found a second, more severe break: `swift build -v`'s new driver-level log shape (the same underlying engine Xcode uses, confirmed via `swift build --help-hidden`'s `--print-pif-manifest-graph`) makes `CompilerArgsLogParser.parse` return zero compiler arguments for every SwiftPM project file. Found the fix was mostly already written -- `CompilerArgsLogParser.parseXcodeSwiftCompileInvocations`, dormant since PR #128, already parses the new shape correctly, unmodified, confirmed by running it directly against a real captured log. Proposed two additive fixes (a new `IndexStoreLocator` candidate path, a parser fallback) and explained why `--build-system native` (deprecated) and fully unifying onto `SwiftBuildCompilerArgumentsProvider` (no public PIF-dump path for bare packages) aren't the right call. `docs/task-swiftpm-swiftbuild-backend-migration.md` added; no production code touched.
+
+---
+
+## PR #171 — Fix SwiftPM index-store and compiler-args resolution under the new swiftbuild backend (issue #169) (2026-10-22)
+Issue: #169
+Question: PR #170's proposed two-part fix needed implementing and validating against real projects.
+Done: `IndexStoreLocator` gained `.build/out` as a new SwiftPM candidate path (verified via its real `v5` subdirectory); `SwiftIsolationMap.build()`'s SwiftPM branch no longer trusts its own requested `-Xswiftc -index-store-path` blindly -- found necessary during end-to-end validation -- and now re-verifies/re-discovers the real store location, mirroring the Xcode branch's own existing discipline; `LiveSwiftPMCompilerArgumentsProvider` falls back to the dormant Xcode-shape parser when the primary-file shape finds nothing. Confirmed end to end: the `cross-file-witness` fixture went from a hard `storeCreateFailed` failure to a full real report; Project Iris (2263 files, the separate Xcode-project code path) confirmed unaffected by the same toolchain upgrade. 11 pre-existing, unrelated test failures (same root cause, but in test-only code that bypasses `IndexStoreLocator` entirely) explicitly left for a follow-up, filed as issue #172.
+
+---
+
+## PR #173 — Fix remaining swiftbuild-backend gaps: test index-store assumptions + a real custom-@globalActor-discovery regression (issue #172) (2026-10-22)
+Issue: #172
+Question: Issue #172 tracked 11 test failures across three `IndexStoreIntegrationTests`-family files that each build their own index store directly, bypassing `IndexStoreLocator`'s PR #171 fix entirely.
+Done: Fixed all 11 via a shared `resolvedIndexStorePath()` helper applied at 8 call sites across the three files. Found two further real bugs while fixing a related test (`ThirdPartyGlobalActorCLITests`) not described in #172's own text: its `modulesDirectory()` assumed a `Modules/` subdirectory that no longer exists under the new backend, and -- the more serious one, a genuine production bug -- `SwiftPMBulkExtractionEnvironmentProvider`'s target-triple derivation silently produced the bogus triple `"Products27.0"` under the new backend, making *every* `swift symbolgraph-extract` invocation fail (hardcoded default SDK modules included, not just discovered dependencies) and silently disabling custom-`@globalActor` discovery in compiled SwiftPM dependencies (issue #40's own feature) project-wide, with no visible error (the extraction failure path is deliberately fail-soft). Fixed by querying `swift -print-target-info` directly instead of parsing any build-system-specific path shape. Root-caused via a temporary diagnostic, reverted after use. Full `swift test -c release`: 0 failures (was 11 before this PR on this toolchain).
 
 ---
 
