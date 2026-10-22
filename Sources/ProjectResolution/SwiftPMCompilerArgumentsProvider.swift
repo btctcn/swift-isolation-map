@@ -11,6 +11,7 @@ import Foundation
 public final class LiveSwiftPMCompilerArgumentsProvider: CompilerArgumentsProviding, @unchecked Sendable {
     private let packageDirectory: URL
     private let processRunning: ProcessRunning
+    private let fileSystem: FileSystemQuerying
     /// The analyzed project's own real Swift source file count (`StalenessOrchestration.swiftFiles`,
     /// already computed by every real caller before constructing this provider) -- see
     /// `retryThreshold`'s own doc comment for why this, not a fixed number, is what the
@@ -20,9 +21,13 @@ public final class LiveSwiftPMCompilerArgumentsProvider: CompilerArgumentsProvid
     private let lock = NSLock()
     private var cachedArguments: [String: [String]]?
 
-    public init(packageDirectory: URL, processRunning: ProcessRunning = LiveProcessRunner(), expectedFileCount: Int? = nil) {
+    public init(
+        packageDirectory: URL, processRunning: ProcessRunning = LiveProcessRunner(),
+        fileSystem: FileSystemQuerying = LiveFileSystem(), expectedFileCount: Int? = nil
+    ) {
         self.packageDirectory = packageDirectory
         self.processRunning = processRunning
+        self.fileSystem = fileSystem
         self.expectedFileCount = expectedFileCount
     }
 
@@ -121,6 +126,89 @@ public final class LiveSwiftPMCompilerArgumentsProvider: CompilerArgumentsProvid
                 reason: "swift build -v exited \(result.exitCode): \(result.standardError)"
             )
         }
-        return CompilerArgsLogParser.parse(buildLog: result.standardOutput)
+
+        let primaryFileShapeResult = CompilerArgsLogParser.parse(buildLog: result.standardOutput)
+        if !primaryFileShapeResult.isEmpty {
+            return primaryFileShapeResult
+        }
+        // Found investigating issue #169 (docs/task-swiftpm-swiftbuild-backend-migration.md):
+        // `swift build`'s new default build system (`swiftbuild`, the same SWBBuildService engine
+        // Xcode uses) emits a driver-level `-v` log -- one line per *target*, source files behind
+        // an `@`-referenced response file -- instead of the old llbuild-native per-file
+        // `swift-frontend -frontend -c -primary-file` shape the parse above expects. An empty
+        // result from that parse is a genuine "wrong shape" signal, not an incomplete-build signal
+        // (that's `retryThreshold`'s own, separate job, already applied before this method is ever
+        // called a second time) -- confirmed directly: a real captured log from this shape has
+        // exactly one `swift-frontend -frontend` line in total (`Package.swift`'s own manifest
+        // parse), never one for a real project source file. Falls back to the exact parser already
+        // written for Xcode's own identically-shaped `-verbose` log
+        // (`parseXcodeSwiftCompileInvocations`, dormant since PR #128) -- confirmed to parse this
+        // new SwiftPM shape correctly, unmodified.
+        return try parseDriverLevelShape(buildLog: result.standardOutput)
+    }
+
+    /// The Xcode-shape fallback parse: one real `swiftc` invocation per target, source files named
+    /// in an `@`-referenced response file this method expands, then disambiguated per-file the same
+    /// way `SwiftBuildCompilerArgumentsProvider` already does for a shared-file group spanning
+    /// multiple targets (`preferredArguments`, keyed by each invocation's own `-module-name`).
+    private func parseDriverLevelShape(buildLog: String) throws -> [String: [String]] {
+        var candidatesByPath: [String: [(targetName: String, args: [String])]] = [:]
+        for invocation in CompilerArgsLogParser.parseXcodeSwiftCompileInvocations(buildLog: buildLog) {
+            let files = try expandFileList(at: invocation.sourceFileListPath)
+            let fullArguments = invocation.arguments + files
+            var moduleName = ""
+            if let moduleNameIndex = invocation.arguments.firstIndex(of: "-module-name"),
+               invocation.arguments.index(after: moduleNameIndex) < invocation.arguments.endIndex {
+                moduleName = invocation.arguments[invocation.arguments.index(after: moduleNameIndex)]
+            }
+            for file in files {
+                candidatesByPath[file, default: []].append((targetName: moduleName, args: fullArguments))
+            }
+        }
+
+        var parsed: [String: [String]] = [:]
+        parsed.reserveCapacity(candidatesByPath.count)
+        for (file, candidates) in candidatesByPath {
+            parsed[file] = SwiftBuildCompilerArgumentsProvider.preferredArguments(candidates: candidates, filePath: file)
+        }
+        return parsed
+    }
+
+    /// The `@`-referenced response file is one absolute source path per line, with a space-
+    /// containing path backslash-escaped -- same real shape as Xcode's own `SwiftFileList`
+    /// (confirmed: both ultimately come from the same `swiftbuild`/SWBBuildService engine), same
+    /// fix as `docs/task-external-plugin-path-noise.md`'s original finding for Xcode.
+    private func expandFileList(at path: String) throws -> [String] {
+        let url = URL(fileURLWithPath: path)
+        guard fileSystem.fileExists(at: url) else {
+            throw CompilerArgumentsError.buildLogParseFailed(reason: "referenced file list not found: \(path)")
+        }
+        let data = try fileSystem.readData(at: url)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CompilerArgumentsError.buildLogParseFailed(reason: "file list not UTF-8: \(path)")
+        }
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { Self.unescaped(String($0).trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Drops each backslash escape character, keeping whatever it precedes literally -- mirrors
+    /// `CompilerArgsLogParser.tokenize`'s own backslash handling, applied here to one already
+    /// newline-delimited path per line rather than a whitespace-delimited argument list.
+    static func unescaped(_ line: String) -> String {
+        var result = ""
+        var escaped = false
+        for character in line {
+            if escaped {
+                result.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else {
+                result.append(character)
+            }
+        }
+        return result
     }
 }

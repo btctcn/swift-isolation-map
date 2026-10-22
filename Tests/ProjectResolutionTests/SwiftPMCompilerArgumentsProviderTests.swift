@@ -189,6 +189,67 @@ func aLargePackageRetriesEvenWellAboveTheFixedFallbackFloor() throws {
     #expect(callCount == 2, "the 32-line partial parse must trigger a retry despite being above the fixed fallback floor of 10")
 }
 
+// MARK: - Driver-level log shape fallback (issue #169, docs/task-swiftpm-swiftbuild-backend-migration.md)
+//
+// `swift build`'s new default `swiftbuild` build system emits a driver-level `-v` log (one real
+// `builtin-Swift-Compilation --` line per *target*, source files behind an `@`-referenced response
+// file) instead of the old llbuild-native per-file `-primary-file` shape every test above exercises.
+// `CompilerArgsLogParser.parse` finds nothing in that shape -- these tests cover the fallback to
+// `parseXcodeSwiftCompileInvocations` this provider now tries next.
+
+private func driverLevelCompileLog(fileListPath: String, moduleName: String = "Demo") -> String {
+    "    builtin-Swift-Compilation -- /usr/bin/swiftc -module-name \(moduleName) -Onone @\(fileListPath) " +
+    "-target arm64-apple-macosx13.0 -sdk /SDK -c -enable-batch-mode -incremental"
+}
+
+@Test
+func driverLevelShapeFallsBackAndResolvesRealFileArguments() throws {
+    let runner = FakeProcessRunner()
+    let fileSystem = FakeFileSystem()
+    let packageDirectory = URL(fileURLWithPath: "/project")
+    let fileListPath = "/project/.build/out/Intermediates.noindex/Demo.SwiftFileList"
+    fileSystem.addFile(
+        at: URL(fileURLWithPath: fileListPath),
+        contents: "/project/Sources/Demo/Widget.swift\n/project/Sources/Demo/Padding0.swift\n"
+    )
+    runner.stub(
+        executable: "swift",
+        arguments: ["build", "-v"],
+        result: ProcessResult(exitCode: 0, standardOutput: driverLevelCompileLog(fileListPath: fileListPath), standardError: "")
+    )
+
+    let provider = LiveSwiftPMCompilerArgumentsProvider(
+        packageDirectory: packageDirectory, processRunning: runner, fileSystem: fileSystem, expectedFileCount: 1
+    )
+    let args = try provider.compilerArguments(forFile: "/project/Sources/Demo/Widget.swift")
+    #expect(args.contains("-target"))
+    #expect(args.contains("arm64-apple-macosx13.0"))
+    // Every file named in the target's own file list resolves, not just the one requested first.
+    let paddingArgs = try provider.compilerArguments(forFile: "/project/Sources/Demo/Padding0.swift")
+    #expect(paddingArgs.contains("-target"))
+}
+
+@Test
+func driverLevelShapeWithAnUnreadableFileListThrows() throws {
+    let runner = FakeProcessRunner()
+    let packageDirectory = URL(fileURLWithPath: "/project")
+    runner.stub(
+        executable: "swift",
+        arguments: ["build", "-v"],
+        result: ProcessResult(
+            exitCode: 0,
+            standardOutput: driverLevelCompileLog(fileListPath: "/project/.build/out/Missing.SwiftFileList"),
+            standardError: ""
+        )
+    )
+    let provider = LiveSwiftPMCompilerArgumentsProvider(
+        packageDirectory: packageDirectory, processRunning: runner, fileSystem: FakeFileSystem(), expectedFileCount: 1
+    )
+    #expect(throws: CompilerArgumentsError.self) {
+        try provider.compilerArguments(forFile: "/project/Sources/Demo/Widget.swift")
+    }
+}
+
 /// Live-toolchain tier, same discipline as `DeclarationLinkerTests.swift`: a real `swift build -v`
 /// against a real fixture package, asserting the returned arguments are genuinely usable (contain
 /// a real `-target`/`-sdk`, not just present).
