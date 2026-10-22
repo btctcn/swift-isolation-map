@@ -53,7 +53,7 @@ struct RawIndexStoreClientModuleScopingTests {
             workingDirectory: fixtureRoot
         )
         #expect(buildResult.exitCode == 0, "fixture build failed: \(buildResult.standardError)")
-        return (indexStorePath, fixtureRoot)
+        return (resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot), fixtureRoot)
     }
 
     @Test("allowedModuleNames: nil (the default) scans the whole store, unchanged from this type's original behavior")

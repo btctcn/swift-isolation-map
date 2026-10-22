@@ -106,9 +106,19 @@ struct BulkExtractionEnvironmentProvidingTests {
             executable: "swift", arguments: ["build", "--show-bin-path"],
             result: ProcessResult(exitCode: 0, standardOutput: "/pkg/.build/arm64-apple-macosx/debug\n", standardError: "")
         )
-        // Issue #40's own real-corpus verification: the bin-path triple folder name alone
-        // (`arm64-apple-macosx`) omits the OS version SwiftPM deliberately leaves out of that
-        // directory name -- passing it bare as `-target` left the *compiler's* own ancient default
+        // The triple's arch-vendor-os prefix comes from `swift -print-target-info` (not the bin
+        // path -- see `environment()`'s own doc comment for why: the new `swiftbuild` backend's
+        // bin path has no triple component in it at all, confirmed empirically, issue #169/#172).
+        runner.stub(
+            executable: "swift", arguments: ["-print-target-info"],
+            result: ProcessResult(
+                exitCode: 0,
+                standardOutput: #"{"target": {"unversionedTriple": "arm64-apple-macosx"}}"#,
+                standardError: ""
+            )
+        )
+        // Issue #40's own real-corpus verification: the triple's own unversioned prefix omits the
+        // OS version -- passing it bare as `-target` left the *compiler's* own ancient default
         // apply instead of this machine's real SDK version, which `swift symbolgraph-extract`
         // rejects outright for any dependency declaring a realistic platform minimum (confirmed
         // directly: "compiling for macOS 10.4, but module 'X' has a minimum deployment target of
@@ -130,6 +140,43 @@ struct BulkExtractionEnvironmentProvidingTests {
         #expect(environment.sdkPath == "/Applications/Xcode.app/.../MacOSX.sdk")
         #expect(environment.discoveredModules.contains(
             DiscoveredModule(name: "SomeDependency", extractionFlags: ["-I", "/pkg/.build/arm64-apple-macosx/debug/Modules"])
+        ))
+    }
+
+    @Test("SwiftPMBulkExtractionEnvironmentProvider: falls back to scanning the bin path itself when there's no Modules subdirectory at all (the new swiftbuild backend's real shape, issue #169/#172)")
+    func swiftPMProviderFallsBackToFlatBinPathWhenNoModulesSubdirectoryExists() throws {
+        let runner = FakeProcessRunner()
+        let packageDirectory = URL(fileURLWithPath: "/pkg")
+        runner.stub(
+            executable: "swift", arguments: ["build", "--show-bin-path"],
+            result: ProcessResult(exitCode: 0, standardOutput: "/pkg/.build/out/Products/Debug\n", standardError: "")
+        )
+        runner.stub(
+            executable: "swift", arguments: ["-print-target-info"],
+            result: ProcessResult(
+                exitCode: 0,
+                standardOutput: #"{"target": {"unversionedTriple": "arm64-apple-macosx"}}"#,
+                standardError: ""
+            )
+        )
+        runner.stub(
+            executable: "xcrun", arguments: ["--sdk", "macosx", "--show-sdk-version"],
+            result: ProcessResult(exitCode: 0, standardOutput: "15.0\n", standardError: "")
+        )
+        runner.stub(
+            executable: "xcrun", arguments: ["--show-sdk-path"],
+            result: ProcessResult(exitCode: 0, standardOutput: "/Applications/Xcode.app/.../MacOSX.sdk\n", standardError: "")
+        )
+        let fileSystem = FakeFileSystem()
+        // Confirmed real shape: no `Modules/` subdirectory anywhere under the bin path, every
+        // target's `.swiftmodule` (dependency and the project's own) sits flat, directly in it.
+        fileSystem.addFile(at: URL(fileURLWithPath: "/pkg/.build/out/Products/Debug/SomeDependency.swiftmodule"), contents: Data())
+
+        let provider = SwiftPMBulkExtractionEnvironmentProvider(packageDirectory: packageDirectory, processRunning: runner, fileSystem: fileSystem)
+        let environment = try provider.environment()
+        #expect(environment.target == "arm64-apple-macosx15.0")
+        #expect(environment.discoveredModules.contains(
+            DiscoveredModule(name: "SomeDependency", extractionFlags: ["-I", "/pkg/.build/out/Products/Debug"])
         ))
     }
 }

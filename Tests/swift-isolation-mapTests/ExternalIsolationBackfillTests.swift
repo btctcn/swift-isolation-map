@@ -7,6 +7,23 @@ import SourceKitDIntegration
 import SyntaxAnalysis
 @testable import swift_isolation_map
 
+/// Resolves the real index store path after a real `swift build -Xswiftc -index-store-path
+/// -Xswiftc <requestedPath>` build -- mirrors the production fix in `IndexStoreLocator`/
+/// `SwiftIsolationMap.build()` (issue #169/#172): `swift build`'s new default `swiftbuild` build
+/// system silently ignores that flag and writes real index data to `.build/out` instead
+/// (confirmed via its real `v5` subdirectory), regardless of the requested path. Checks the
+/// requested path first (unchanged behavior on the old `native` backend), then falls back.
+private func resolvedIndexStorePath(requestedPath: String, buildDirectory: URL) -> String {
+    if FileManager.default.fileExists(atPath: requestedPath) {
+        return requestedPath
+    }
+    let fallback = buildDirectory.appendingPathComponent(".build/out")
+    if FileManager.default.fileExists(atPath: fallback.appendingPathComponent("v5").path) {
+        return fallback.path
+    }
+    return requestedPath
+}
+
 final class FakeCompilerArgumentsProviding: CompilerArgumentsProviding, @unchecked Sendable {
     var argumentsByFile: [String: [String]] = [:]
 
@@ -1307,7 +1324,7 @@ func extensionOfExternalTypeResolvesEndToEndWithRealAppKit() async throws {
     let source = try String(contentsOf: extensionFile, encoding: .utf8)
     let extractionResult = DeclarationExtractor.extractWithContext(source: source, fileName: extensionFile.path)
 
-    let indexStoreClient = try RawIndexStoreClient(storePath: indexStorePath)
+    let indexStoreClient = try RawIndexStoreClient(storePath: resolvedIndexStorePath(requestedPath: indexStorePath, buildDirectory: fixtureRoot))
     let linker = DeclarationLinker(indexStore: indexStoreClient)
     let linked = linker.link([extractionResult])
 

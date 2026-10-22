@@ -53,11 +53,21 @@ struct ThirdPartyGlobalActorCLITests {
     /// `ExternalDep` is a real SwiftPM package `Consumer` depends on via `.package(path:)` --
     /// building `Consumer` once (which this test's own `runCLI()` already does, indirectly, via
     /// the CLI's own indexing build) leaves `ThirdPartyActorKit.swiftmodule` right where SwiftPM
-    /// always puts a dependency's own build products: `<bin-path>/Modules/`.
+    /// puts a dependency's own build products. Which directory that actually is changed with
+    /// `swift build`'s new default `swiftbuild` build system (issue #169/#172, same root cause as
+    /// the index-store-path fixes elsewhere): the old `native` backend put it under a `Modules/`
+    /// subdirectory of the bin path; the new backend puts `.swiftmodule` files flat, directly in
+    /// the bin path itself, with no `Modules/` subdirectory at all (confirmed empirically against
+    /// this exact fixture). Checks the old shape first, so this still works unchanged on the old
+    /// backend.
     static func modulesDirectory() throws -> URL {
         let result = try LiveProcessRunner().run(executable: "swift", arguments: ["build", "--show-bin-path"], workingDirectory: consumerRoot)
         let binPath = URL(fileURLWithPath: result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))
-        return binPath.appendingPathComponent("Modules")
+        let modulesSubdirectory = binPath.appendingPathComponent("Modules")
+        if FileManager.default.fileExists(atPath: modulesSubdirectory.appendingPathComponent("ThirdPartyActorKit.swiftmodule").path) {
+            return modulesSubdirectory
+        }
+        return binPath
     }
 
     static func runCLI() throws -> AnalysisReport {
