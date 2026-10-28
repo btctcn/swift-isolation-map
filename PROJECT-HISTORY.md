@@ -7,7 +7,7 @@ when the PR body/title explicitly names one — never inferred), a short "Questi
 real problem per the issue/PR text, and a short "Done" summarizing what actually shipped per the
 PR description/commits.
 
-136 PRs exist in total as of PR #174. 38 issues exist in total, 0 open as of this writing. At
+138 PRs exist in total as of PR #176. 38 issues exist in total, 0 open as of this writing. At
 least 23 PRs explicitly reference one of the (then-18) closed issue numbers in their own title or
 body as of the original pass through this log -- not recomputed against the newer closed issues.
 
@@ -717,6 +717,20 @@ Done: Fixed all 11 via a shared `resolvedIndexStorePath()` helper applied at 8 c
 Issue: none
 Question: `README.md`'s Normative references table still listed SE-0518 as "6.4 -- not yet reviewed" after issue #164 had closed with all 28 Swift 6.4 proposals reviewed, the stated test count (645) had drifted from the real current count, and this file itself hadn't been updated since PR #163 despite nine further merged PRs.
 Done: Moved SE-0518 out of the main Normative-references table into the "confirmed not to change" list alongside the other concurrency-adjacent 6.4 proposals, with a pointer to `docs/isolation-rules.md` for the remaining 16+5 proposals reviewed. Bumped the stated test count to 651 (confirmed from a real full `swift test -c release` run). Added this file's own entries for PRs #165-173 and bumped its opening paragraph's PR/issue counts. Docs-only.
+
+---
+
+## PR #175 — Add PROJECT-HISTORY.md entry for PR #174, now merged (2026-10-22)
+Issue: none
+Question: PR #174 itself merged after its own entry was written (above), leaving this file's opening paragraph wrongly stating PR #174 was "still open."
+Done: Corrected the opening paragraph's wording from "#174 is still open" to "as of PR #174." Docs-only; no separate entry added for #175 itself to avoid an infinite self-documenting tail.
+
+---
+
+## PR #176 — Release v0.4.0 (2026-10-28)
+Issue: none
+Question: `toolVersion` still said 0.3.0 despite issue #164 (Swift 6.4 review, `Swift64RuleSet`) and issues #169/#172 (the `swiftbuild`-backend compatibility fix) having merged since the 0.3.0 tag, and the README's Roadmap still listed those as unshipped v0.4 wishlist items.
+Done: Bumped `toolVersion` to 0.4.0. Rewrote the README's status blurb and Roadmap: Swift 6.4 support and the `swiftbuild`-backend fix become v0.4-shipped; the old v0.4 wishlist (`diff` subcommand, GitHub Action, migration-debt map, packaged distribution) moves to v0.5, old v0.5 (staleness-detection revisit) moves to v0.6. Updated the two other README spots that referenced v0.4 as the packaged-distribution/diff-gate milestone. Full suite: 651/651 passing. `swift build -c release` clean. Also cleaned ~13.8G of stale per-corpus Xcode DerivedData (Project Iris, home-assistant-iOS, Swiftfin index/build caches from earlier validation runs) that had brought this machine's free disk space down to 1.2Gi.
 
 ---
 
