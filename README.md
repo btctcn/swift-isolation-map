@@ -3,18 +3,20 @@
 A static analysis CLI for Swift actor isolation and data-race risk — a whole-project isolation
 map, not a single runtime trace.
 
-Latest release: [0.3.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.3.0).
+Latest release: [0.4.0](https://github.com/btctcn/swift-isolation-map/releases/tag/0.4.0).
 
 > **Status: working.** The full pipeline is implemented and tested — project/scheme resolution,
 > index-store discovery and staleness detection, a hybrid `libIndexStore` + `SwiftSyntax`
 > inference engine, and an external-isolation oracle that resolves compiled-dependency symbols
 > (CocoaPods, XCFrameworks, SDK frameworks) via bulk `symbolgraph-extract` and, as a fallback, live
 > `sourcekitd` queries, including real Swift 6 escape-hatch detection (`@unchecked Sendable`,
-> `nonisolated(unsafe)`, `@preconcurrency`) with a genuine SE-0337 severity downgrade.
+> `nonisolated(unsafe)`, `@preconcurrency`) with a genuine SE-0337 severity downgrade. Swift 6.4 is
+> a fully reviewed, supported language version, and SwiftPM projects resolve correctly under
+> `swift build`'s new default `swiftbuild` backend (Xcode 27/Swift 6.4 toolchain).
 > 651 tests passing (`swift test`), continuously validated against several real,
 > independent projects (one private, ~2200+ source files across dozens of CocoaPods + SPM
 > dependencies; several public, including a 5500+-file, 497-target one), not just fixtures.
-> `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.4` items below (`diff` subcommand,
+> `mermaid`/`dot`/`json` output all ship. Not yet built: the `v0.5` items below (`diff` subcommand,
 > GitHub Action, migration-debt map, packaged distribution).
 
 ## Requirements
@@ -34,7 +36,7 @@ failing deep inside the pipeline with a cryptic error.
 
 ## Quick start
 
-No packaged distribution yet (Homebrew/SPM-plugin are `v0.4`+, see Roadmap below) — build from
+No packaged distribution yet (Homebrew/SPM-plugin are `v0.5`+, see Roadmap below) — build from
 source:
 
 ```
@@ -353,7 +355,7 @@ touch each file. What it doesn't give you:
   bookkeeping this tool exists to do once, automatically, correctly (see `docs/research/` for how
   much real work went into making that resolution trustworthy).
 - **A CI gate, not just an editor squiggle.** Exit code `1` on any high-risk boundary means this
-  slots into a pipeline today; a `diff`-based gate (v0.4) will let it fail a PR only on *new* risk,
+  slots into a pipeline today; a `diff`-based gate (v0.5) will let it fail a PR only on *new* risk,
   not the whole existing backlog.
 - **A trackable migration-debt number**, not a vague sense of "we should really finish this
   someday" — `highRiskBoundaries` in the JSON summary is one number you can put in a dashboard and
@@ -449,8 +451,9 @@ as such instead.
 - **v0.1 — shipped.** Project/scheme resolution, index-store discovery and staleness detection, the hybrid inference engine, the external-isolation oracle (bulk + live), `mermaid`/`dot`/`json` output, a file-sorted query-ordering optimization (~33% faster oracle phase on a real ~2200-file project, zero semantic change).
 - **v0.2 — shipped.** A direct `swift-build`/`SWBBuildService` API path promoted to the default compiler-argument resolution for Xcode projects — faster and more correct than the `xcodebuild -verbose` path it replaces, byte-for-byte edge-parity verified against two real 2000+-file corpora (the `xcodebuild -verbose` path was kept for a while afterward as an unreachable-from-the-CLI fallback, then removed from the tree entirely once confirmed genuinely dead). Closure-level isolation attribution completed end to end: a real `@globalActor` declared in a compiled dependency is now recognized, and the full de-isolating mirror direction (`Task.detached`, non-main `DispatchQueue`s, `@concurrent`) is implemented and real-corpus-verified. A real declaration-extraction bug fixed — local `let`/`var`/nested `func`s inside a function or closure body were being misattributed as phantom members of the enclosing type (22% of all declarations on one real ~2200-file corpus). Dozens of further real declaration/USR-matching correctness fixes across Objective-C/Swift interop edge cases (bridged extern constants, protocol witnesses, subscripts, multi-target declaration aliasing, and more), plus index-store scoping and DerivedData isolation hardening for shared/multi-run environments. A `--sort=file|severity` flag was added afterward (0.2.1) to order the output's edges by location or by risk instead of leaving them in whatever order the analysis happened to produce them.
 - **v0.3 — shipped.** Real Swift 6 escape hatches (`@unchecked Sendable`, `nonisolated(unsafe)`, `@preconcurrency` on a declaration/conformance/import) are now surfaced as their own `escapeHatches` findings, and a real SE-0337 diagnostic softening (`@preconcurrency` on a callee's own declaration, an ancestor up its class hierarchy, or its module being `@preconcurrency import`-ed) downgrades that edge's `risk` for real, with `structuralRisk`/`severityRationale` keeping the "why" traceable — including `.uncheckedSendable`'s own real mutable-stored-property detection, walking a type's members and superclass chain. A new `--platform <name>` flag picks among several simultaneously-valid Simulator destinations on one modern multiplatform scheme (iOS + visionOS on the same scheme, confirmed against a real app); compiler-argument resolution for Xcode projects generalized beyond iOS Simulator to the other three real Simulator SDK families (tvOS/watchOS/visionOS), verified against four independent real corpora. `#if <name>` custom build conditions are now resolved from the real, active compiler arguments instead of a hardcoded `true`, and a real `#if targetEnvironment(macCatalyst)` misclassification (backwards-answered) is fixed. Total `sourcekitd` unavailability is now a hard failure instead of a silent, incomplete report; the SwiftPM compiler-argument path's own run-to-run non-determinism (an incremental `swift build -v` silently omitting compile lines) is fixed with a real-file-count-scaled retry. Several further real declaration/USR-matching and stderr-noise correctness fixes shipped along the way (an `NSDictionary`/`NSMutableDictionary` `NSCopying`-keyed subscript, `MKCoordinateRegion.center`'s typealias-wrapped setter, two distinct compiler-argument stderr-noise root causes, a `DeclarationLinker` merge tie-break for stray duplicate source files).
-- **v0.4 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin). (Per-call-site suppression comments were designed — `docs/task-suppression-comments.md` — and then decided against; not planned.)
-- **v0.5 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
+- **v0.4 — shipped.** Swift 6.4 fully reviewed and supported: all 28 proposals tagged version 6.4 (23 core/stdlib/SwiftPM + 5 Swift Testing track) checked against the real toolchain (Xcode 27.0, `swiftlang-6.4.0.34.1`) per issue #164 — none change the 4-tier resolution model, and a new `Swift64RuleSet` is registered (see `docs/isolation-rules.md`'s "Swift 6.4 proposal review" for the full per-proposal evidence). `swift build`'s new default `swiftbuild` backend (same engine as Xcode's own SWBBuildService, introduced with this toolchain) broke two independent things for SwiftPM projects — `--index-store-path` resolution and the compiler-argument log's own shape — both fixed (issues #169, #172), verified end to end against a real ~2200-file corpus.
+- **v0.5 — not started.** `diff` subcommand, a GitHub Action that comments on PRs when a new cross-actor boundary appears, a migration-debt map, packaged distribution (Homebrew, possibly an SPM build-tool plugin). (Per-call-site suppression comments were designed — `docs/task-suppression-comments.md` — and then decided against; not planned.)
+- **v0.6 — not started.** Revisit staleness-detection strategy, deeper cross-module accuracy, possibly rewrite suggestions.
 
 ## Contributing
 
